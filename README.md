@@ -98,6 +98,27 @@ bash scripts/bootstrap_ascend.sh Qwen/Qwen2.5-1.5B-Instruct
 bash scripts/doctor_ascend_env.sh
 ```
 
+## Qwen2 Runtime Note
+
+`Qwen2ForCausalLM` now defaults to a native rotary fallback on Ascend even when
+the runtime stays on the compiled `torch.compile` plus PIECEWISE ACL graph path.
+This is narrower than the previous eager-only safety guard and is intended to
+avoid the incorrect outputs we observed on the Qwen2 NPU rotary custom-op path
+without throwing away the rest of the compiled execution stack.
+
+The local validation that motivated this default used
+`Qwen2.5-14B-Instruct` with the shared 3-request sample workload from
+`llm-serving-motto-lab`, one warmup batch, and five measured steady-state
+batches in the same `vllm-hust` backend environment. Under that setup, the old
+eager guard measured `20.78s` mean / `21.44s` p95 batch latency and
+`0.144 req/s`; the native-rope fix measured `12.14s` mean / `12.41s` p95 and
+`0.247 req/s`.
+
+If you need to disable the fallback for debugging, set
+`VLLM_ASCEND_USE_NATIVE_QWEN2_ROPE=0`. If you also need to restore the previous
+unsafe compiled behavior for comparison, set
+`VLLM_ASCEND_ALLOW_UNSAFE_QWEN2_ACLGRAPH=1` explicitly.
+
 ## CI Benchmark Leaderboard
 
 This repository now mirrors the trusted Ascend benchmark publication flow used
