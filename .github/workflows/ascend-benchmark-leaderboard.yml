@@ -98,6 +98,7 @@ jobs:
       VLLM_HUST_CONDA_ENV: vllm-hust-dev
       VLLM_HUST_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.vllm_hust_ref || vars.VLLM_ASCEND_HUST_VLLM_HUST_REF || 'main' }}
       MODEL_NAME: ${{ github.event_name == 'workflow_dispatch' && inputs.model_name || 'Qwen/Qwen2.5-0.5B-Instruct' }}
+      SOC_VERSION: ascend910b1
       BENCH_SCENARIO: ${{ github.event_name == 'workflow_dispatch' && inputs.benchmark_scenario || (github.event_name == 'pull_request' && vars.VLLM_ASCEND_HUST_PR_BENCHMARK_SCENARIO) || (github.event_name == 'push' && vars.VLLM_ASCEND_HUST_MAIN_BENCHMARK_SCENARIO) || 'random-online' }}
       BENCH_DATASET_PATH: ${{ github.event_name == 'workflow_dispatch' && inputs.dataset_path || (github.event_name == 'pull_request' && vars.VLLM_ASCEND_HUST_PR_BENCHMARK_DATASET_PATH) || (github.event_name == 'push' && vars.VLLM_ASCEND_HUST_MAIN_BENCHMARK_DATASET_PATH) || '' }}
       BENCH_CONSTRAINTS_FILE: ${{ github.event_name == 'workflow_dispatch' && inputs.constraints_file || (github.event_name == 'pull_request' && vars.VLLM_ASCEND_HUST_PR_BENCHMARK_CONSTRAINTS_FILE) || (github.event_name == 'push' && vars.VLLM_ASCEND_HUST_MAIN_BENCHMARK_CONSTRAINTS_FILE) || '' }}

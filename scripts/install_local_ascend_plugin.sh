@@ -88,6 +88,28 @@ echo "[INFO] Using lightweight mode: COMPILE_CUSTOM_KERNELS=0, --no-deps"
 export COMPILE_CUSTOM_KERNELS="${COMPILE_CUSTOM_KERNELS:-0}"
 mkdir -p "${CURRENT_USER_CACHE_HOME}/pip" "${CURRENT_USER_CONFIG_HOME}"
 
+PYTHON_BIN="$(hust_resolve_python_bin 2>/dev/null)" || {
+  echo "[ERROR] Could not locate python3/python for plugin installation"
+  exit 1
+}
+
+if ! "${PYTHON_BIN}" - <<'PY' >/dev/null 2>&1
+import setuptools_scm
+PY
+then
+  echo "[INFO] Installing missing build metadata dependency: setuptools-scm>=8"
+  if ! (
+    export HOME="${CURRENT_USER_HOME}"
+    export XDG_CACHE_HOME="${CURRENT_USER_CACHE_HOME}"
+    export XDG_CONFIG_HOME="${CURRENT_USER_CONFIG_HOME}"
+    export PIP_CACHE_DIR="${CURRENT_USER_CACHE_HOME}/pip"
+    hust_run_pip install "setuptools-scm>=8"
+  ); then
+    echo "[ERROR] Failed to install setuptools-scm required for editable metadata generation"
+    exit 1
+  fi
+fi
+
 if ! (
   export HOME="${CURRENT_USER_HOME}"
   export XDG_CACHE_HOME="${CURRENT_USER_CACHE_HOME}"
@@ -100,11 +122,6 @@ if ! (
 fi
 
 echo "[INFO] Checking vLLM platform plugin entry points"
-PYTHON_BIN="$(hust_resolve_python_bin 2>/dev/null)" || {
-  echo "[ERROR] Could not locate python3/python for plugin verification"
-  exit 1
-}
-
 "${PYTHON_BIN}" - <<'PY'
 from importlib.metadata import entry_points
 
