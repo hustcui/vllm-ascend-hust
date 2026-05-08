@@ -131,6 +131,23 @@ PY
   done
 }
 
+resolve_npu_smi_bin() {
+  local candidate
+  if candidate="$(command -v npu-smi 2>/dev/null)" && [[ -n "$candidate" ]]; then
+    printf '%s\n' "$candidate"
+    return 0
+  fi
+
+  for candidate in /usr/local/bin/npu-smi /usr/local/sbin/npu-smi /usr/sbin/npu-smi /usr/bin/npu-smi; do
+    if [[ -x "$candidate" ]]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
 start_server() {
   if command -v setsid >/dev/null 2>&1; then
     setsid env VLLM_ASCEND_TORCH_PREFLIGHT=0 "${VLLM_SERVE[@]}" \
@@ -174,8 +191,15 @@ fi
 
 mkdir -p "$RESULT_ROOT" "$SUBMISSIONS_ROOT" "$AGGREGATE_OUTPUT_DIR" "$HOME" "$XDG_CACHE_HOME" "$XDG_CONFIG_HOME"
 
+NPU_SMI_BIN="$(resolve_npu_smi_bin 2>/dev/null || true)"
+if [[ -n "$NPU_SMI_BIN" ]]; then
+  echo "Using npu-smi binary: $NPU_SMI_BIN"
+else
+  echo "Could not resolve npu-smi binary; single-card device selection may be unavailable"
+fi
+
 select_ascend_device() {
-  ASCEND_DEVICE_SELECTION_ATTEMPT="${1:-1}" "${PYTHON_BIN}" - <<'PY'
+  ASCEND_DEVICE_SELECTION_ATTEMPT="${1:-1}" NPU_SMI_BIN="${2:-}" "${PYTHON_BIN}" - <<'PY'
 import os
 import re
 import subprocess
@@ -249,15 +273,19 @@ def select_best_idle_device(mapping_output: str, info_output: str) -> int | None
 
 
 try:
+  npu_smi_bin = os.environ.get("NPU_SMI_BIN")
+  if not npu_smi_bin:
+    sys.exit(0)
+
   mapping_result = subprocess.run(
-    ["npu-smi", "info", "-m"],
+    [npu_smi_bin, "info", "-m"],
     check=False,
     capture_output=True,
     text=True,
     timeout=5,
   )
   info_result = subprocess.run(
-    ["npu-smi", "info"],
+    [npu_smi_bin, "info"],
     check=False,
     capture_output=True,
     text=True,
@@ -363,7 +391,7 @@ server_ready=0
 
 for start_attempt in $(seq 1 "$SERVER_START_RETRIES"); do
   if [[ "$CHIP_COUNT" == "1" ]]; then
-    SELECTED_ASCEND_DEVICE_INFO="$(select_ascend_device "$start_attempt")"
+    SELECTED_ASCEND_DEVICE_INFO="$(select_ascend_device "$start_attempt" "$NPU_SMI_BIN")"
     if [[ -n "$SELECTED_ASCEND_DEVICE_INFO" ]]; then
       IFS=$'\t' read -r SELECTED_ASCEND_DEVICE SELECTED_ASCEND_DEVICE_SOURCE <<<"$SELECTED_ASCEND_DEVICE_INFO"
       export ASCEND_RT_VISIBLE_DEVICES="$SELECTED_ASCEND_DEVICE"
