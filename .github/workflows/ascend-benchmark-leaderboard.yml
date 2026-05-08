@@ -262,6 +262,7 @@ jobs:
           source scripts/use_single_ascend_env.sh
           export PYTHONPATH="$VLLM_HUST_REPO:$VLLM_HUST_BENCHMARK_REPO/src${PYTHONPATH:+:$PYTHONPATH}"
           hust_run_pip install "torch==2.9.0" "torch-npu==2.9.0"
+          hust_run_pip install "numpy<2.0.0" scipy attrs decorator psutil
           bash scripts/install_local_ascend_plugin.sh "$GITHUB_WORKSPACE"
           hust_run_pip install "huggingface_hub>=0.20" jsonschema
 
@@ -275,12 +276,14 @@ jobs:
           PYTHON_BIN="$(hust_resolve_python_bin)"
           "$PYTHON_BIN" --version
           "$PYTHON_BIN" - <<'PY'
+          import numpy
           import torch
           import torch_npu
           import vllm
           import vllm_hust_benchmark.cli
           from vllm_ascend._version import __version__ as plugin_version
 
+          print(f'numpy version: {numpy.__version__}')
           print(f'torch version: {torch.__version__}')
           print(f'torch_npu version: {torch_npu.__version__}')
           print(f'vLLM version: {vllm.__version__}')
