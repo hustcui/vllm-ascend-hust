@@ -266,8 +266,9 @@ jobs:
       - name: Verify installation
         run: |
           source scripts/use_single_ascend_env.sh
-          python3 --version
-          python3 - <<'PY'
+          PYTHON_BIN="$(hust_resolve_python_bin)"
+          "$PYTHON_BIN" --version
+          "$PYTHON_BIN" - <<'PY'
           import vllm
           from vllm_ascend._version import __version__ as plugin_version
 
