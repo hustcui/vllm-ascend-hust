@@ -56,6 +56,7 @@ PYTHON_BIN="$(hust_resolve_python_bin 2>/dev/null)" || {
 }
 
 export PYTHONPATH="${VLLM_HUST_REPO}:${VLLM_HUST_BENCHMARK_REPO}/src${PYTHONPATH:+:${PYTHONPATH}}"
+VLLM_CLI=("${PYTHON_BIN}" -m vllm.entrypoints.cli.main)
 
 server_pid=""
 server_group_pid=""
@@ -81,7 +82,7 @@ cleanup() {
 
 start_server() {
   if command -v setsid >/dev/null 2>&1; then
-    setsid vllm serve "$MODEL_NAME" \
+    setsid "${VLLM_CLI[@]}" serve "$MODEL_NAME" \
       --host "$HOST" \
       --port "$PORT" \
       --dtype "$DTYPE" \
@@ -91,7 +92,7 @@ start_server() {
     server_pid=$!
     server_group_pid=$server_pid
   else
-    vllm serve "$MODEL_NAME" \
+    "${VLLM_CLI[@]}" serve "$MODEL_NAME" \
       --host "$HOST" \
       --port "$PORT" \
       --dtype "$DTYPE" \
@@ -315,7 +316,7 @@ for attempt in $(seq 1 120); do
   sleep 2
 done
 
-vllm bench serve \
+"${VLLM_CLI[@]}" bench serve \
   --model "$MODEL_NAME" \
   --host "$HOST" \
   --port "$PORT" \
