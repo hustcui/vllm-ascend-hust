@@ -85,7 +85,6 @@ fi
 
 echo "[INFO] Installing local vllm-ascend-hust plugin from: ${PLUGIN_REPO}"
 echo "[INFO] Using lightweight mode: COMPILE_CUSTOM_KERNELS=0, --no-deps"
-export COMPILE_CUSTOM_KERNELS="${COMPILE_CUSTOM_KERNELS:-0}"
 mkdir -p "${CURRENT_USER_CACHE_HOME}/pip" "${CURRENT_USER_CONFIG_HOME}"
 
 PYTHON_BIN="$(hust_resolve_python_bin 2>/dev/null)" || {
@@ -115,6 +114,7 @@ if ! (
   export XDG_CACHE_HOME="${CURRENT_USER_CACHE_HOME}"
   export XDG_CONFIG_HOME="${CURRENT_USER_CONFIG_HOME}"
   export PIP_CACHE_DIR="${CURRENT_USER_CACHE_HOME}/pip"
+  export COMPILE_CUSTOM_KERNELS=0
   hust_run_pip install -e "${PLUGIN_REPO}" --no-build-isolation --no-deps
 ); then
   echo "[WARN] Local editable install failed."
