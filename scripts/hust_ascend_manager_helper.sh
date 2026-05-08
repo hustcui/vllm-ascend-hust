@@ -30,8 +30,11 @@ _resolve_hust_ascend_manager_conda_python() {
 
 _resolve_hust_ascend_manager_python() {
   if [[ -n "${VLLM_HUST_PYTHON_BIN:-}" ]]; then
-    printf '%s\n' "${VLLM_HUST_PYTHON_BIN}"
-    return 0
+    if [[ -x "${VLLM_HUST_PYTHON_BIN}" ]]; then
+      printf '%s\n' "${VLLM_HUST_PYTHON_BIN}"
+      return 0
+    fi
+    echo "[WARN] VLLM_HUST_PYTHON_BIN is set but not executable: ${VLLM_HUST_PYTHON_BIN}" >&2
   fi
 
   if _resolve_hust_ascend_manager_conda_python >/dev/null 2>&1; then
