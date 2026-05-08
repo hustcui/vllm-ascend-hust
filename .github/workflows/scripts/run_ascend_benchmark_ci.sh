@@ -201,6 +201,7 @@ fi
 select_ascend_device() {
   ASCEND_DEVICE_SELECTION_ATTEMPT="${1:-1}" NPU_SMI_BIN="${2:-}" "${PYTHON_BIN}" - <<'PY'
 import os
+from pathlib import Path
 import re
 import subprocess
 import sys
@@ -239,6 +240,15 @@ def list_status_devices(info_output: str) -> list[int]:
       status_devices.add(int(left_column[0]))
 
   return sorted(status_devices)
+
+
+def list_devnode_devices() -> list[int]:
+  devnode_devices = set()
+  for device_path in Path("/dev").glob("davinci[0-9]*"):
+    suffix = device_path.name.removeprefix("davinci")
+    if suffix.isdigit():
+      devnode_devices.add(int(suffix))
+  return sorted(devnode_devices)
 
 
 def run_npu_smi(*args: str) -> subprocess.CompletedProcess[str] | None:
@@ -343,6 +353,12 @@ elif info_result is not None:
 if logical_devices:
   fallback_device = logical_devices[(selection_attempt - 1) % len(logical_devices)]
   print(f"{fallback_device}\tfallback-round-robin")
+  sys.exit(0)
+
+devnode_devices = list_devnode_devices()
+if devnode_devices:
+  fallback_device = devnode_devices[(selection_attempt - 1) % len(devnode_devices)]
+  print(f"{fallback_device}\tdevnode-round-robin")
 PY
 }
 
