@@ -43,9 +43,7 @@ jobs:
     with:
       vllm: d886c26d4d4fef7d079696beb4ece1cfb4b008a8
   changes:
-    runs-on: linux-aarch64-a2b3-0
-    container:
-      image: swr.cn-southwest-2.myhuaweicloud.com/base_image/ascend-ci/vllm-ascend:nightly-cpu
+    runs-on: ubuntu-latest
     outputs:
       e2e_tracker: ${{ steps.filter.outputs.e2e_tracker }}
       _310_tracker: ${{ steps.filter.outputs._310_tracker }}
@@ -94,7 +92,7 @@ jobs:
         run: |
           git config --global --add safe.directory /__w/vllm-ascend/vllm-ascend
           git fetch origin ${{ github.base_ref }}
-          pip install pyyaml
+          python3 -m pip install pyyaml
           python3 .github/workflows/scripts/determine_smart_e2e_scope.py \
             --diff-base origin/${{ github.base_ref }} \
             --run-all-cpu
