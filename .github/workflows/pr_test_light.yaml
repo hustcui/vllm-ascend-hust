@@ -152,6 +152,10 @@ jobs:
     needs: [lint, changes]
     name: smart test
     if: ${{ needs.lint.result == 'success' && needs.changes.outputs.has_tests == 'true' }}
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
     strategy:
       matrix:
         vllm_version: [d886c26d4d4fef7d079696beb4ece1cfb4b008a8]
