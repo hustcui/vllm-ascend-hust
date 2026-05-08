@@ -263,6 +263,7 @@ jobs:
           export PYTHONPATH="$VLLM_HUST_REPO:$VLLM_HUST_BENCHMARK_REPO/src${PYTHONPATH:+:$PYTHONPATH}"
           hust_run_pip install "torch==2.9.0" "torch-npu==2.9.0"
           hust_run_pip install "numpy<2.0.0" scipy attrs decorator psutil
+          hust_run_pip install -r "$VLLM_HUST_REPO/requirements/common.txt"
           bash scripts/install_local_ascend_plugin.sh "$GITHUB_WORKSPACE"
           hust_run_pip install "huggingface_hub>=0.20" jsonschema
 
