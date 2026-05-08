@@ -223,6 +223,24 @@ def list_logical_devices(mapping_output: str) -> list[int]:
   return sorted(logical_devices)
 
 
+def list_status_devices(info_output: str) -> list[int]:
+  status_devices = set()
+  for raw_line in info_output.splitlines():
+    line = raw_line.strip()
+    if not line.startswith("|"):
+      continue
+
+    parts = [part.strip() for part in line.strip("|").split("|")]
+    if len(parts) < 2:
+      continue
+
+    left_column = parts[0].split()
+    if len(left_column) >= 2 and left_column[0].isdigit() and parts[1] and ":" not in parts[1]:
+      status_devices.add(int(left_column[0]))
+
+  return sorted(status_devices)
+
+
 def run_npu_smi(*args: str) -> subprocess.CompletedProcess[str] | None:
   npu_smi_bin = os.environ.get("NPU_SMI_BIN")
   if not npu_smi_bin:
@@ -244,8 +262,7 @@ def run_npu_smi(*args: str) -> subprocess.CompletedProcess[str] | None:
     return None
 
 
-def select_best_idle_device(mapping_output: str, info_output: str) -> int | None:
-  logical_map = parse_logical_map(mapping_output)
+def select_best_idle_device(info_output: str, logical_map: dict[tuple[str, str], int]) -> tuple[int, str] | None:
   hbm_usage_pattern = re.compile(r"(\d+)\s*/\s*(\d+)\s*$")
   device_stats = []
   current_npu_id = None
@@ -274,8 +291,12 @@ def select_best_idle_device(mapping_output: str, info_output: str) -> int | None
 
     chip_id = left_column[0]
     logical_id = logical_map.get((current_npu_id, chip_id))
+    device_source = "idle"
     if logical_id is None:
-      continue
+      if chip_id != "0":
+        continue
+      logical_id = int(current_npu_id)
+      device_source = "status-fallback"
 
     hbm_match = hbm_usage_pattern.search(parts[2])
     if hbm_match is None:
@@ -284,35 +305,41 @@ def select_best_idle_device(mapping_output: str, info_output: str) -> int | None
     used_memory_mb = int(hbm_match.group(1))
     total_memory_mb = int(hbm_match.group(2))
     free_memory_mb = max(0, total_memory_mb - used_memory_mb)
-    device_stats.append((logical_id, free_memory_mb, total_memory_mb))
+    device_stats.append((logical_id, free_memory_mb, total_memory_mb, device_source))
 
   if not device_stats:
     return None
 
-  device_stats.sort(key=lambda item: (-item[1], item[0]))
-  return device_stats[0][0]
+  device_stats.sort(key=lambda item: (-item[1], item[0], item[3]))
+  selected_device, _, _, selected_source = device_stats[0]
+  return selected_device, selected_source
 
 mapping_result = run_npu_smi("info", "-m")
-if mapping_result is None:
-  sys.exit(0)
-
-if mapping_result.returncode != 0:
+logical_map = {}
+logical_devices = []
+if mapping_result is not None and mapping_result.returncode == 0:
+  logical_map = parse_logical_map(mapping_result.stdout)
+  logical_devices = list_status_devices(mapping_result.stdout)
+elif mapping_result is not None:
   print(f"npu-smi info -m returned {mapping_result.returncode}: {mapping_result.stderr.strip()}", file=sys.stderr)
-  sys.exit(0)
 
 selection_attempt = max(1, int(os.environ.get("ASCEND_DEVICE_SELECTION_ATTEMPT", "1")))
 
-selected_device = None
 info_result = run_npu_smi("info")
 if info_result is not None and info_result.returncode == 0:
-  selected_device = select_best_idle_device(mapping_result.stdout, info_result.stdout)
+  selected_device = select_best_idle_device(info_result.stdout, logical_map)
+  if selected_device is not None:
+    device_id, device_source = selected_device
+    print(f"{device_id}\t{device_source}")
+    sys.exit(0)
+  status_devices = list_status_devices(info_result.stdout)
+  if status_devices:
+    fallback_device = status_devices[(selection_attempt - 1) % len(status_devices)]
+    print(f"{fallback_device}\tstatus-round-robin")
+    sys.exit(0)
 elif info_result is not None:
   print(f"npu-smi info returned {info_result.returncode}: {info_result.stderr.strip()}", file=sys.stderr)
-if selected_device is not None:
-  print(f"{selected_device}\tidle")
-  sys.exit(0)
 
-logical_devices = list_logical_devices(mapping_result.stdout)
 if logical_devices:
   fallback_device = logical_devices[(selection_attempt - 1) % len(logical_devices)]
   print(f"{fallback_device}\tfallback-round-robin")
