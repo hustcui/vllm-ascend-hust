@@ -82,7 +82,7 @@ cleanup() {
 
 start_server() {
   if command -v setsid >/dev/null 2>&1; then
-    setsid "${VLLM_CLI[@]}" serve "$MODEL_NAME" \
+    setsid env VLLM_ASCEND_TORCH_PREFLIGHT=0 "${VLLM_CLI[@]}" serve "$MODEL_NAME" \
       --host "$HOST" \
       --port "$PORT" \
       --dtype "$DTYPE" \
@@ -92,7 +92,7 @@ start_server() {
     server_pid=$!
     server_group_pid=$server_pid
   else
-    "${VLLM_CLI[@]}" serve "$MODEL_NAME" \
+    env VLLM_ASCEND_TORCH_PREFLIGHT=0 "${VLLM_CLI[@]}" serve "$MODEL_NAME" \
       --host "$HOST" \
       --port "$PORT" \
       --dtype "$DTYPE" \
