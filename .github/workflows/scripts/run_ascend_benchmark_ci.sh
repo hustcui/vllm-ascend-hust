@@ -55,6 +55,8 @@ PYTHON_BIN="$(hust_resolve_python_bin 2>/dev/null)" || {
   exit 1
 }
 
+export PYTHONPATH="${VLLM_HUST_REPO}:${VLLM_HUST_BENCHMARK_REPO}/src${PYTHONPATH:+:${PYTHONPATH}}"
+
 server_pid=""
 server_group_pid=""
 

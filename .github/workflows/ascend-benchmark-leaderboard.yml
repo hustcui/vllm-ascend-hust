@@ -259,19 +259,29 @@ jobs:
         run: |
           mkdir -p "$HOME" "$XDG_CACHE_HOME" "$XDG_CONFIG_HOME"
           source scripts/use_single_ascend_env.sh
-          hust_run_pip install -e "$VLLM_HUST_REPO" --no-build-isolation --no-deps
+          export PYTHONPATH="$VLLM_HUST_REPO:$VLLM_HUST_BENCHMARK_REPO/src${PYTHONPATH:+:$PYTHONPATH}"
+          hust_run_pip install "torch==2.9.0" "torch-npu==2.9.0"
           bash scripts/install_local_ascend_plugin.sh "$GITHUB_WORKSPACE"
-          hust_run_pip install -e "${VLLM_HUST_BENCHMARK_REPO}[publish]" jsonschema
+          hust_run_pip install "huggingface_hub>=0.20" jsonschema
 
       - name: Verify installation
+        env:
+          VLLM_HUST_REPO: ${{ github.workspace }}/vllm-hust
+          VLLM_HUST_BENCHMARK_REPO: ${{ github.workspace }}/vllm-hust-benchmark
         run: |
           source scripts/use_single_ascend_env.sh
+          export PYTHONPATH="$VLLM_HUST_REPO:$VLLM_HUST_BENCHMARK_REPO/src${PYTHONPATH:+:$PYTHONPATH}"
           PYTHON_BIN="$(hust_resolve_python_bin)"
           "$PYTHON_BIN" --version
           "$PYTHON_BIN" - <<'PY'
+          import torch
+          import torch_npu
           import vllm
+          import vllm_hust_benchmark.cli
           from vllm_ascend._version import __version__ as plugin_version
 
+          print(f'torch version: {torch.__version__}')
+          print(f'torch_npu version: {torch_npu.__version__}')
           print(f'vLLM version: {vllm.__version__}')
           print(f'vLLM Ascend Hust version: {plugin_version}')
           PY
