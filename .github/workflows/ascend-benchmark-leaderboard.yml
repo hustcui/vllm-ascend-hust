@@ -33,7 +33,7 @@ on:
         description: Model used for the benchmark run
         required: false
         type: string
-        default: Qwen/Qwen2.5-0.5B-Instruct
+        default: Qwen/Qwen2.5-14B-Instruct
       dataset_path:
         description: Dataset path on the trusted runner for formal workloads such as sharegpt-online
         required: false
@@ -48,12 +48,12 @@ on:
         description: Number of prompts to benchmark
         required: false
         type: string
-        default: "8"
+        default: "200"
       request_rate:
         description: Request rate passed to vllm bench serve
         required: false
         type: string
-        default: inf
+        default: "1"
       max_concurrency:
         description: Max concurrency passed to vllm bench serve
         required: false
@@ -97,20 +97,20 @@ jobs:
       ASCEND_HUST_TARGET: ${{ github.event_name == 'workflow_dispatch' && inputs.ascend_hust_target || format('{0}@{1}', github.repository, github.ref_name) }}
       VLLM_HUST_CONDA_ENV: vllm-hust-dev
       VLLM_HUST_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.vllm_hust_ref || vars.VLLM_ASCEND_HUST_VLLM_HUST_REF || 'main' }}
-      MODEL_NAME: ${{ github.event_name == 'workflow_dispatch' && inputs.model_name || 'Qwen/Qwen2.5-0.5B-Instruct' }}
+      MODEL_NAME: ${{ github.event_name == 'workflow_dispatch' && inputs.model_name || 'Qwen/Qwen2.5-14B-Instruct' }}
       SOC_VERSION: ascend910b1
       BENCH_SCENARIO: ${{ github.event_name == 'workflow_dispatch' && inputs.benchmark_scenario || (github.event_name == 'pull_request' && vars.VLLM_ASCEND_HUST_PR_BENCHMARK_SCENARIO) || (github.event_name == 'push' && vars.VLLM_ASCEND_HUST_MAIN_BENCHMARK_SCENARIO) || 'random-online' }}
       BENCH_DATASET_PATH: ${{ github.event_name == 'workflow_dispatch' && inputs.dataset_path || (github.event_name == 'pull_request' && vars.VLLM_ASCEND_HUST_PR_BENCHMARK_DATASET_PATH) || (github.event_name == 'push' && vars.VLLM_ASCEND_HUST_MAIN_BENCHMARK_DATASET_PATH) || '' }}
       BENCH_CONSTRAINTS_FILE: ${{ github.event_name == 'workflow_dispatch' && inputs.constraints_file || (github.event_name == 'pull_request' && vars.VLLM_ASCEND_HUST_PR_BENCHMARK_CONSTRAINTS_FILE) || (github.event_name == 'push' && vars.VLLM_ASCEND_HUST_MAIN_BENCHMARK_CONSTRAINTS_FILE) || '' }}
-      MODEL_PARAMETERS: 0.5B
-      MODEL_PRECISION: BF16
-      DTYPE: bfloat16
-      MAX_MODEL_LEN: "256"
+      MODEL_PARAMETERS: 14B
+      MODEL_PRECISION: FP16
+      DTYPE: float16
+      MAX_MODEL_LEN: "1024"
       MAX_NUM_SEQS: "1"
-      BENCH_NUM_PROMPTS: ${{ github.event_name == 'workflow_dispatch' && inputs.num_prompts || '8' }}
-      BENCH_RANDOM_INPUT_LEN: "64"
-      BENCH_RANDOM_OUTPUT_LEN: "16"
-      BENCH_REQUEST_RATE: ${{ github.event_name == 'workflow_dispatch' && inputs.request_rate || 'inf' }}
+      BENCH_NUM_PROMPTS: ${{ github.event_name == 'workflow_dispatch' && inputs.num_prompts || '200' }}
+      BENCH_RANDOM_INPUT_LEN: "1024"
+      BENCH_RANDOM_OUTPUT_LEN: "256"
+      BENCH_REQUEST_RATE: ${{ github.event_name == 'workflow_dispatch' && inputs.request_rate || '1' }}
       BENCH_MAX_CONCURRENCY: ${{ github.event_name == 'workflow_dispatch' && inputs.max_concurrency || '4' }}
       BENCH_INPUT_LEN: ''
       BENCH_OUTPUT_LEN: ''
@@ -119,6 +119,8 @@ jobs:
       CHIP_COUNT: "1"
       NODE_COUNT: "1"
       ALLOW_RANDOM_HF_PUBLISH: ${{ vars.VLLM_ASCEND_HUST_ALLOW_RANDOM_HF_PUBLISH || '0' }}
+      SYNC_GITHUB_SNAPSHOTS: ${{ vars.VLLM_ASCEND_HUST_SYNC_BENCHMARK_SNAPSHOTS_TO_GITHUB || '1' }}
+      GITHUB_SNAPSHOT_TARGET_BRANCH: ${{ vars.VLLM_HUST_BENCHMARK_SNAPSHOT_BRANCH || 'main' }}
       WEBSITE_LEADERBOARD_URL: ${{ vars.VLLM_ASCEND_HUST_LEADERBOARD_URL || vars.VLLM_HUST_LEADERBOARD_URL || '' }}
       PUBLISH_TO_HF: ${{ (((github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.VLLM_ASCEND_HUST_PUBLISH_BENCHMARK_ON_MAIN == '1') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && vars.VLLM_ASCEND_HUST_PUBLISH_BENCHMARK_ON_PR == '1') || (github.event_name == 'workflow_dispatch' && inputs.publish_to_hf)) && secrets.HF_TOKEN != '') && '1' || '0' }}
       HUST_ASCEND_MANAGER_REPO: ${{ github.workspace }}/ascend-runtime-manager
@@ -224,7 +226,7 @@ jobs:
           path: vllm-hust-benchmark
           ssh-key: ${{ secrets.VLLM_ASCEND_HUST_BENCHMARK_SSH_KEY }}
           ssh-strict: ${{ env.BENCHMARK_CHECKOUT_USE_SSH_443 != '1' }}
-          persist-credentials: false
+          persist-credentials: true
 
       - name: Checkout ascend-runtime-manager repo
         uses: actions/checkout@v6.0.1
@@ -323,6 +325,26 @@ jobs:
 
           exit "$benchmark_exit_code"
 
+      - name: Sync GitHub leaderboard snapshots
+        if: ${{ success() && env.SYNC_GITHUB_SNAPSHOTS == '1' }}
+        env:
+          BENCHMARK_REPO_DIR: ${{ github.workspace }}/vllm-hust-benchmark
+          WEBSITE_REPO_DIR: ${{ github.workspace }}/vllm-hust-website
+          SNAPSHOT_TARGET_BRANCH: ${{ env.GITHUB_SNAPSHOT_TARGET_BRANCH }}
+        run: |
+          if [[ "${BENCHMARK_EXIT_CODE:-}" != "0" ]]; then
+            echo "Skipping GitHub snapshot sync because BENCHMARK_EXIT_CODE=${BENCHMARK_EXIT_CODE:-unset}."
+            exit 0
+          fi
+
+          source scripts/use_single_ascend_env.sh
+          export PYTHONPATH="${GITHUB_WORKSPACE}/vllm-hust:${GITHUB_WORKSPACE}/vllm-hust-benchmark/src${PYTHONPATH:+:$PYTHONPATH}"
+          PYTHON_BIN="$(hust_resolve_python_bin)"
+          export PYTHON_BIN
+          export CURRENT_SUBMISSION_DIR="${GITHUB_WORKSPACE}/.benchmarks/ci/${RUN_ID}/submissions/${RUN_ID}"
+          export SNAPSHOT_COMMIT_MESSAGE="chore: sync vllm-ascend benchmark snapshots ${RUN_ID}"
+          bash .github/workflows/scripts/sync_benchmark_snapshots_to_github.sh
+
       - name: Build benchmark summary artifacts
         if: always()
         run: |
@@ -342,10 +364,19 @@ jobs:
           comment_path = result_root / 'benchmark_comment.md'
           run_url = f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}"
           bench_scenario = os.environ.get('BENCH_SCENARIO', 'random-online')
-          publish_mode = 'hf-sync' if os.environ.get('PUBLISH_TO_HF') == '1' else 'artifact-preview'
           benchmark_exit_code = os.environ.get('BENCHMARK_EXIT_CODE', '0')
+          publish_modes = []
+          if os.environ.get('PUBLISH_TO_HF') == '1':
+            publish_modes.append('hf-sync')
+          else:
+            publish_modes.append('artifact-preview')
+          if os.environ.get('SYNC_GITHUB_SNAPSHOTS') == '1' and benchmark_exit_code == '0':
+            publish_modes.append('github-snapshot')
+          publish_mode = '+'.join(publish_modes)
           model_name = os.environ.get('MODEL_NAME', 'unknown')
           hf_repo = os.environ.get('HF_REPO_ID', 'unknown')
+          github_snapshot_status = os.environ.get('GITHUB_SNAPSHOT_SYNC_STATUS')
+          github_snapshot_commit = os.environ.get('GITHUB_SNAPSHOT_SYNC_COMMIT')
           leaderboard_url = os.environ.get('WEBSITE_LEADERBOARD_URL', '').strip()
           vllm_hust_ref = os.environ.get('VLLM_HUST_REF', 'main')
           ascend_hust_repository = os.environ.get('ASCEND_HUST_TARGET_REPOSITORY', os.environ.get('GITHUB_REPOSITORY', 'unknown'))
@@ -394,13 +425,34 @@ jobs:
           else:
             lines.append('- Raw benchmark result: `missing`')
             comment_lines.append('- Raw benchmark result: `missing`')
+          artifact = None
           if leaderboard_entry.is_file():
             artifact = json.loads(leaderboard_entry.read_text(encoding='utf-8'))
             lines.append(f"- Leaderboard engine version: `{artifact.get('engine_version')}`")
             comment_lines.append(f"- Leaderboard engine version: `{artifact.get('engine_version')}`")
+            same_spec = artifact.get('same_spec') if isinstance(artifact, dict) else None
+            if isinstance(same_spec, dict):
+              spec_id = same_spec.get('spec_id') or 'unknown'
+              spec_hash = str(same_spec.get('resolved_spec_hash') or '')
+              spec_note = f'- Same-spec goal artifact: `{spec_id}`'
+              if spec_hash:
+                spec_note += f' (`{spec_hash[:8]}`)'
+              lines.append(spec_note)
+              comment_lines.append(spec_note)
           else:
             lines.append('- Leaderboard entry: `missing`')
             comment_lines.append('- Leaderboard entry: `missing`')
+
+          if github_snapshot_status:
+            snapshot_note = f'- GitHub snapshot sync: `{github_snapshot_status}`'
+            if github_snapshot_commit:
+              snapshot_note += f' (`{github_snapshot_commit[:8]}`)'
+            lines.append(snapshot_note)
+            comment_lines.append(snapshot_note)
+          elif os.environ.get('SYNC_GITHUB_SNAPSHOTS') == '1' and benchmark_exit_code == '75':
+            snapshot_note = '- GitHub snapshot sync: `skipped` because benchmark did not produce publishable results'
+            lines.append(snapshot_note)
+            comment_lines.append(snapshot_note)
 
           if bench_scenario != 'random-online':
             dataset_path = os.environ.get('BENCH_DATASET_PATH') or 'unset'
@@ -409,7 +461,7 @@ jobs:
             lines.append(f'- Constraints file: `{constraints_path}`')
             comment_lines.append(f'- Dataset path: `{dataset_path}`')
             comment_lines.append(f'- Constraints file: `{constraints_path}`')
-          elif publish_mode == 'artifact-preview':
+          elif publish_mode == 'artifact-preview' and not (artifact and isinstance(artifact.get('same_spec'), dict)):
             note = '- Note: random-online runs stay as preview artifacts unless random preview publish is explicitly enabled.'
             lines.append(note)
             comment_lines.append(note)

@@ -28,20 +28,23 @@ BENCH_SCENARIO=${BENCH_SCENARIO:-random-online}
 BENCH_DATASET_PATH=${BENCH_DATASET_PATH:-}
 BENCH_CONSTRAINTS_FILE=${BENCH_CONSTRAINTS_FILE:-}
 ALLOW_RANDOM_HF_PUBLISH=${ALLOW_RANDOM_HF_PUBLISH:-0}
+SAME_SPEC_BENCHMARK_ENABLED=${SAME_SPEC_BENCHMARK_ENABLED:-1}
+SAME_SPEC_SPEC_FILE=${SAME_SPEC_SPEC_FILE:-$VLLM_HUST_BENCHMARK_REPO/docs/official-baselines/official-ascend-jan-2026-v0110-random-online-qwen25-14b-910b3.json}
+SAME_SPEC_CONSTRAINTS_FILE=${SAME_SPEC_CONSTRAINTS_FILE:-$VLLM_HUST_BENCHMARK_REPO/docs/official-baselines/official-ascend-constraints.stub.json}
 
-MODEL_NAME=${MODEL_NAME:-Qwen/Qwen2.5-0.5B-Instruct}
-MODEL_PARAMETERS=${MODEL_PARAMETERS:-0.5B}
-MODEL_PRECISION=${MODEL_PRECISION:-BF16}
+MODEL_NAME=${MODEL_NAME:-Qwen/Qwen2.5-14B-Instruct}
+MODEL_PARAMETERS=${MODEL_PARAMETERS:-14B}
+MODEL_PRECISION=${MODEL_PRECISION:-FP16}
 HOST=${HOST:-127.0.0.1}
 PORT=${PORT:-}
-DTYPE=${DTYPE:-bfloat16}
-MAX_MODEL_LEN=${MAX_MODEL_LEN:-256}
+DTYPE=${DTYPE:-float16}
+MAX_MODEL_LEN=${MAX_MODEL_LEN:-1024}
 MAX_NUM_SEQS=${MAX_NUM_SEQS:-1}
-BENCH_NUM_PROMPTS=${BENCH_NUM_PROMPTS:-8}
-BENCH_RANDOM_INPUT_LEN=${BENCH_RANDOM_INPUT_LEN:-64}
-BENCH_RANDOM_OUTPUT_LEN=${BENCH_RANDOM_OUTPUT_LEN:-16}
+BENCH_NUM_PROMPTS=${BENCH_NUM_PROMPTS:-200}
+BENCH_RANDOM_INPUT_LEN=${BENCH_RANDOM_INPUT_LEN:-1024}
+BENCH_RANDOM_OUTPUT_LEN=${BENCH_RANDOM_OUTPUT_LEN:-256}
 BENCH_RANDOM_BATCH_SIZE=${BENCH_RANDOM_BATCH_SIZE:-1}
-BENCH_REQUEST_RATE=${BENCH_REQUEST_RATE:-inf}
+BENCH_REQUEST_RATE=${BENCH_REQUEST_RATE:-1}
 BENCH_MAX_CONCURRENCY=${BENCH_MAX_CONCURRENCY:-4}
 BENCH_INPUT_LEN=${BENCH_INPUT_LEN:-}
 BENCH_OUTPUT_LEN=${BENCH_OUTPUT_LEN:-}
@@ -101,6 +104,11 @@ cleanup() {
   server_pid=""
   server_group_pid=""
   rm -f "$SERVER_PID_MARKER" "$SERVER_PGID_MARKER"
+}
+
+same_spec_server_log_indicates_resource_busy() {
+  local same_spec_server_log=$RESULT_ROOT/server.stdout.log
+  [[ -f "$same_spec_server_log" ]] && grep -qE 'Resource_Busy\(EL0005\)|aclInit, error code is 507899|The resources are busy' "$same_spec_server_log"
 }
 
 server_log_indicates_resource_busy() {
@@ -244,6 +252,67 @@ start_server() {
     server_pid=$!
     printf '%s\n' "$server_pid" >"$SERVER_PID_MARKER"
   fi
+}
+
+run_same_spec_current_benchmark() {
+  local same_spec_runner=$VLLM_HUST_BENCHMARK_REPO/scripts/run-current-ascend-same-spec.sh
+  local same_spec_raw_result=$RESULT_ROOT/raw_benchmark_result.json
+  local same_spec_submission_dir=$RESULT_ROOT/submission
+  local current_vllm_hust_commit
+
+  if [[ ! -f "$same_spec_runner" ]]; then
+    echo "same-spec benchmark runner not found: $same_spec_runner" >&2
+    return 2
+  fi
+  if [[ ! -f "$SAME_SPEC_SPEC_FILE" ]]; then
+    echo "same-spec benchmark spec file not found: $SAME_SPEC_SPEC_FILE" >&2
+    return 2
+  fi
+  if [[ ! -f "$SAME_SPEC_CONSTRAINTS_FILE" ]]; then
+    echo "same-spec benchmark constraints file not found: $SAME_SPEC_CONSTRAINTS_FILE" >&2
+    return 2
+  fi
+
+  current_vllm_hust_commit=$(git -C "$VLLM_HUST_REPO" rev-parse HEAD 2>/dev/null || true)
+  rm -f "$same_spec_raw_result" "$RAW_RESULT_FILE"
+  rm -rf "$same_spec_submission_dir" "$SUBMISSION_DIR"
+
+  env \
+    VLLM_HUST_WORKSPACE_ROOT="$WORKSPACE_ROOT" \
+    CURRENT_RUNTIME_CWD=/tmp \
+    CURRENT_RUNTIME_PYTHON="$PYTHON_BIN" \
+    CURRENT_VLLM_HUST_REPO="$VLLM_HUST_REPO" \
+    CURRENT_VLLM_ASCEND_HUST_REPO="$VLLM_ASCEND_HUST_REPO" \
+    CURRENT_VLLM_CACHE_ROOT="$CI_RUNTIME_ROOT/current-ascend-same-spec-cache" \
+    CURRENT_GITHUB_REPOSITORY="vLLM-HUST/vllm-hust" \
+    CURRENT_GITHUB_REF="$VLLM_HUST_REF" \
+    CURRENT_GIT_COMMIT="$current_vllm_hust_commit" \
+    CURRENT_PLUGIN_ENGINE="vllm-ascend-hust" \
+    CURRENT_PLUGIN_GITHUB_REPOSITORY="$ASCEND_HUST_TARGET_REPOSITORY" \
+    CURRENT_PLUGIN_GITHUB_REF="$ASCEND_HUST_TARGET_REF" \
+    CURRENT_PLUGIN_GIT_COMMIT="$ASCEND_HUST_TARGET_SHA" \
+    CURRENT_SUBMITTER="${GITHUB_ACTOR:-ci}" \
+    CURRENT_DATA_SOURCE="vllm-ascend-hust-ci-same-spec" \
+    RESULT_DIR="$RESULT_ROOT" \
+    RUN_ID="$RUN_ID" \
+    CURRENT_SERVER_PORT="$PORT" \
+    CURRENT_CLIENT_PORT="$PORT" \
+    CONSTRAINTS_FILE="$SAME_SPEC_CONSTRAINTS_FILE" \
+    bash "$same_spec_runner" "$SAME_SPEC_SPEC_FILE"
+
+  if [[ ! -f "$same_spec_raw_result" ]]; then
+    echo "same-spec benchmark did not produce raw result: $same_spec_raw_result" >&2
+    return 2
+  fi
+  if [[ ! -f "$same_spec_submission_dir/leaderboard_manifest.json" || ! -f "$same_spec_submission_dir/run_leaderboard.json" ]]; then
+    echo "same-spec benchmark did not produce submission artifacts under: $same_spec_submission_dir" >&2
+    return 2
+  fi
+
+  mkdir -p "$SUBMISSION_DIR"
+  cp "$same_spec_raw_result" "$RAW_RESULT_FILE"
+  cp "$same_spec_submission_dir/leaderboard_manifest.json" "$SUBMISSION_DIR/leaderboard_manifest.json"
+  cp "$same_spec_submission_dir/run_leaderboard.json" "$SUBMISSION_DIR/run_leaderboard.json"
 }
 
 allocate_local_port() {
@@ -460,12 +529,17 @@ echo "result root: $RESULT_ROOT"
 echo "benchmark port: $PORT"
 echo "benchmark scenario: $BENCH_SCENARIO"
 echo "publish to hf: $PUBLISH_TO_HF"
+echo "same-spec benchmark enabled: $SAME_SPEC_BENCHMARK_ENABLED"
 
 case "$BENCH_SCENARIO" in
   random-online)
     EFFECTIVE_INPUT_LEN=${BENCH_INPUT_LEN:-$BENCH_RANDOM_INPUT_LEN}
     EFFECTIVE_OUTPUT_LEN=${BENCH_OUTPUT_LEN:-$BENCH_RANDOM_OUTPUT_LEN}
-    EFFECTIVE_CONSTRAINTS_FILE=${BENCH_CONSTRAINTS_FILE:-$VLLM_ASCEND_HUST_REPO/.github/workflows/data/random-online-ci-constraints.json}
+    if [[ "$SAME_SPEC_BENCHMARK_ENABLED" == "1" ]]; then
+      EFFECTIVE_CONSTRAINTS_FILE=$SAME_SPEC_CONSTRAINTS_FILE
+    else
+      EFFECTIVE_CONSTRAINTS_FILE=${BENCH_CONSTRAINTS_FILE:-$VLLM_ASCEND_HUST_REPO/.github/workflows/data/random-online-ci-constraints.json}
+    fi
     bench_args=(
       --backend vllm
       --endpoint /v1/completions
@@ -506,7 +580,7 @@ case "$BENCH_SCENARIO" in
     ;;
 esac
 
-if [[ "$PUBLISH_TO_HF" == "1" && "$BENCH_SCENARIO" == "random-online" && "$ALLOW_RANDOM_HF_PUBLISH" != "1" ]]; then
+if [[ "$SAME_SPEC_BENCHMARK_ENABLED" != "1" && "$PUBLISH_TO_HF" == "1" && "$BENCH_SCENARIO" == "random-online" && "$ALLOW_RANDOM_HF_PUBLISH" != "1" ]]; then
   echo "Refusing to publish random-online CI preview to HF without ALLOW_RANDOM_HF_PUBLISH=1" >&2
   exit 2
 fi
@@ -516,154 +590,207 @@ if [[ ! -f "$EFFECTIVE_CONSTRAINTS_FILE" ]]; then
   exit 2
 fi
 
-server_ready_max_attempts=$(((SERVER_READY_TIMEOUT_SECONDS + SERVER_READY_POLL_SECONDS - 1) / SERVER_READY_POLL_SECONDS))
-if (( server_ready_max_attempts < 1 )); then
-  server_ready_max_attempts=1
-fi
+if [[ "$BENCH_SCENARIO" == "random-online" && "$SAME_SPEC_BENCHMARK_ENABLED" == "1" ]]; then
+  for start_attempt in $(seq 1 "$SERVER_START_RETRIES"); do
+    if [[ "$CHIP_COUNT" == "1" ]]; then
+      SELECTED_ASCEND_DEVICE_INFO="$(select_ascend_device "$start_attempt" "$NPU_SMI_BIN")"
+      if [[ -n "$SELECTED_ASCEND_DEVICE_INFO" ]]; then
+        IFS=$'\t' read -r SELECTED_ASCEND_DEVICE SELECTED_ASCEND_DEVICE_SOURCE <<<"$SELECTED_ASCEND_DEVICE_INFO"
+        export ASCEND_RT_VISIBLE_DEVICES="$SELECTED_ASCEND_DEVICE"
+        export VLLM_ASCEND_TORCH_PREFLIGHT_DEVICE="npu:0"
+        echo "selected single-card Ascend device: $ASCEND_RT_VISIBLE_DEVICES (${SELECTED_ASCEND_DEVICE_SOURCE})"
+      else
+        unset ASCEND_RT_VISIBLE_DEVICES
+        unset VLLM_ASCEND_TORCH_PREFLIGHT_DEVICE
+        echo "Could not resolve a single-card Ascend device; probing runtime without device scoping"
+      fi
+    fi
 
-server_ready=0
-
-for start_attempt in $(seq 1 "$SERVER_START_RETRIES"); do
-  if [[ "$CHIP_COUNT" == "1" ]]; then
-    SELECTED_ASCEND_DEVICE_INFO="$(select_ascend_device "$start_attempt" "$NPU_SMI_BIN")"
-    if [[ -n "$SELECTED_ASCEND_DEVICE_INFO" ]]; then
-      IFS=$'\t' read -r SELECTED_ASCEND_DEVICE SELECTED_ASCEND_DEVICE_SOURCE <<<"$SELECTED_ASCEND_DEVICE_INFO"
-      export ASCEND_RT_VISIBLE_DEVICES="$SELECTED_ASCEND_DEVICE"
-      export VLLM_ASCEND_TORCH_PREFLIGHT_DEVICE="npu:0"
-      echo "selected single-card Ascend device: $ASCEND_RT_VISIBLE_DEVICES (${SELECTED_ASCEND_DEVICE_SOURCE})"
+    if wait_for_ascend_runtime_ready; then
+      runtime_ready_status=0
     else
-      unset ASCEND_RT_VISIBLE_DEVICES
-      unset VLLM_ASCEND_TORCH_PREFLIGHT_DEVICE
-      echo "Could not resolve a single-card Ascend device; probing runtime without device scoping"
+      runtime_ready_status=$?
     fi
-  fi
 
-  if wait_for_ascend_runtime_ready; then
-    runtime_ready_status=0
-  else
-    runtime_ready_status=$?
-  fi
-
-  if [[ "$runtime_ready_status" -ne 0 ]]; then
-    echo "Ascend runtime did not become ready after ${ASCEND_RUNTIME_READY_TIMEOUT_SECONDS}s"
-    if [[ "$start_attempt" -lt "$SERVER_START_RETRIES" ]]; then
-      echo "Retrying server start after runtime readiness failure in ${SERVER_START_RETRY_DELAY_SECONDS}s (attempt ${start_attempt}/${SERVER_START_RETRIES})"
-      sleep "$SERVER_START_RETRY_DELAY_SECONDS"
-      continue
+    if [[ "$runtime_ready_status" -ne 0 ]]; then
+      echo "Ascend runtime did not become ready after ${ASCEND_RUNTIME_READY_TIMEOUT_SECONDS}s"
+      if [[ "$start_attempt" -lt "$SERVER_START_RETRIES" ]]; then
+        echo "Retrying same-spec benchmark after runtime readiness failure in ${SERVER_START_RETRY_DELAY_SECONDS}s (attempt ${start_attempt}/${SERVER_START_RETRIES})"
+        sleep "$SERVER_START_RETRY_DELAY_SECONDS"
+        continue
+      fi
+      if [[ "$runtime_ready_status" -eq "$RESOURCE_BUSY_EXIT_CODE" ]]; then
+        echo "Detected transient Ascend resource busy state during runtime readiness after exhausting ${SERVER_START_RETRIES} start attempt(s)"
+        exit "$RESOURCE_BUSY_EXIT_CODE"
+      fi
+      exit "$runtime_ready_status"
     fi
-    if [[ "$runtime_ready_status" -eq "$RESOURCE_BUSY_EXIT_CODE" ]]; then
-      echo "Detected transient Ascend resource busy state during runtime readiness after exhausting ${SERVER_START_RETRIES} start attempt(s)"
+
+    if run_same_spec_current_benchmark; then
+      break
+    fi
+    same_spec_exit_code=$?
+    if same_spec_server_log_indicates_resource_busy; then
+      if [[ "$start_attempt" -lt "$SERVER_START_RETRIES" ]]; then
+        echo "Detected transient Ascend resource busy state during same-spec benchmark; retrying in ${SERVER_START_RETRY_DELAY_SECONDS}s (attempt ${start_attempt}/${SERVER_START_RETRIES})"
+        sleep "$SERVER_START_RETRY_DELAY_SECONDS"
+        continue
+      fi
+      echo "Detected transient Ascend resource busy state after exhausting ${SERVER_START_RETRIES} same-spec benchmark attempt(s)"
       exit "$RESOURCE_BUSY_EXIT_CODE"
     fi
-    exit "$runtime_ready_status"
-  fi
-
-  start_server
-
-  for attempt in $(seq 1 "$server_ready_max_attempts"); do
-    if curl -fsS "http://$HOST:$PORT/v1/models" >/dev/null; then
-      server_ready=1
-      break 2
-    fi
-
-    if ! kill -0 "$server_pid" 2>/dev/null; then
-      echo "vLLM server exited before becoming ready"
-      cat "$SERVER_LOG"
-      if server_log_indicates_resource_busy; then
-        if [[ "$start_attempt" -lt "$SERVER_START_RETRIES" ]]; then
-          echo "Detected transient Ascend resource busy state; retrying server start in ${SERVER_START_RETRY_DELAY_SECONDS}s (attempt ${start_attempt}/${SERVER_START_RETRIES})"
-          cleanup
-          sleep "$SERVER_START_RETRY_DELAY_SECONDS"
-          break
-        fi
-
-        echo "Detected transient Ascend resource busy state after exhausting ${SERVER_START_RETRIES} start attempt(s)"
-        exit "$RESOURCE_BUSY_EXIT_CODE"
-      fi
-      exit 1
-    fi
-
-    if [[ "$attempt" -eq "$server_ready_max_attempts" ]]; then
-      echo "Timed out waiting for vLLM server to become ready after ${SERVER_READY_TIMEOUT_SECONDS}s"
-      cat "$SERVER_LOG"
-      if server_log_indicates_resource_busy; then
-        if [[ "$start_attempt" -lt "$SERVER_START_RETRIES" ]]; then
-          echo "Detected transient Ascend resource busy state after timeout; retrying server start in ${SERVER_START_RETRY_DELAY_SECONDS}s (attempt ${start_attempt}/${SERVER_START_RETRIES})"
-          cleanup
-          sleep "$SERVER_START_RETRY_DELAY_SECONDS"
-          break
-        fi
-
-        echo "Detected transient Ascend resource busy state after exhausting ${SERVER_START_RETRIES} start attempt(s)"
-        exit "$RESOURCE_BUSY_EXIT_CODE"
-      fi
-      exit 1
-    fi
-
-    sleep "$SERVER_READY_POLL_SECONDS"
+    exit "$same_spec_exit_code"
   done
-done
-
-if [[ "$server_ready" != "1" ]]; then
-  echo "vLLM server did not become ready after ${SERVER_START_RETRIES} start attempt(s)"
-  cat "$SERVER_LOG"
-  if server_log_indicates_resource_busy; then
-    echo "Detected transient Ascend resource busy state after exhausting ${SERVER_START_RETRIES} start attempt(s)"
-    exit "$RESOURCE_BUSY_EXIT_CODE"
+else
+  server_ready_max_attempts=$(((SERVER_READY_TIMEOUT_SECONDS + SERVER_READY_POLL_SECONDS - 1) / SERVER_READY_POLL_SECONDS))
+  if (( server_ready_max_attempts < 1 )); then
+    server_ready_max_attempts=1
   fi
-  exit 1
-fi
 
-"${VLLM_CLI[@]}" bench serve \
-  --model "$MODEL_NAME" \
-  --host "$HOST" \
-  --port "$PORT" \
-  "${bench_args[@]}" \
-  --save-result \
-  --result-dir "$RESULT_ROOT" \
-  --result-filename "$(basename "$RAW_RESULT_FILE")"
+  server_ready=0
 
-CORE_VERSION=$("${PYTHON_BIN}" - <<'PY'
+  for start_attempt in $(seq 1 "$SERVER_START_RETRIES"); do
+    if [[ "$CHIP_COUNT" == "1" ]]; then
+      SELECTED_ASCEND_DEVICE_INFO="$(select_ascend_device "$start_attempt" "$NPU_SMI_BIN")"
+      if [[ -n "$SELECTED_ASCEND_DEVICE_INFO" ]]; then
+        IFS=$'\t' read -r SELECTED_ASCEND_DEVICE SELECTED_ASCEND_DEVICE_SOURCE <<<"$SELECTED_ASCEND_DEVICE_INFO"
+        export ASCEND_RT_VISIBLE_DEVICES="$SELECTED_ASCEND_DEVICE"
+        export VLLM_ASCEND_TORCH_PREFLIGHT_DEVICE="npu:0"
+        echo "selected single-card Ascend device: $ASCEND_RT_VISIBLE_DEVICES (${SELECTED_ASCEND_DEVICE_SOURCE})"
+      else
+        unset ASCEND_RT_VISIBLE_DEVICES
+        unset VLLM_ASCEND_TORCH_PREFLIGHT_DEVICE
+        echo "Could not resolve a single-card Ascend device; probing runtime without device scoping"
+      fi
+    fi
+
+    if wait_for_ascend_runtime_ready; then
+      runtime_ready_status=0
+    else
+      runtime_ready_status=$?
+    fi
+
+    if [[ "$runtime_ready_status" -ne 0 ]]; then
+      echo "Ascend runtime did not become ready after ${ASCEND_RUNTIME_READY_TIMEOUT_SECONDS}s"
+      if [[ "$start_attempt" -lt "$SERVER_START_RETRIES" ]]; then
+        echo "Retrying server start after runtime readiness failure in ${SERVER_START_RETRY_DELAY_SECONDS}s (attempt ${start_attempt}/${SERVER_START_RETRIES})"
+        sleep "$SERVER_START_RETRY_DELAY_SECONDS"
+        continue
+      fi
+      if [[ "$runtime_ready_status" -eq "$RESOURCE_BUSY_EXIT_CODE" ]]; then
+        echo "Detected transient Ascend resource busy state during runtime readiness after exhausting ${SERVER_START_RETRIES} start attempt(s)"
+        exit "$RESOURCE_BUSY_EXIT_CODE"
+      fi
+      exit "$runtime_ready_status"
+    fi
+
+    start_server
+
+    for attempt in $(seq 1 "$server_ready_max_attempts"); do
+      if curl -fsS "http://$HOST:$PORT/v1/models" >/dev/null; then
+        server_ready=1
+        break 2
+      fi
+
+      if ! kill -0 "$server_pid" 2>/dev/null; then
+        echo "vLLM server exited before becoming ready"
+        cat "$SERVER_LOG"
+        if server_log_indicates_resource_busy; then
+          if [[ "$start_attempt" -lt "$SERVER_START_RETRIES" ]]; then
+            echo "Detected transient Ascend resource busy state; retrying server start in ${SERVER_START_RETRY_DELAY_SECONDS}s (attempt ${start_attempt}/${SERVER_START_RETRIES})"
+            cleanup
+            sleep "$SERVER_START_RETRY_DELAY_SECONDS"
+            break
+          fi
+
+          echo "Detected transient Ascend resource busy state after exhausting ${SERVER_START_RETRIES} start attempt(s)"
+          exit "$RESOURCE_BUSY_EXIT_CODE"
+        fi
+        exit 1
+      fi
+
+      if [[ "$attempt" -eq "$server_ready_max_attempts" ]]; then
+        echo "Timed out waiting for vLLM server to become ready after ${SERVER_READY_TIMEOUT_SECONDS}s"
+        cat "$SERVER_LOG"
+        if server_log_indicates_resource_busy; then
+          if [[ "$start_attempt" -lt "$SERVER_START_RETRIES" ]]; then
+            echo "Detected transient Ascend resource busy state after timeout; retrying server start in ${SERVER_START_RETRY_DELAY_SECONDS}s (attempt ${start_attempt}/${SERVER_START_RETRIES})"
+            cleanup
+            sleep "$SERVER_START_RETRY_DELAY_SECONDS"
+            break
+          fi
+
+          echo "Detected transient Ascend resource busy state after exhausting ${SERVER_START_RETRIES} start attempt(s)"
+          exit "$RESOURCE_BUSY_EXIT_CODE"
+        fi
+        exit 1
+      fi
+
+      sleep "$SERVER_READY_POLL_SECONDS"
+    done
+  done
+
+  if [[ "$server_ready" != "1" ]]; then
+    echo "vLLM server did not become ready after ${SERVER_START_RETRIES} start attempt(s)"
+    cat "$SERVER_LOG"
+    if server_log_indicates_resource_busy; then
+      echo "Detected transient Ascend resource busy state after exhausting ${SERVER_START_RETRIES} start attempt(s)"
+      exit "$RESOURCE_BUSY_EXIT_CODE"
+    fi
+    exit 1
+  fi
+
+  "${VLLM_CLI[@]}" bench serve \
+    --model "$MODEL_NAME" \
+    --host "$HOST" \
+    --port "$PORT" \
+    "${bench_args[@]}" \
+    --save-result \
+    --result-dir "$RESULT_ROOT" \
+    --result-filename "$(basename "$RAW_RESULT_FILE")"
+
+  CORE_VERSION=$("${PYTHON_BIN}" - <<'PY'
 import vllm
 print(vllm.__version__)
 PY
 )
 
-BACKEND_VERSION=$("${PYTHON_BIN}" - <<'PY'
+  BACKEND_VERSION=$("${PYTHON_BIN}" - <<'PY'
 from vllm_ascend._version import __version__
 print(__version__)
 PY
 )
 
-ENGINE_VERSION="$ASCEND_HUST_TARGET_SHA_SHORT"
+  ENGINE_VERSION="$ASCEND_HUST_TARGET_SHA_SHORT"
 
-"${PYTHON_BIN}" -m vllm_hust_benchmark.cli submit \
-  "$BENCH_SCENARIO" \
-  --benchmark-result-file "$RAW_RESULT_FILE" \
-  --constraints-file "$EFFECTIVE_CONSTRAINTS_FILE" \
-  --run-id "$RUN_ID" \
-  --engine vllm-ascend-hust \
-  --engine-version "$ENGINE_VERSION" \
-  --model-name "$MODEL_NAME" \
-  --model-parameters "$MODEL_PARAMETERS" \
-  --model-precision "$MODEL_PRECISION" \
-  --hardware-vendor "$HARDWARE_VENDOR" \
-  --hardware-chip-model "$HARDWARE_CHIP_MODEL" \
-  --chip-count "$CHIP_COUNT" \
-  --node-count "$NODE_COUNT" \
-  --submitter "${GITHUB_ACTOR:-ci}" \
-  --data-source "vllm-ascend-hust-ci-$BENCH_SCENARIO" \
-  --input-length "$EFFECTIVE_INPUT_LEN" \
-  --output-length "$EFFECTIVE_OUTPUT_LEN" \
-  --concurrent-requests "$BENCH_MAX_CONCURRENCY" \
-  --backend-version "$BACKEND_VERSION" \
-  --core-version "$CORE_VERSION" \
-  --git-commit "$ASCEND_HUST_TARGET_SHA" \
-  --github-commit-url "$ASCEND_HUST_TARGET_COMMIT_URL" \
-  --github-repository "$ASCEND_HUST_TARGET_REPOSITORY" \
-  --github-ref "$ASCEND_HUST_TARGET_REF" \
-  --github-event-name "${GITHUB_EVENT_NAME:-manual}" \
-  --submissions-dir "$SUBMISSIONS_ROOT"
+  "${PYTHON_BIN}" -m vllm_hust_benchmark.cli submit \
+    "$BENCH_SCENARIO" \
+    --benchmark-result-file "$RAW_RESULT_FILE" \
+    --constraints-file "$EFFECTIVE_CONSTRAINTS_FILE" \
+    --run-id "$RUN_ID" \
+    --engine vllm-ascend-hust \
+    --engine-version "$ENGINE_VERSION" \
+    --model-name "$MODEL_NAME" \
+    --model-parameters "$MODEL_PARAMETERS" \
+    --model-precision "$MODEL_PRECISION" \
+    --hardware-vendor "$HARDWARE_VENDOR" \
+    --hardware-chip-model "$HARDWARE_CHIP_MODEL" \
+    --chip-count "$CHIP_COUNT" \
+    --node-count "$NODE_COUNT" \
+    --submitter "${GITHUB_ACTOR:-ci}" \
+    --data-source "vllm-ascend-hust-ci-$BENCH_SCENARIO" \
+    --input-length "$EFFECTIVE_INPUT_LEN" \
+    --output-length "$EFFECTIVE_OUTPUT_LEN" \
+    --concurrent-requests "$BENCH_MAX_CONCURRENCY" \
+    --backend-version "$BACKEND_VERSION" \
+    --core-version "$CORE_VERSION" \
+    --git-commit "$ASCEND_HUST_TARGET_SHA" \
+    --github-commit-url "$ASCEND_HUST_TARGET_COMMIT_URL" \
+    --github-repository "$ASCEND_HUST_TARGET_REPOSITORY" \
+    --github-ref "$ASCEND_HUST_TARGET_REF" \
+    --github-event-name "${GITHUB_EVENT_NAME:-manual}" \
+    --submissions-dir "$SUBMISSIONS_ROOT"
+fi
 
 if [[ "$PUBLISH_TO_HF" == "1" ]]; then
   if [[ -z "$HF_REPO_ID" ]]; then
