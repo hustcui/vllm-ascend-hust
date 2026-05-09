@@ -25,9 +25,9 @@ cd "${ASCEND_REPO_ROOT}"
 
 if ! command -v hust-ascend-manager >/dev/null 2>&1 && ! hust_ascend_manager_available; then
   if [[ -f "${MANAGER_REPO}/pyproject.toml" ]]; then
-    python -m pip install -e "${MANAGER_REPO}" --no-deps
+    hust_run_pip install -e "${MANAGER_REPO}" --no-deps
   else
-    python -m pip install --upgrade "${MANAGER_PYPI_SPEC}"
+    hust_run_pip install --upgrade "${MANAGER_PYPI_SPEC}"
   fi
 fi
 

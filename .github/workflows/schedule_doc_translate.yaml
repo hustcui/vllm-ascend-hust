@@ -102,7 +102,7 @@ jobs:
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
         run: |
-          python .github/workflows/scripts/po_translate.py \
+          python3 .github/workflows/scripts/po_translate.py \
             --files "${{ steps.detect.outputs.files }}" \
             --output-json /tmp/translation_results.json
 

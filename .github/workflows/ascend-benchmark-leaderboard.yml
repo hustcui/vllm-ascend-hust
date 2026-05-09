@@ -95,8 +95,10 @@ jobs:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
       HF_REPO_ID: ${{ vars.VLLM_ASCEND_HUST_BENCHMARK_HF_REPO || 'intellistream/vllm-ascend-hust-benchmark-results' }}
       ASCEND_HUST_TARGET: ${{ github.event_name == 'workflow_dispatch' && inputs.ascend_hust_target || format('{0}@{1}', github.repository, github.ref_name) }}
+      VLLM_HUST_CONDA_ENV: vllm-hust-dev
       VLLM_HUST_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.vllm_hust_ref || vars.VLLM_ASCEND_HUST_VLLM_HUST_REF || 'main' }}
       MODEL_NAME: ${{ github.event_name == 'workflow_dispatch' && inputs.model_name || 'Qwen/Qwen2.5-0.5B-Instruct' }}
+      SOC_VERSION: ascend910b1
       BENCH_SCENARIO: ${{ github.event_name == 'workflow_dispatch' && inputs.benchmark_scenario || (github.event_name == 'pull_request' && vars.VLLM_ASCEND_HUST_PR_BENCHMARK_SCENARIO) || (github.event_name == 'push' && vars.VLLM_ASCEND_HUST_MAIN_BENCHMARK_SCENARIO) || 'random-online' }}
       BENCH_DATASET_PATH: ${{ github.event_name == 'workflow_dispatch' && inputs.dataset_path || (github.event_name == 'pull_request' && vars.VLLM_ASCEND_HUST_PR_BENCHMARK_DATASET_PATH) || (github.event_name == 'push' && vars.VLLM_ASCEND_HUST_MAIN_BENCHMARK_DATASET_PATH) || '' }}
       BENCH_CONSTRAINTS_FILE: ${{ github.event_name == 'workflow_dispatch' && inputs.constraints_file || (github.event_name == 'pull_request' && vars.VLLM_ASCEND_HUST_PR_BENCHMARK_CONSTRAINTS_FILE) || (github.event_name == 'push' && vars.VLLM_ASCEND_HUST_MAIN_BENCHMARK_CONSTRAINTS_FILE) || '' }}
@@ -119,6 +121,7 @@ jobs:
       ALLOW_RANDOM_HF_PUBLISH: ${{ vars.VLLM_ASCEND_HUST_ALLOW_RANDOM_HF_PUBLISH || '0' }}
       WEBSITE_LEADERBOARD_URL: ${{ vars.VLLM_ASCEND_HUST_LEADERBOARD_URL || vars.VLLM_HUST_LEADERBOARD_URL || '' }}
       PUBLISH_TO_HF: ${{ (((github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.VLLM_ASCEND_HUST_PUBLISH_BENCHMARK_ON_MAIN == '1') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && vars.VLLM_ASCEND_HUST_PUBLISH_BENCHMARK_ON_PR == '1') || (github.event_name == 'workflow_dispatch' && inputs.publish_to_hf)) && secrets.HF_TOKEN != '') && '1' || '0' }}
+      HUST_ASCEND_MANAGER_REPO: ${{ github.workspace }}/ascend-runtime-manager
 
     steps:
       - name: Resolve benchmark target
@@ -223,6 +226,15 @@ jobs:
           ssh-strict: ${{ env.BENCHMARK_CHECKOUT_USE_SSH_443 != '1' }}
           persist-credentials: false
 
+      - name: Checkout ascend-runtime-manager repo
+        uses: actions/checkout@v6.0.1
+        with:
+          repository: vLLM-HUST/ascend-runtime-manager
+          path: ascend-runtime-manager
+          ssh-key: ${{ secrets.VLLM_ASCEND_HUST_BENCHMARK_SSH_KEY }}
+          ssh-strict: ${{ env.BENCHMARK_CHECKOUT_USE_SSH_443 != '1' }}
+          persist-credentials: false
+
       - name: Checkout website repo
         uses: actions/checkout@v6.0.1
         with:
@@ -248,23 +260,39 @@ jobs:
         run: |
           mkdir -p "$HOME" "$XDG_CACHE_HOME" "$XDG_CONFIG_HOME"
           source scripts/use_single_ascend_env.sh
-          python -m pip install -e "$VLLM_HUST_REPO" --no-build-isolation --no-deps
+          export PYTHONPATH="$VLLM_HUST_REPO:$VLLM_HUST_BENCHMARK_REPO/src${PYTHONPATH:+:$PYTHONPATH}"
+          hust_run_pip install "torch==2.9.0" "torch-npu==2.9.0"
+          hust_run_pip install "numpy<2.0.0" scipy attrs decorator psutil
+          hust_run_pip install -r "$VLLM_HUST_REPO/requirements/common.txt"
           bash scripts/install_local_ascend_plugin.sh "$GITHUB_WORKSPACE"
-          python -m pip install -e "${VLLM_HUST_BENCHMARK_REPO}[publish]" jsonschema
+          hust_run_pip install "huggingface_hub>=0.20" jsonschema
 
       - name: Verify installation
+        env:
+          VLLM_HUST_REPO: ${{ github.workspace }}/vllm-hust
+          VLLM_HUST_BENCHMARK_REPO: ${{ github.workspace }}/vllm-hust-benchmark
         run: |
           source scripts/use_single_ascend_env.sh
-          python --version
-          python - <<'PY'
+          export PYTHONPATH="$VLLM_HUST_REPO:$VLLM_HUST_BENCHMARK_REPO/src${PYTHONPATH:+:$PYTHONPATH}"
+          PYTHON_BIN="$(hust_resolve_python_bin)"
+          "$PYTHON_BIN" --version
+          "$PYTHON_BIN" - <<'PY'
+          import numpy
+          import torch
+          import torch_npu
           import vllm
+          import vllm_hust_benchmark.cli
           from vllm_ascend._version import __version__ as plugin_version
 
+          print(f'numpy version: {numpy.__version__}')
+          print(f'torch version: {torch.__version__}')
+          print(f'torch_npu version: {torch_npu.__version__}')
           print(f'vLLM version: {vllm.__version__}')
           print(f'vLLM Ascend Hust version: {plugin_version}')
           PY
 
       - name: Run benchmark CI and optional HF sync
+        id: run_benchmark_ci
         env:
           WORKSPACE_ROOT: ${{ github.workspace }}
           VLLM_HUST_REPO: ${{ github.workspace }}/vllm-hust
@@ -272,13 +300,33 @@ jobs:
           VLLM_HUST_BENCHMARK_REPO: ${{ github.workspace }}/vllm-hust-benchmark
           VLLM_HUST_WEBSITE_REPO: ${{ github.workspace }}/vllm-hust-website
         run: |
-          source scripts/use_single_ascend_env.sh
-          bash .github/workflows/scripts/run_ascend_benchmark_ci.sh
+          set +e
+          benchmark_lock_file="${ASCEND_BENCHMARK_LOCK_FILE:-/tmp/vllm-ascend-hust-benchmark.lock}"
+          mkdir -p "$(dirname "$benchmark_lock_file")"
+          if command -v flock >/dev/null 2>&1; then
+            echo "Acquiring Ascend benchmark host lock: $benchmark_lock_file"
+            flock "$benchmark_lock_file" bash -c 'source scripts/use_single_ascend_env.sh && bash .github/workflows/scripts/run_ascend_benchmark_ci.sh'
+          else
+            echo "flock is unavailable; running benchmark without host-level serialization"
+            source scripts/use_single_ascend_env.sh
+            bash .github/workflows/scripts/run_ascend_benchmark_ci.sh
+          fi
+          benchmark_exit_code=$?
+          set -e
+
+          echo "BENCHMARK_EXIT_CODE=$benchmark_exit_code" >> "$GITHUB_ENV"
+
+          if [[ "$benchmark_exit_code" -eq 75 && "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+            echo "Ascend benchmark hit shared-runner resource contention; treating this PR run as neutral instead of failing CI."
+            exit 0
+          fi
+
+          exit "$benchmark_exit_code"
 
       - name: Build benchmark summary artifacts
         if: always()
         run: |
-          python - <<'PY'
+          python3 - <<'PY'
           import json
           import os
           from pathlib import Path
@@ -295,6 +343,7 @@ jobs:
           run_url = f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}"
           bench_scenario = os.environ.get('BENCH_SCENARIO', 'random-online')
           publish_mode = 'hf-sync' if os.environ.get('PUBLISH_TO_HF') == '1' else 'artifact-preview'
+          benchmark_exit_code = os.environ.get('BENCHMARK_EXIT_CODE', '0')
           model_name = os.environ.get('MODEL_NAME', 'unknown')
           hf_repo = os.environ.get('HF_REPO_ID', 'unknown')
           leaderboard_url = os.environ.get('WEBSITE_LEADERBOARD_URL', '').strip()
@@ -328,6 +377,10 @@ jobs:
             f'- Publish mode: `{publish_mode}`',
             f'- Workflow run: [view run]({run_url})',
           ]
+          if benchmark_exit_code == '75':
+            contention_note = '- Benchmark execution: `shared-runner resource contention (temporary)`'
+            lines.append(contention_note)
+            comment_lines.append(contention_note)
           if raw_result.is_file():
             payload = json.loads(raw_result.read_text(encoding='utf-8'))
             metric_lines = [

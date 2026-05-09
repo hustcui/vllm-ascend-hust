@@ -46,7 +46,7 @@ jobs:
       - name: Install docs dependencies
         if: ${{ github.event_name != 'pull_request' || steps.changed-docs.outputs.any_changed == 'true' }}
         run: |
-          python -m pip install --upgrade pip
+          python3 -m pip install --upgrade pip
           pip install -r docs/requirements-docs.txt
 
       - name: Prepare linkcheck retry helper
@@ -75,7 +75,7 @@ jobs:
               echo "Retry failed: ${url}"
               retry_failed=1
             fi
-          done < <(python -c 'import json, pathlib, sys; p = pathlib.Path(sys.argv[1]); print("\n".join(sorted({json.loads(line).get("uri", "").split("#", 1)[0] for line in p.read_text(encoding="utf-8").splitlines() if json.loads(line).get("status") in {"broken", "timeout"} and json.loads(line).get("uri")})) if p.exists() else "")' "${output_json}")
+          done < <(python3 -c 'import json, pathlib, sys; p = pathlib.Path(sys.argv[1]); print("\n".join(sorted({json.loads(line).get("uri", "").split("#", 1)[0] for line in p.read_text(encoding="utf-8").splitlines() if json.loads(line).get("status") in {"broken", "timeout"} and json.loads(line).get("uri")})) if p.exists() else "")' "${output_json}")
 
           if [[ "${retried}" == "0" ]]; then
             exit "${linkcheck_exit_code}"

@@ -1,6 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 WORKSPACE_ROOT=${WORKSPACE_ROOT:-${GITHUB_WORKSPACE:-$PWD}}
 VLLM_HUST_REPO=${VLLM_HUST_REPO:-$WORKSPACE_ROOT/vllm-hust}
 VLLM_ASCEND_HUST_REPO=${VLLM_ASCEND_HUST_REPO:-$WORKSPACE_ROOT}
@@ -18,6 +19,11 @@ SUBMISSIONS_ROOT=${SUBMISSIONS_ROOT:-$RESULT_ROOT/submissions}
 SUBMISSION_DIR=${SUBMISSION_DIR:-$SUBMISSIONS_ROOT/$RUN_ID}
 AGGREGATE_OUTPUT_DIR=${AGGREGATE_OUTPUT_DIR:-$RESULT_ROOT/leaderboard-data}
 SERVER_LOG=${SERVER_LOG:-$RESULT_ROOT/server.log}
+RUNTIME_READY_LOG=${RUNTIME_READY_LOG:-$RESULT_ROOT/runtime-ready.log}
+CI_RUNTIME_ROOT=${CI_RUNTIME_ROOT:-$WORKSPACE_ROOT/.ci-runtime}
+PROCESS_MARKER_DIR=${PROCESS_MARKER_DIR:-$CI_RUNTIME_ROOT/process-markers}
+SERVER_PID_MARKER=${SERVER_PID_MARKER:-$PROCESS_MARKER_DIR/ascend-benchmark-server.pid}
+SERVER_PGID_MARKER=${SERVER_PGID_MARKER:-$PROCESS_MARKER_DIR/ascend-benchmark-server.pgid}
 BENCH_SCENARIO=${BENCH_SCENARIO:-random-online}
 BENCH_DATASET_PATH=${BENCH_DATASET_PATH:-}
 BENCH_CONSTRAINTS_FILE=${BENCH_CONSTRAINTS_FILE:-}
@@ -46,14 +52,39 @@ NODE_COUNT=${NODE_COUNT:-1}
 PUBLISH_TO_HF=${PUBLISH_TO_HF:-0}
 HF_REPO_ID=${HF_REPO_ID:-}
 
+# shellcheck source=/dev/null
+source "${VLLM_ASCEND_HUST_REPO}/scripts/hust_ascend_manager_helper.sh"
+
+PYTHON_BIN="$(hust_resolve_python_bin 2>/dev/null)" || {
+  echo "Could not locate python3/python for benchmark workflow" >&2
+  exit 1
+}
+
+CI_HOME=${CI_HOME:-$WORKSPACE_ROOT/.ci-home}
+HOME=$CI_HOME
+XDG_CACHE_HOME=$CI_HOME/.cache
+XDG_CONFIG_HOME=$CI_HOME/.config
+export CI_HOME HOME XDG_CACHE_HOME XDG_CONFIG_HOME
+
+export PYTHONPATH="${VLLM_HUST_REPO}:${VLLM_HUST_BENCHMARK_REPO}/src${PYTHONPATH:+:${PYTHONPATH}}"
+VLLM_CLI=("${PYTHON_BIN}" -m vllm.entrypoints.cli.main)
+VLLM_SERVE=("${PYTHON_BIN}" -m vllm.entrypoints.openai.api_server)
+SERVER_READY_TIMEOUT_SECONDS=${SERVER_READY_TIMEOUT_SECONDS:-600}
+SERVER_READY_POLL_SECONDS=${SERVER_READY_POLL_SECONDS:-2}
+SERVER_START_RETRIES=${SERVER_START_RETRIES:-8}
+SERVER_START_RETRY_DELAY_SECONDS=${SERVER_START_RETRY_DELAY_SECONDS:-10}
+ASCEND_RUNTIME_READY_TIMEOUT_SECONDS=${ASCEND_RUNTIME_READY_TIMEOUT_SECONDS:-30}
+ASCEND_RUNTIME_READY_POLL_SECONDS=${ASCEND_RUNTIME_READY_POLL_SECONDS:-10}
+RESOURCE_BUSY_EXIT_CODE=${RESOURCE_BUSY_EXIT_CODE:-75}
+
 server_pid=""
 server_group_pid=""
 
 cleanup() {
-  if [[ -n "$server_group_pid" ]] && kill -0 "$server_group_pid" 2>/dev/null; then
+  if [[ -n "$server_group_pid" ]]; then
     kill -TERM -- "-$server_group_pid" 2>/dev/null || true
     for _ in $(seq 1 10); do
-      if ! kill -0 "$server_group_pid" 2>/dev/null; then
+      if ! kill -0 -- "-$server_group_pid" 2>/dev/null; then
         break
       fi
       sleep 1
@@ -66,11 +97,131 @@ cleanup() {
   if [[ -n "$server_pid" ]]; then
     wait "$server_pid" || true
   fi
+
+  server_pid=""
+  server_group_pid=""
+  rm -f "$SERVER_PID_MARKER" "$SERVER_PGID_MARKER"
+}
+
+server_log_indicates_resource_busy() {
+  [[ -f "$SERVER_LOG" ]] && grep -qE 'Resource_Busy\(EL0005\)|aclInit, error code is 507899|The resources are busy' "$SERVER_LOG"
+}
+
+runtime_ready_log_indicates_resource_busy() {
+  [[ -f "$RUNTIME_READY_LOG" ]] && grep -qE 'Resource_Busy\(EL0005\)|aclInit, error code is 507899|The resources are busy' "$RUNTIME_READY_LOG"
+}
+
+cleanup_previous_ci_processes() {
+  local marker_pgid marker_pid remaining_matches remaining_pids
+
+  if [[ -f "$SERVER_PGID_MARKER" ]]; then
+    marker_pgid=$(tr -d '[:space:]' <"$SERVER_PGID_MARKER")
+    if [[ -n "$marker_pgid" ]] && kill -0 "$marker_pgid" 2>/dev/null; then
+      echo "Cleaning leftover Ascend benchmark process group: $marker_pgid"
+      kill -TERM -- "-$marker_pgid" 2>/dev/null || true
+      for _ in $(seq 1 10); do
+        if ! kill -0 "$marker_pgid" 2>/dev/null; then
+          break
+        fi
+        sleep 1
+      done
+      kill -KILL -- "-$marker_pgid" 2>/dev/null || true
+    fi
+  fi
+
+  if [[ -f "$SERVER_PID_MARKER" ]]; then
+    marker_pid=$(tr -d '[:space:]' <"$SERVER_PID_MARKER")
+    if [[ -n "$marker_pid" ]] && kill -0 "$marker_pid" 2>/dev/null; then
+      echo "Cleaning leftover Ascend benchmark process: $marker_pid"
+      kill "$marker_pid" 2>/dev/null || true
+    fi
+  fi
+
+  remaining_matches=$(ps -eo pid,ppid,pgid,sid,etimes,args \
+    | grep -F "$WORKSPACE_ROOT" \
+    | grep -E 'vllm|python|pytest' \
+    | grep -v grep || true)
+  if [[ -n "$remaining_matches" ]]; then
+    echo "Remaining workspace-scoped vLLM/Python processes before benchmark:"
+    echo "$remaining_matches"
+    remaining_pids=$(printf '%s\n' "$remaining_matches" | awk '{print $1}')
+    if [[ -n "$remaining_pids" ]]; then
+      echo "Cleaning workspace-scoped leftover process(es): $remaining_pids"
+      # shellcheck disable=SC2086
+      kill -TERM $remaining_pids 2>/dev/null || true
+      for _ in $(seq 1 10); do
+        if ! ps -p "$(printf '%s' "$remaining_pids" | paste -sd, -)" >/dev/null 2>&1; then
+          break
+        fi
+        sleep 1
+      done
+      # shellcheck disable=SC2086
+      kill -KILL $remaining_pids 2>/dev/null || true
+    fi
+  else
+    echo "No leftover workspace-scoped vLLM/Python processes detected before benchmark."
+  fi
+
+  rm -f "$SERVER_PID_MARKER" "$SERVER_PGID_MARKER"
+}
+
+wait_for_ascend_runtime_ready() {
+  local max_attempts
+  max_attempts=$(((ASCEND_RUNTIME_READY_TIMEOUT_SECONDS + ASCEND_RUNTIME_READY_POLL_SECONDS - 1) / ASCEND_RUNTIME_READY_POLL_SECONDS))
+  if (( max_attempts < 1 )); then
+    max_attempts=1
+  fi
+
+  for runtime_attempt in $(seq 1 "$max_attempts"); do
+    if "${PYTHON_BIN}" - <<'PY' >"$RUNTIME_READY_LOG" 2>&1
+import sys
+
+try:
+    import torch_npu
+    torch_npu.npu.get_soc_version()
+except Exception as exc:
+    print(exc, file=sys.stderr)
+    raise SystemExit(1)
+PY
+    then
+      return 0
+    fi
+
+    cat "$RUNTIME_READY_LOG" >&2
+
+    if [[ "$runtime_attempt" -eq "$max_attempts" ]]; then
+      if runtime_ready_log_indicates_resource_busy; then
+        return "$RESOURCE_BUSY_EXIT_CODE"
+      fi
+      return 1
+    fi
+
+    echo "Ascend runtime not ready yet; waiting ${ASCEND_RUNTIME_READY_POLL_SECONDS}s before retrying device initialization (${runtime_attempt}/${max_attempts})"
+    sleep "$ASCEND_RUNTIME_READY_POLL_SECONDS"
+  done
+}
+
+resolve_npu_smi_bin() {
+  local candidate
+  if candidate="$(command -v npu-smi 2>/dev/null)" && [[ -n "$candidate" ]]; then
+    printf '%s\n' "$candidate"
+    return 0
+  fi
+
+  for candidate in /usr/local/bin/npu-smi /usr/local/sbin/npu-smi /usr/sbin/npu-smi /usr/bin/npu-smi; do
+    if [[ -x "$candidate" ]]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+
+  return 1
 }
 
 start_server() {
   if command -v setsid >/dev/null 2>&1; then
-    setsid vllm serve "$MODEL_NAME" \
+    setsid env VLLM_ASCEND_TORCH_PREFLIGHT=0 "${VLLM_SERVE[@]}" \
+      --model "$MODEL_NAME" \
       --host "$HOST" \
       --port "$PORT" \
       --dtype "$DTYPE" \
@@ -79,8 +230,11 @@ start_server() {
       --enforce-eager >"$SERVER_LOG" 2>&1 &
     server_pid=$!
     server_group_pid=$server_pid
+    printf '%s\n' "$server_pid" >"$SERVER_PID_MARKER"
+    printf '%s\n' "$server_group_pid" >"$SERVER_PGID_MARKER"
   else
-    vllm serve "$MODEL_NAME" \
+    env VLLM_ASCEND_TORCH_PREFLIGHT=0 "${VLLM_SERVE[@]}" \
+      --model "$MODEL_NAME" \
       --host "$HOST" \
       --port "$PORT" \
       --dtype "$DTYPE" \
@@ -88,11 +242,12 @@ start_server() {
       --max-num-seqs "$MAX_NUM_SEQS" \
       --enforce-eager >"$SERVER_LOG" 2>&1 &
     server_pid=$!
+    printf '%s\n' "$server_pid" >"$SERVER_PID_MARKER"
   fi
 }
 
 allocate_local_port() {
-  python - <<'PY'
+  "${PYTHON_BIN}" - <<'PY'
 import socket
 
 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
@@ -107,10 +262,20 @@ if [[ -z "$PORT" ]]; then
   PORT=$(allocate_local_port)
 fi
 
-mkdir -p "$RESULT_ROOT" "$SUBMISSIONS_ROOT" "$AGGREGATE_OUTPUT_DIR"
+mkdir -p "$RESULT_ROOT" "$SUBMISSIONS_ROOT" "$AGGREGATE_OUTPUT_DIR" "$HOME" "$XDG_CACHE_HOME" "$XDG_CONFIG_HOME" "$PROCESS_MARKER_DIR"
+cleanup_previous_ci_processes
 
-select_idle_ascend_device() {
-  python - <<'PY'
+NPU_SMI_BIN="$(resolve_npu_smi_bin 2>/dev/null || true)"
+if [[ -n "$NPU_SMI_BIN" ]]; then
+  echo "Using npu-smi binary: $NPU_SMI_BIN"
+else
+  echo "Could not resolve npu-smi binary; single-card device selection may be unavailable"
+fi
+
+select_ascend_device() {
+  ASCEND_DEVICE_SELECTION_ATTEMPT="${1:-1}" NPU_SMI_BIN="${2:-}" "${PYTHON_BIN}" - <<'PY'
+import os
+from pathlib import Path
 import re
 import subprocess
 import sys
@@ -128,8 +293,71 @@ def parse_logical_map(mapping_output: str) -> dict[tuple[str, str], int]:
   return logical_map
 
 
-def select_best_idle_device(mapping_output: str, info_output: str) -> int | None:
-  logical_map = parse_logical_map(mapping_output)
+def list_logical_devices(mapping_output: str) -> list[int]:
+  logical_devices = set(parse_logical_map(mapping_output).values())
+  return sorted(logical_devices)
+
+
+def list_status_devices(info_output: str) -> list[int]:
+  status_devices = set()
+  for raw_line in info_output.splitlines():
+    line = raw_line.strip()
+    if not line.startswith("|"):
+      continue
+
+    parts = [part.strip() for part in line.strip("|").split("|")]
+    if len(parts) < 2:
+      continue
+
+    left_column = parts[0].split()
+    if len(left_column) >= 2 and left_column[0].isdigit() and parts[1] and ":" not in parts[1]:
+      status_devices.add(int(left_column[0]))
+
+  return sorted(status_devices)
+
+
+def list_devnode_devices() -> list[int]:
+  devnode_devices = set()
+  for device_path in Path("/dev").glob("davinci[0-9]*"):
+    suffix = device_path.name.removeprefix("davinci")
+    if suffix.isdigit():
+      devnode_devices.add(int(suffix))
+  return sorted(devnode_devices)
+
+
+def run_npu_smi(*args: str) -> subprocess.CompletedProcess[str] | None:
+  npu_smi_bin = os.environ.get("NPU_SMI_BIN")
+  if not npu_smi_bin:
+    return None
+
+  # Probe npu-smi with a minimal environment so Ascend/Python job variables do
+  # not interfere with the management CLI.
+  clean_env = {
+    "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
+    "HOME": os.environ.get("HOME", ""),
+    "LANG": os.environ.get("LANG", "C.UTF-8"),
+    "LC_ALL": os.environ.get("LC_ALL", "C.UTF-8"),
+    "LD_LIBRARY_PATH": os.environ.get("LD_LIBRARY_PATH", ""),
+  }
+
+  try:
+    return subprocess.run(
+      [npu_smi_bin, *args],
+      check=False,
+      capture_output=True,
+      text=True,
+      timeout=5,
+      env=clean_env,
+    )
+  except subprocess.TimeoutExpired:
+    print(f"npu-smi {' '.join(args)} timed out after 5s", file=sys.stderr)
+    return None
+  except Exception as exc:
+    print(f"npu-smi {' '.join(args)} failed: {exc}", file=sys.stderr)
+    return None
+
+
+def select_best_idle_device(info_output: str, logical_map: dict[tuple[str, str], int]) -> tuple[int, str] | None:
   hbm_usage_pattern = re.compile(r"(\d+)\s*/\s*(\d+)\s*$")
   device_stats = []
   current_npu_id = None
@@ -158,8 +386,12 @@ def select_best_idle_device(mapping_output: str, info_output: str) -> int | None
 
     chip_id = left_column[0]
     logical_id = logical_map.get((current_npu_id, chip_id))
+    device_source = "idle"
     if logical_id is None:
-      continue
+      if chip_id != "0":
+        continue
+      logical_id = int(current_npu_id)
+      device_source = "status-fallback"
 
     hbm_match = hbm_usage_pattern.search(parts[2])
     if hbm_match is None:
@@ -168,39 +400,50 @@ def select_best_idle_device(mapping_output: str, info_output: str) -> int | None
     used_memory_mb = int(hbm_match.group(1))
     total_memory_mb = int(hbm_match.group(2))
     free_memory_mb = max(0, total_memory_mb - used_memory_mb)
-    device_stats.append((logical_id, free_memory_mb, total_memory_mb))
+    device_stats.append((logical_id, free_memory_mb, total_memory_mb, device_source))
 
   if not device_stats:
     return None
 
-  device_stats.sort(key=lambda item: (-item[1], item[0]))
-  return device_stats[0][0]
+  device_stats.sort(key=lambda item: (-item[1], item[0], item[3]))
+  selected_device, _, _, selected_source = device_stats[0]
+  return selected_device, selected_source
 
+mapping_result = run_npu_smi("info", "-m")
+logical_map = {}
+logical_devices = []
+if mapping_result is not None and mapping_result.returncode == 0:
+  logical_map = parse_logical_map(mapping_result.stdout)
+  logical_devices = list_status_devices(mapping_result.stdout)
+elif mapping_result is not None:
+  print(f"npu-smi info -m returned {mapping_result.returncode}: {mapping_result.stderr.strip()}", file=sys.stderr)
 
-try:
-  mapping_result = subprocess.run(
-    ["npu-smi", "info", "-m"],
-    check=False,
-    capture_output=True,
-    text=True,
-    timeout=5,
-  )
-  info_result = subprocess.run(
-    ["npu-smi", "info"],
-    check=False,
-    capture_output=True,
-    text=True,
-    timeout=5,
-  )
-except Exception:
+selection_attempt = max(1, int(os.environ.get("ASCEND_DEVICE_SELECTION_ATTEMPT", "1")))
+
+info_result = run_npu_smi("info")
+if info_result is not None and info_result.returncode == 0:
+  selected_device = select_best_idle_device(info_result.stdout, logical_map)
+  if selected_device is not None:
+    device_id, device_source = selected_device
+    print(f"{device_id}\t{device_source}")
+    sys.exit(0)
+  status_devices = list_status_devices(info_result.stdout)
+  if status_devices:
+    fallback_device = status_devices[(selection_attempt - 1) % len(status_devices)]
+    print(f"{fallback_device}\tstatus-round-robin")
+    sys.exit(0)
+elif info_result is not None:
+  print(f"npu-smi info returned {info_result.returncode}: {info_result.stderr.strip()}", file=sys.stderr)
+
+if logical_devices:
+  fallback_device = logical_devices[(selection_attempt - 1) % len(logical_devices)]
+  print(f"{fallback_device}\tfallback-round-robin")
   sys.exit(0)
 
-if mapping_result.returncode != 0 or info_result.returncode != 0:
-  sys.exit(0)
-
-selected_device = select_best_idle_device(mapping_result.stdout, info_result.stdout)
-if selected_device is not None:
-  print(selected_device)
+devnode_devices = list_devnode_devices()
+if devnode_devices:
+  fallback_device = devnode_devices[(selection_attempt - 1) % len(devnode_devices)]
+  print(f"{fallback_device}\tdevnode-round-robin")
 PY
 }
 
@@ -273,38 +516,105 @@ if [[ ! -f "$EFFECTIVE_CONSTRAINTS_FILE" ]]; then
   exit 2
 fi
 
-if [[ "$CHIP_COUNT" == "1" && -z "${ASCEND_RT_VISIBLE_DEVICES:-}" ]]; then
-  SELECTED_ASCEND_DEVICE="$(select_idle_ascend_device)"
-  if [[ -n "$SELECTED_ASCEND_DEVICE" ]]; then
-    export ASCEND_RT_VISIBLE_DEVICES="$SELECTED_ASCEND_DEVICE"
-    export VLLM_ASCEND_TORCH_PREFLIGHT_DEVICE="npu:0"
-    echo "selected single-card Ascend device: $ASCEND_RT_VISIBLE_DEVICES"
-  fi
+server_ready_max_attempts=$(((SERVER_READY_TIMEOUT_SECONDS + SERVER_READY_POLL_SECONDS - 1) / SERVER_READY_POLL_SECONDS))
+if (( server_ready_max_attempts < 1 )); then
+  server_ready_max_attempts=1
 fi
 
-start_server
+server_ready=0
 
-for attempt in $(seq 1 120); do
-  if curl -fsS "http://$HOST:$PORT/v1/models" >/dev/null; then
-    break
+for start_attempt in $(seq 1 "$SERVER_START_RETRIES"); do
+  if [[ "$CHIP_COUNT" == "1" ]]; then
+    SELECTED_ASCEND_DEVICE_INFO="$(select_ascend_device "$start_attempt" "$NPU_SMI_BIN")"
+    if [[ -n "$SELECTED_ASCEND_DEVICE_INFO" ]]; then
+      IFS=$'\t' read -r SELECTED_ASCEND_DEVICE SELECTED_ASCEND_DEVICE_SOURCE <<<"$SELECTED_ASCEND_DEVICE_INFO"
+      export ASCEND_RT_VISIBLE_DEVICES="$SELECTED_ASCEND_DEVICE"
+      export VLLM_ASCEND_TORCH_PREFLIGHT_DEVICE="npu:0"
+      echo "selected single-card Ascend device: $ASCEND_RT_VISIBLE_DEVICES (${SELECTED_ASCEND_DEVICE_SOURCE})"
+    else
+      unset ASCEND_RT_VISIBLE_DEVICES
+      unset VLLM_ASCEND_TORCH_PREFLIGHT_DEVICE
+      echo "Could not resolve a single-card Ascend device; probing runtime without device scoping"
+    fi
   fi
 
-  if ! kill -0 "$server_pid" 2>/dev/null; then
-    echo "vLLM server exited before becoming ready"
-    cat "$SERVER_LOG"
-    exit 1
+  if wait_for_ascend_runtime_ready; then
+    runtime_ready_status=0
+  else
+    runtime_ready_status=$?
   fi
 
-  if [[ "$attempt" -eq 120 ]]; then
-    echo "Timed out waiting for vLLM server to become ready"
-    cat "$SERVER_LOG"
-    exit 1
+  if [[ "$runtime_ready_status" -ne 0 ]]; then
+    echo "Ascend runtime did not become ready after ${ASCEND_RUNTIME_READY_TIMEOUT_SECONDS}s"
+    if [[ "$start_attempt" -lt "$SERVER_START_RETRIES" ]]; then
+      echo "Retrying server start after runtime readiness failure in ${SERVER_START_RETRY_DELAY_SECONDS}s (attempt ${start_attempt}/${SERVER_START_RETRIES})"
+      sleep "$SERVER_START_RETRY_DELAY_SECONDS"
+      continue
+    fi
+    if [[ "$runtime_ready_status" -eq "$RESOURCE_BUSY_EXIT_CODE" ]]; then
+      echo "Detected transient Ascend resource busy state during runtime readiness after exhausting ${SERVER_START_RETRIES} start attempt(s)"
+      exit "$RESOURCE_BUSY_EXIT_CODE"
+    fi
+    exit "$runtime_ready_status"
   fi
 
-  sleep 2
+  start_server
+
+  for attempt in $(seq 1 "$server_ready_max_attempts"); do
+    if curl -fsS "http://$HOST:$PORT/v1/models" >/dev/null; then
+      server_ready=1
+      break 2
+    fi
+
+    if ! kill -0 "$server_pid" 2>/dev/null; then
+      echo "vLLM server exited before becoming ready"
+      cat "$SERVER_LOG"
+      if server_log_indicates_resource_busy; then
+        if [[ "$start_attempt" -lt "$SERVER_START_RETRIES" ]]; then
+          echo "Detected transient Ascend resource busy state; retrying server start in ${SERVER_START_RETRY_DELAY_SECONDS}s (attempt ${start_attempt}/${SERVER_START_RETRIES})"
+          cleanup
+          sleep "$SERVER_START_RETRY_DELAY_SECONDS"
+          break
+        fi
+
+        echo "Detected transient Ascend resource busy state after exhausting ${SERVER_START_RETRIES} start attempt(s)"
+        exit "$RESOURCE_BUSY_EXIT_CODE"
+      fi
+      exit 1
+    fi
+
+    if [[ "$attempt" -eq "$server_ready_max_attempts" ]]; then
+      echo "Timed out waiting for vLLM server to become ready after ${SERVER_READY_TIMEOUT_SECONDS}s"
+      cat "$SERVER_LOG"
+      if server_log_indicates_resource_busy; then
+        if [[ "$start_attempt" -lt "$SERVER_START_RETRIES" ]]; then
+          echo "Detected transient Ascend resource busy state after timeout; retrying server start in ${SERVER_START_RETRY_DELAY_SECONDS}s (attempt ${start_attempt}/${SERVER_START_RETRIES})"
+          cleanup
+          sleep "$SERVER_START_RETRY_DELAY_SECONDS"
+          break
+        fi
+
+        echo "Detected transient Ascend resource busy state after exhausting ${SERVER_START_RETRIES} start attempt(s)"
+        exit "$RESOURCE_BUSY_EXIT_CODE"
+      fi
+      exit 1
+    fi
+
+    sleep "$SERVER_READY_POLL_SECONDS"
+  done
 done
 
-vllm bench serve \
+if [[ "$server_ready" != "1" ]]; then
+  echo "vLLM server did not become ready after ${SERVER_START_RETRIES} start attempt(s)"
+  cat "$SERVER_LOG"
+  if server_log_indicates_resource_busy; then
+    echo "Detected transient Ascend resource busy state after exhausting ${SERVER_START_RETRIES} start attempt(s)"
+    exit "$RESOURCE_BUSY_EXIT_CODE"
+  fi
+  exit 1
+fi
+
+"${VLLM_CLI[@]}" bench serve \
   --model "$MODEL_NAME" \
   --host "$HOST" \
   --port "$PORT" \
@@ -313,13 +623,13 @@ vllm bench serve \
   --result-dir "$RESULT_ROOT" \
   --result-filename "$(basename "$RAW_RESULT_FILE")"
 
-CORE_VERSION=$(python - <<'PY'
+CORE_VERSION=$("${PYTHON_BIN}" - <<'PY'
 import vllm
 print(vllm.__version__)
 PY
 )
 
-BACKEND_VERSION=$(python - <<'PY'
+BACKEND_VERSION=$("${PYTHON_BIN}" - <<'PY'
 from vllm_ascend._version import __version__
 print(__version__)
 PY
@@ -327,7 +637,7 @@ PY
 
 ENGINE_VERSION="$ASCEND_HUST_TARGET_SHA_SHORT"
 
-python -m vllm_hust_benchmark.cli submit \
+"${PYTHON_BIN}" -m vllm_hust_benchmark.cli submit \
   "$BENCH_SCENARIO" \
   --benchmark-result-file "$RAW_RESULT_FILE" \
   --constraints-file "$EFFECTIVE_CONSTRAINTS_FILE" \
@@ -361,7 +671,7 @@ if [[ "$PUBLISH_TO_HF" == "1" ]]; then
     exit 2
   fi
 
-  python -m vllm_hust_benchmark.cli sync-submission-to-hf \
+  "${PYTHON_BIN}" -m vllm_hust_benchmark.cli sync-submission-to-hf \
     --submission-dir "$SUBMISSION_DIR" \
     --aggregate-output-dir "$AGGREGATE_OUTPUT_DIR" \
     --repo-id "$HF_REPO_ID" \
@@ -369,7 +679,7 @@ if [[ "$PUBLISH_TO_HF" == "1" ]]; then
     --commit-message "chore: sync vllm-hust benchmark from vllm-ascend-hust $RUN_ID (${ASCEND_HUST_TARGET_REPOSITORY}@${ASCEND_HUST_TARGET_REF}:${ASCEND_HUST_TARGET_SHA_SHORT})" \
     --execute
 else
-  python -m vllm_hust_benchmark.cli publish-website \
+  "${PYTHON_BIN}" -m vllm_hust_benchmark.cli publish-website \
     --source-dir "$SUBMISSIONS_ROOT" \
     --output-dir "$AGGREGATE_OUTPUT_DIR" \
     --execute

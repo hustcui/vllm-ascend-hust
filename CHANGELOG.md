@@ -4,6 +4,16 @@
 
 ### Changed
 
+- Relaxed several optional Ascend imports and registrations so the default text
+  serving path used by the same-spec benchmark no longer fails early on missing
+  MoE, `torchvision`, FlashLB, or speculative-decoding-only dependencies.
+- Deferred MoE op registration to actual MoE models and lazy-loaded the ngram
+  proposer / FlashLB code paths, keeping the common `Qwen2.5-14B-Instruct`
+  serving path available without pulling in unrelated optional kernels.
+- Added the missing thinking-budget batch fields used by newer upstream request
+  flows so current benchmark traffic can enter the Ascend runner without input
+  batch shape/attribute regressions.
+
 - Defaulted `Qwen2ForCausalLM` on Ascend to a native rotary fallback inside the
   compiled path instead of forcing a full eager fallback. This keeps
   `torch.compile` plus PIECEWISE ACL graph execution enabled while avoiding the
