@@ -449,26 +449,19 @@ if (( server_ready_max_attempts < 1 )); then
 fi
 
 server_ready=0
-PRESET_ASCEND_VISIBLE_DEVICES=${ASCEND_RT_VISIBLE_DEVICES:-}
 
 for start_attempt in $(seq 1 "$SERVER_START_RETRIES"); do
   if [[ "$CHIP_COUNT" == "1" ]]; then
-    if [[ -n "$PRESET_ASCEND_VISIBLE_DEVICES" && "$PRESET_ASCEND_VISIBLE_DEVICES" != *,* ]]; then
-      export ASCEND_RT_VISIBLE_DEVICES="$PRESET_ASCEND_VISIBLE_DEVICES"
+    SELECTED_ASCEND_DEVICE_INFO="$(select_ascend_device "$start_attempt" "$NPU_SMI_BIN")"
+    if [[ -n "$SELECTED_ASCEND_DEVICE_INFO" ]]; then
+      IFS=$'\t' read -r SELECTED_ASCEND_DEVICE SELECTED_ASCEND_DEVICE_SOURCE <<<"$SELECTED_ASCEND_DEVICE_INFO"
+      export ASCEND_RT_VISIBLE_DEVICES="$SELECTED_ASCEND_DEVICE"
       export VLLM_ASCEND_TORCH_PREFLIGHT_DEVICE="npu:0"
-      echo "using preset single-card Ascend device: $ASCEND_RT_VISIBLE_DEVICES (runner-env)"
+      echo "selected single-card Ascend device: $ASCEND_RT_VISIBLE_DEVICES (${SELECTED_ASCEND_DEVICE_SOURCE})"
     else
-      SELECTED_ASCEND_DEVICE_INFO="$(select_ascend_device "$start_attempt" "$NPU_SMI_BIN")"
-      if [[ -n "$SELECTED_ASCEND_DEVICE_INFO" ]]; then
-        IFS=$'\t' read -r SELECTED_ASCEND_DEVICE SELECTED_ASCEND_DEVICE_SOURCE <<<"$SELECTED_ASCEND_DEVICE_INFO"
-        export ASCEND_RT_VISIBLE_DEVICES="$SELECTED_ASCEND_DEVICE"
-        export VLLM_ASCEND_TORCH_PREFLIGHT_DEVICE="npu:0"
-        echo "selected single-card Ascend device: $ASCEND_RT_VISIBLE_DEVICES (${SELECTED_ASCEND_DEVICE_SOURCE})"
-      else
-        unset ASCEND_RT_VISIBLE_DEVICES
-        unset VLLM_ASCEND_TORCH_PREFLIGHT_DEVICE
-        echo "Could not resolve a single-card Ascend device; probing runtime without device scoping"
-      fi
+      unset ASCEND_RT_VISIBLE_DEVICES
+      unset VLLM_ASCEND_TORCH_PREFLIGHT_DEVICE
+      echo "Could not resolve a single-card Ascend device; probing runtime without device scoping"
     fi
   fi
 
