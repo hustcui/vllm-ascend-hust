@@ -256,6 +256,16 @@ def run_npu_smi(*args: str) -> subprocess.CompletedProcess[str] | None:
   if not npu_smi_bin:
     return None
 
+  # Probe npu-smi with a minimal environment so Ascend/Python job variables do
+  # not interfere with the management CLI.
+  clean_env = {
+    "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
+    "HOME": os.environ.get("HOME", ""),
+    "LANG": os.environ.get("LANG", "C.UTF-8"),
+    "LC_ALL": os.environ.get("LC_ALL", "C.UTF-8"),
+    "LD_LIBRARY_PATH": os.environ.get("LD_LIBRARY_PATH", ""),
+  }
+
   try:
     return subprocess.run(
       [npu_smi_bin, *args],
@@ -263,6 +273,7 @@ def run_npu_smi(*args: str) -> subprocess.CompletedProcess[str] | None:
       capture_output=True,
       text=True,
       timeout=5,
+      env=clean_env,
     )
   except subprocess.TimeoutExpired:
     print(f"npu-smi {' '.join(args)} timed out after 5s", file=sys.stderr)
