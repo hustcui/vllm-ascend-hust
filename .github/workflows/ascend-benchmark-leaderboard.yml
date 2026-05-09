@@ -292,6 +292,7 @@ jobs:
           PY
 
       - name: Run benchmark CI and optional HF sync
+        id: run_benchmark_ci
         env:
           WORKSPACE_ROOT: ${{ github.workspace }}
           VLLM_HUST_REPO: ${{ github.workspace }}/vllm-hust
@@ -300,7 +301,19 @@ jobs:
           VLLM_HUST_WEBSITE_REPO: ${{ github.workspace }}/vllm-hust-website
         run: |
           source scripts/use_single_ascend_env.sh
+          set +e
           bash .github/workflows/scripts/run_ascend_benchmark_ci.sh
+          benchmark_exit_code=$?
+          set -e
+
+          echo "BENCHMARK_EXIT_CODE=$benchmark_exit_code" >> "$GITHUB_ENV"
+
+          if [[ "$benchmark_exit_code" -eq 75 && "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+            echo "Ascend benchmark hit shared-runner resource contention; treating this PR run as neutral instead of failing CI."
+            exit 0
+          fi
+
+          exit "$benchmark_exit_code"
 
       - name: Build benchmark summary artifacts
         if: always()
@@ -322,6 +335,7 @@ jobs:
           run_url = f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}"
           bench_scenario = os.environ.get('BENCH_SCENARIO', 'random-online')
           publish_mode = 'hf-sync' if os.environ.get('PUBLISH_TO_HF') == '1' else 'artifact-preview'
+          benchmark_exit_code = os.environ.get('BENCHMARK_EXIT_CODE', '0')
           model_name = os.environ.get('MODEL_NAME', 'unknown')
           hf_repo = os.environ.get('HF_REPO_ID', 'unknown')
           leaderboard_url = os.environ.get('WEBSITE_LEADERBOARD_URL', '').strip()
@@ -355,6 +369,10 @@ jobs:
             f'- Publish mode: `{publish_mode}`',
             f'- Workflow run: [view run]({run_url})',
           ]
+          if benchmark_exit_code == '75':
+            contention_note = '- Benchmark execution: `shared-runner resource contention (temporary)`'
+            lines.append(contention_note)
+            comment_lines.append(contention_note)
           if raw_result.is_file():
             payload = json.loads(raw_result.read_text(encoding='utf-8'))
             metric_lines = [

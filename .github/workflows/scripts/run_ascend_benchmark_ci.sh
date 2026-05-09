@@ -70,6 +70,7 @@ SERVER_START_RETRIES=${SERVER_START_RETRIES:-8}
 SERVER_START_RETRY_DELAY_SECONDS=${SERVER_START_RETRY_DELAY_SECONDS:-10}
 ASCEND_RUNTIME_READY_TIMEOUT_SECONDS=${ASCEND_RUNTIME_READY_TIMEOUT_SECONDS:-30}
 ASCEND_RUNTIME_READY_POLL_SECONDS=${ASCEND_RUNTIME_READY_POLL_SECONDS:-10}
+RESOURCE_BUSY_EXIT_CODE=${RESOURCE_BUSY_EXIT_CODE:-75}
 
 server_pid=""
 server_group_pid=""
@@ -492,11 +493,16 @@ for start_attempt in $(seq 1 "$SERVER_START_RETRIES"); do
     if ! kill -0 "$server_pid" 2>/dev/null; then
       echo "vLLM server exited before becoming ready"
       cat "$SERVER_LOG"
-      if [[ "$start_attempt" -lt "$SERVER_START_RETRIES" ]] && server_log_indicates_resource_busy; then
-        echo "Detected transient Ascend resource busy state; retrying server start in ${SERVER_START_RETRY_DELAY_SECONDS}s (attempt ${start_attempt}/${SERVER_START_RETRIES})"
-        cleanup
-        sleep "$SERVER_START_RETRY_DELAY_SECONDS"
-        break
+      if server_log_indicates_resource_busy; then
+        if [[ "$start_attempt" -lt "$SERVER_START_RETRIES" ]]; then
+          echo "Detected transient Ascend resource busy state; retrying server start in ${SERVER_START_RETRY_DELAY_SECONDS}s (attempt ${start_attempt}/${SERVER_START_RETRIES})"
+          cleanup
+          sleep "$SERVER_START_RETRY_DELAY_SECONDS"
+          break
+        fi
+
+        echo "Detected transient Ascend resource busy state after exhausting ${SERVER_START_RETRIES} start attempt(s)"
+        exit "$RESOURCE_BUSY_EXIT_CODE"
       fi
       exit 1
     fi
@@ -504,11 +510,16 @@ for start_attempt in $(seq 1 "$SERVER_START_RETRIES"); do
     if [[ "$attempt" -eq "$server_ready_max_attempts" ]]; then
       echo "Timed out waiting for vLLM server to become ready after ${SERVER_READY_TIMEOUT_SECONDS}s"
       cat "$SERVER_LOG"
-      if [[ "$start_attempt" -lt "$SERVER_START_RETRIES" ]] && server_log_indicates_resource_busy; then
-        echo "Detected transient Ascend resource busy state after timeout; retrying server start in ${SERVER_START_RETRY_DELAY_SECONDS}s (attempt ${start_attempt}/${SERVER_START_RETRIES})"
-        cleanup
-        sleep "$SERVER_START_RETRY_DELAY_SECONDS"
-        break
+      if server_log_indicates_resource_busy; then
+        if [[ "$start_attempt" -lt "$SERVER_START_RETRIES" ]]; then
+          echo "Detected transient Ascend resource busy state after timeout; retrying server start in ${SERVER_START_RETRY_DELAY_SECONDS}s (attempt ${start_attempt}/${SERVER_START_RETRIES})"
+          cleanup
+          sleep "$SERVER_START_RETRY_DELAY_SECONDS"
+          break
+        fi
+
+        echo "Detected transient Ascend resource busy state after exhausting ${SERVER_START_RETRIES} start attempt(s)"
+        exit "$RESOURCE_BUSY_EXIT_CODE"
       fi
       exit 1
     fi
@@ -520,6 +531,10 @@ done
 if [[ "$server_ready" != "1" ]]; then
   echo "vLLM server did not become ready after ${SERVER_START_RETRIES} start attempt(s)"
   cat "$SERVER_LOG"
+  if server_log_indicates_resource_busy; then
+    echo "Detected transient Ascend resource busy state after exhausting ${SERVER_START_RETRIES} start attempt(s)"
+    exit "$RESOURCE_BUSY_EXIT_CODE"
+  fi
   exit 1
 fi
 
