@@ -347,7 +347,6 @@ select_ascend_device() {
 import os
 from pathlib import Path
 import re
-import shutil
 import subprocess
 import sys
 
@@ -411,10 +410,30 @@ def run_npu_smi(*args: str) -> subprocess.CompletedProcess[str] | None:
     "LD_LIBRARY_PATH": os.environ.get("LD_LIBRARY_PATH", ""),
   }
 
-  def invoke(command: list[str]) -> subprocess.CompletedProcess[str] | None:
+  try:
+    result = subprocess.run(
+      [npu_smi_bin, *args],
+      check=False,
+      capture_output=True,
+      text=True,
+      timeout=5,
+      env=clean_env,
+    )
+    if result.returncode == 0 or os.geteuid() == 0:
+      return result
+
+    if os.environ.get("NPU_SMI_USE_SUDO_FALLBACK", "1") == "0":
+      print(f"sudo fallback disabled for npu-smi {' '.join(args)}", file=sys.stderr)
+      return result
+
+    sudo_bin = shutil.which("sudo", path=clean_env["PATH"])
+    if not sudo_bin:
+      print(f"sudo fallback unavailable for npu-smi {' '.join(args)}: sudo not found in PATH", file=sys.stderr)
+      return result
+
     try:
-      return subprocess.run(
-        command,
+      sudo_result = subprocess.run(
+        [sudo_bin, "-n", npu_smi_bin, *args],
         check=False,
         capture_output=True,
         text=True,
@@ -422,37 +441,28 @@ def run_npu_smi(*args: str) -> subprocess.CompletedProcess[str] | None:
         env=clean_env,
       )
     except subprocess.TimeoutExpired:
-      print(f"{' '.join(command)} timed out after 5s", file=sys.stderr)
-      return None
+      print(f"sudo npu-smi {' '.join(args)} timed out after 5s", file=sys.stderr)
+      return result
     except Exception as exc:
-      print(f"{' '.join(command)} failed: {exc}", file=sys.stderr)
-      return None
+      print(f"sudo npu-smi {' '.join(args)} failed: {exc}", file=sys.stderr)
+      return result
 
-  result = invoke([npu_smi_bin, *args])
-  if result is None or result.returncode == 0 or os.geteuid() == 0:
+    if sudo_result.returncode == 0:
+      print(f"sudo fallback succeeded for npu-smi {' '.join(args)}", file=sys.stderr)
+      return sudo_result
+
+    print(
+      f"sudo fallback for npu-smi {' '.join(args)} returned {sudo_result.returncode}: "
+      f"{format_npu_smi_failure(sudo_result)}",
+      file=sys.stderr,
+    )
     return result
-
-  if os.environ.get("NPU_SMI_USE_SUDO_FALLBACK", "1") == "0":
-    return result
-
-  sudo_bin = shutil.which("sudo", path=clean_env["PATH"])
-  if not sudo_bin:
-    return result
-
-  sudo_result = invoke([sudo_bin, "-n", npu_smi_bin, *args])
-  if sudo_result is not None and sudo_result.returncode == 0:
-    print(f"npu-smi {' '.join(args)} succeeded via sudo fallback", file=sys.stderr)
-    return sudo_result
-
-  return result
-
-
-def format_npu_smi_failure(result: subprocess.CompletedProcess[str]) -> str:
-  stderr = (result.stderr or "").strip()
-  stdout = (result.stdout or "").strip()
-  if stderr and stdout:
-    return f"{stderr} | stdout: {stdout}"
-  return stderr or stdout or "<no output>"
+  except subprocess.TimeoutExpired:
+    print(f"npu-smi {' '.join(args)} timed out after 5s", file=sys.stderr)
+    return None
+  except Exception as exc:
+    print(f"npu-smi {' '.join(args)} failed: {exc}", file=sys.stderr)
+    return None
 
 
 def select_best_idle_device(info_output: str, logical_map: dict[tuple[str, str], int]) -> tuple[int, str] | None:
@@ -514,7 +524,7 @@ if mapping_result is not None and mapping_result.returncode == 0:
   logical_map = parse_logical_map(mapping_result.stdout)
   logical_devices = list_status_devices(mapping_result.stdout)
 elif mapping_result is not None:
-  print(f"npu-smi info -m returned {mapping_result.returncode}: {format_npu_smi_failure(mapping_result)}", file=sys.stderr)
+  print(f"npu-smi info -m returned {mapping_result.returncode}: {mapping_result.stderr.strip()}", file=sys.stderr)
 
 selection_attempt = max(1, int(os.environ.get("ASCEND_DEVICE_SELECTION_ATTEMPT", "1")))
 
@@ -531,7 +541,7 @@ if info_result is not None and info_result.returncode == 0:
     print(f"{fallback_device}\tstatus-round-robin")
     sys.exit(0)
 elif info_result is not None:
-  print(f"npu-smi info returned {info_result.returncode}: {format_npu_smi_failure(info_result)}", file=sys.stderr)
+  print(f"npu-smi info returned {info_result.returncode}: {info_result.stderr.strip()}", file=sys.stderr)
 
 if logical_devices:
   fallback_device = logical_devices[(selection_attempt - 1) % len(logical_devices)]
