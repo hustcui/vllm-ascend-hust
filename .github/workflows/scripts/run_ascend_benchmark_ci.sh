@@ -191,9 +191,20 @@ build_sudo_env_preserve_list() {
   printf '%s\n' "$joined"
 }
 
+export_sudo_preserved_env_vars() {
+  local var_name
+
+  for var_name in "${SUDO_PRESERVE_ENV_VARS[@]}"; do
+    if [[ -n "${!var_name+x}" ]]; then
+      export "$var_name"
+    fi
+  done
+}
+
 run_ascend_root_helper() {
   if [[ "$ASCEND_BENCHMARK_USE_SUDO" == "1" ]]; then
     local preserve_list
+    export_sudo_preserved_env_vars
     preserve_list=$(build_sudo_env_preserve_list)
     if [[ ! -x "$ASCEND_BENCHMARK_ROOT_HELPER" ]]; then
       echo "Ascend benchmark root helper is not executable: $ASCEND_BENCHMARK_ROOT_HELPER" >&2
@@ -371,6 +382,7 @@ start_server() {
   if command -v setsid >/dev/null 2>&1; then
     if [[ "$ASCEND_BENCHMARK_USE_SUDO" == "1" ]]; then
       local preserve_list
+      export_sudo_preserved_env_vars
       preserve_list=$(build_sudo_env_preserve_list)
       if [[ -n "$preserve_list" ]]; then
         setsid sudo --preserve-env="$preserve_list" -E -n "$ASCEND_BENCHMARK_ROOT_HELPER" serve >"$SERVER_LOG" 2>&1 &
