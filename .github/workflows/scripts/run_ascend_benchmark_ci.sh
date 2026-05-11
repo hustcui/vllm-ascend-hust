@@ -342,11 +342,17 @@ else
   echo "Could not resolve npu-smi binary; single-card device selection may be unavailable"
 fi
 
+USER_PROVIDED_ASCEND_VISIBLE_DEVICES=0
+if [[ -n "${ASCEND_RT_VISIBLE_DEVICES:-}" ]]; then
+  USER_PROVIDED_ASCEND_VISIBLE_DEVICES=1
+fi
+
 select_ascend_device() {
   ASCEND_DEVICE_SELECTION_ATTEMPT="${1:-1}" NPU_SMI_BIN="${2:-}" "${PYTHON_BIN}" - <<'PY'
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 
@@ -559,7 +565,7 @@ configure_single_card_ascend_device() {
   local start_attempt="${1:-1}"
   local selected_device_info=""
 
-  if [[ -n "${ASCEND_RT_VISIBLE_DEVICES:-}" ]]; then
+  if [[ "$USER_PROVIDED_ASCEND_VISIBLE_DEVICES" == "1" ]]; then
     export VLLM_ASCEND_TORCH_PREFLIGHT_DEVICE="${VLLM_ASCEND_TORCH_PREFLIGHT_DEVICE:-npu:0}"
     echo "using explicit Ascend visible devices from environment: $ASCEND_RT_VISIBLE_DEVICES"
     echo "skipping automatic single-card Ascend device selection"
