@@ -79,9 +79,136 @@ SERVER_START_RETRY_DELAY_SECONDS=${SERVER_START_RETRY_DELAY_SECONDS:-10}
 ASCEND_RUNTIME_READY_TIMEOUT_SECONDS=${ASCEND_RUNTIME_READY_TIMEOUT_SECONDS:-30}
 ASCEND_RUNTIME_READY_POLL_SECONDS=${ASCEND_RUNTIME_READY_POLL_SECONDS:-10}
 RESOURCE_BUSY_EXIT_CODE=${RESOURCE_BUSY_EXIT_CODE:-75}
+ASCEND_BENCHMARK_USE_SUDO=${ASCEND_BENCHMARK_USE_SUDO:-0}
 
 server_pid=""
 server_group_pid=""
+
+SUDO_PRESERVE_ENV_VARS=(
+  ASCEND_AICPU_PATH
+  ASCEND_BENCHMARK_USE_SUDO
+  ASCEND_HOME_PATH
+  ASCEND_OPP_PATH
+  ASCEND_RT_VISIBLE_DEVICES
+  ASCEND_TOOLKIT_HOME
+  ASCEND_TOOLKIT_LATEST_HOME
+  ASCEND_VISIBLE_DEVICES
+  ATB_COMPARE_TILING_EVERY_KERNEL
+  ATB_HOME_PATH
+  ATB_MATMUL_SHUFFLE_K_ENABLE
+  ATB_OPSRUNNER_KERNEL_CACHE_GLOABL_COUNT
+  ATB_OPSRUNNER_KERNEL_CACHE_LOCAL_COUNT
+  ATB_SHARE_MEMORY_NAME_SUFFIX
+  ATB_STREAM_SYNC_EVERY_KERNEL_ENABLE
+  ATB_STREAM_SYNC_EVERY_OPERATION_ENABLE
+  ATB_STREAM_SYNC_EVERY_RUNNER_ENABLE
+  ATB_WORKSPACE_MEM_ALLOC_ALG_TYPE
+  BENCH_CONSTRAINTS_FILE
+  BENCH_DATASET_PATH
+  BENCH_INPUT_LEN
+  BENCH_MAX_CONCURRENCY
+  BENCH_NUM_PROMPTS
+  BENCH_OUTPUT_LEN
+  BENCH_RANDOM_BATCH_SIZE
+  BENCH_RANDOM_INPUT_LEN
+  BENCH_RANDOM_OUTPUT_LEN
+  BENCH_REQUEST_RATE
+  BENCH_SCENARIO
+  CHIP_COUNT
+  CI_HOME
+  CMAKE_PREFIX_PATH
+  CURRENT_RUNTIME_CWD
+  CURRENT_RUNTIME_PYTHON
+  CURRENT_VLLM_ASCEND_HUST_REPO
+  CURRENT_VLLM_CACHE_ROOT
+  CURRENT_VLLM_HUST_REPO
+  DTYPE
+  GITHUB_ACTOR
+  GITHUB_EVENT_NAME
+  HCCL_CONNECT_TIMEOUT
+  HCCL_EXEC_TIMEOUT
+  HF_HOME
+  HOME
+  HOST
+  LD_LIBRARY_PATH
+  MAX_MODEL_LEN
+  MAX_NUM_SEQS
+  MODEL_NAME
+  MODEL_PARAMETERS
+  MODEL_PRECISION
+  NODE_COUNT
+  PATH
+  PORT
+  PYTHONPATH
+  RESULT_DIR
+  RESULT_ROOT
+  RUN_ID
+  SAME_SPEC_CONSTRAINTS_FILE
+  SAME_SPEC_SPEC_FILE
+  SERVER_LOG
+  TMPDIR
+  VLLM_ASCEND_TORCH_PREFLIGHT
+  VLLM_ASCEND_TORCH_PREFLIGHT_DEVICE
+  VLLM_ASCEND_HUST_REPO
+  VLLM_HUST_BENCHMARK_REPO
+  VLLM_HUST_REPO
+  WORKSPACE_ROOT
+  XDG_CACHE_HOME
+  XDG_CONFIG_HOME
+)
+
+build_sudo_env_preserve_list() {
+  local preserved=()
+  local var_name
+
+  for var_name in "${SUDO_PRESERVE_ENV_VARS[@]}"; do
+    if [[ -n "${!var_name+x}" ]]; then
+      preserved+=("$var_name")
+    fi
+  done
+
+  local joined=""
+  if [[ "${#preserved[@]}" -gt 0 ]]; then
+    joined=$(IFS=,; printf '%s' "${preserved[*]}")
+  fi
+  printf '%s\n' "$joined"
+}
+
+build_ascend_command_prefix() {
+  if [[ "$ASCEND_BENCHMARK_USE_SUDO" == "1" ]]; then
+    local preserve_list
+    preserve_list=$(build_sudo_env_preserve_list)
+    if ! sudo -n true 2>/dev/null; then
+      echo "ASCEND_BENCHMARK_USE_SUDO=1 but passwordless sudo is unavailable for benchmark commands" >&2
+      return 1
+    fi
+    if [[ -n "$preserve_list" ]]; then
+      printf 'sudo --preserve-env=%q -E -n' "$preserve_list"
+    else
+      printf 'sudo -E -n'
+    fi
+  else
+    printf ''
+  fi
+}
+
+run_ascend_command() {
+  if [[ "$ASCEND_BENCHMARK_USE_SUDO" == "1" ]]; then
+    local preserve_list
+    preserve_list=$(build_sudo_env_preserve_list)
+    if ! sudo -n true 2>/dev/null; then
+      echo "ASCEND_BENCHMARK_USE_SUDO=1 but passwordless sudo is unavailable for benchmark commands" >&2
+      return 1
+    fi
+    if [[ -n "$preserve_list" ]]; then
+      sudo --preserve-env="$preserve_list" -E -n "$@"
+    else
+      sudo -E -n "$@"
+    fi
+  else
+    "$@"
+  fi
+}
 
 cleanup() {
   if [[ -n "$server_group_pid" ]]; then
@@ -181,7 +308,7 @@ wait_for_ascend_runtime_ready() {
   fi
 
   for runtime_attempt in $(seq 1 "$max_attempts"); do
-    if "${PYTHON_BIN}" - <<'PY' >"$RUNTIME_READY_LOG" 2>&1
+    if run_ascend_command "${PYTHON_BIN}" - <<'PY' >"$RUNTIME_READY_LOG" 2>&1
 import sys
 
 try:
@@ -227,21 +354,35 @@ resolve_npu_smi_bin() {
 }
 
 start_server() {
+  local ascend_command_prefix
+  ascend_command_prefix=$(build_ascend_command_prefix)
+
   if command -v setsid >/dev/null 2>&1; then
-    setsid env VLLM_ASCEND_TORCH_PREFLIGHT=0 "${VLLM_SERVE[@]}" \
-      --model "$MODEL_NAME" \
-      --host "$HOST" \
-      --port "$PORT" \
-      --dtype "$DTYPE" \
-      --max-model-len "$MAX_MODEL_LEN" \
-      --max-num-seqs "$MAX_NUM_SEQS" \
-      --enforce-eager >"$SERVER_LOG" 2>&1 &
+    if [[ -n "$ascend_command_prefix" ]]; then
+      setsid bash -lc "${ascend_command_prefix} env VLLM_ASCEND_TORCH_PREFLIGHT=0 \"\$@\"" _ "${VLLM_SERVE[@]}" \
+        --model "$MODEL_NAME" \
+        --host "$HOST" \
+        --port "$PORT" \
+        --dtype "$DTYPE" \
+        --max-model-len "$MAX_MODEL_LEN" \
+        --max-num-seqs "$MAX_NUM_SEQS" \
+        --enforce-eager >"$SERVER_LOG" 2>&1 &
+    else
+      setsid env VLLM_ASCEND_TORCH_PREFLIGHT=0 "${VLLM_SERVE[@]}" \
+        --model "$MODEL_NAME" \
+        --host "$HOST" \
+        --port "$PORT" \
+        --dtype "$DTYPE" \
+        --max-model-len "$MAX_MODEL_LEN" \
+        --max-num-seqs "$MAX_NUM_SEQS" \
+        --enforce-eager >"$SERVER_LOG" 2>&1 &
+    fi
     server_pid=$!
     server_group_pid=$server_pid
     printf '%s\n' "$server_pid" >"$SERVER_PID_MARKER"
     printf '%s\n' "$server_group_pid" >"$SERVER_PGID_MARKER"
   else
-    env VLLM_ASCEND_TORCH_PREFLIGHT=0 "${VLLM_SERVE[@]}" \
+    run_ascend_command env VLLM_ASCEND_TORCH_PREFLIGHT=0 "${VLLM_SERVE[@]}" \
       --model "$MODEL_NAME" \
       --host "$HOST" \
       --port "$PORT" \
@@ -277,7 +418,7 @@ run_same_spec_current_benchmark() {
   rm -f "$same_spec_raw_result" "$RAW_RESULT_FILE"
   rm -rf "$same_spec_submission_dir" "$SUBMISSION_DIR"
 
-  env \
+  run_ascend_command env \
     VLLM_HUST_WORKSPACE_ROOT="$WORKSPACE_ROOT" \
     CURRENT_RUNTIME_CWD=/tmp \
     CURRENT_RUNTIME_PYTHON="$PYTHON_BIN" \
@@ -599,6 +740,7 @@ echo "benchmark port: $PORT"
 echo "benchmark scenario: $BENCH_SCENARIO"
 echo "publish to hf: $PUBLISH_TO_HF"
 echo "same-spec benchmark enabled: $SAME_SPEC_BENCHMARK_ENABLED"
+echo "ascend benchmark use sudo: $ASCEND_BENCHMARK_USE_SUDO"
 
 case "$BENCH_SCENARIO" in
   random-online)
