@@ -365,6 +365,7 @@ jobs:
           leaderboard_entry = result_root / 'submissions' / run_id / 'run_leaderboard.json'
           summary_path = Path(os.environ['GITHUB_STEP_SUMMARY'])
           comment_path = result_root / 'benchmark_comment.md'
+          runtime_ready_log = result_root / 'runtime-ready.log'
           run_url = f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}"
           bench_scenario = os.environ.get('BENCH_SCENARIO', 'random-online')
           benchmark_exit_code = os.environ.get('BENCHMARK_EXIT_CODE', '0')
@@ -415,6 +416,12 @@ jobs:
             contention_note = '- Benchmark execution: `shared-runner resource contention (temporary)`'
             lines.append(contention_note)
             comment_lines.append(contention_note)
+          if runtime_ready_log.is_file():
+            runtime_ready_text = runtime_ready_log.read_text(encoding='utf-8', errors='replace')
+            if 'sudo: a password is required' in runtime_ready_text:
+              sudo_note = '- Benchmark execution: `passwordless sudo is required for .github/workflows/scripts/run_ascend_benchmark_root_helper.sh on the runner host`'
+              lines.append(sudo_note)
+              comment_lines.append(sudo_note)
           if raw_result.is_file():
             payload = json.loads(raw_result.read_text(encoding='utf-8'))
             metric_lines = [
@@ -494,6 +501,7 @@ jobs:
 
       - name: Update PR benchmark comment
         if: ${{ always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
+        continue-on-error: true
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
         with:
           script: |

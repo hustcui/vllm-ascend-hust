@@ -79,6 +79,7 @@ SERVER_START_RETRY_DELAY_SECONDS=${SERVER_START_RETRY_DELAY_SECONDS:-10}
 ASCEND_RUNTIME_READY_TIMEOUT_SECONDS=${ASCEND_RUNTIME_READY_TIMEOUT_SECONDS:-30}
 ASCEND_RUNTIME_READY_POLL_SECONDS=${ASCEND_RUNTIME_READY_POLL_SECONDS:-10}
 RESOURCE_BUSY_EXIT_CODE=${RESOURCE_BUSY_EXIT_CODE:-75}
+SUDO_AUTH_EXIT_CODE=${SUDO_AUTH_EXIT_CODE:-76}
 ASCEND_BENCHMARK_USE_SUDO=${ASCEND_BENCHMARK_USE_SUDO:-0}
 ASCEND_BENCHMARK_ROOT_HELPER=${ASCEND_BENCHMARK_ROOT_HELPER:-$VLLM_ASCEND_HUST_REPO/.github/workflows/scripts/run_ascend_benchmark_root_helper.sh}
 
@@ -245,6 +246,10 @@ runtime_ready_log_indicates_resource_busy() {
   [[ -f "$RUNTIME_READY_LOG" ]] && grep -qE 'Resource_Busy\(EL0005\)|aclInit, error code is 507899|The resources are busy' "$RUNTIME_READY_LOG"
 }
 
+runtime_ready_log_indicates_sudo_auth_failure() {
+  [[ -f "$RUNTIME_READY_LOG" ]] && grep -qE 'sudo: (a password is required|a terminal is required|sorry, you must have a tty|is not allowed to execute)' "$RUNTIME_READY_LOG"
+}
+
 cleanup_previous_ci_processes() {
   local marker_pgid marker_pid remaining_matches remaining_pids
 
@@ -326,6 +331,12 @@ PY
     fi
 
     cat "$RUNTIME_READY_LOG" >&2
+
+    if runtime_ready_log_indicates_sudo_auth_failure; then
+      echo "Ascend runtime sudo fallback is not authorized for helper: $ASCEND_BENCHMARK_ROOT_HELPER" >&2
+      echo "Grant passwordless sudo for this helper script with SETENV support, or disable ASCEND_BENCHMARK_USE_SUDO." >&2
+      return "$SUDO_AUTH_EXIT_CODE"
+    fi
 
     if [[ "$runtime_attempt" -eq "$max_attempts" ]]; then
       if runtime_ready_log_indicates_resource_busy; then
@@ -843,6 +854,9 @@ if [[ "$BENCH_SCENARIO" == "random-online" && "$SAME_SPEC_BENCHMARK_ENABLED" == 
 
     if [[ "$runtime_ready_status" -ne 0 ]]; then
       echo "Ascend runtime did not become ready after ${ASCEND_RUNTIME_READY_TIMEOUT_SECONDS}s before same-spec benchmark startup"
+      if [[ "$runtime_ready_status" -eq "$SUDO_AUTH_EXIT_CODE" ]]; then
+        exit "$runtime_ready_status"
+      fi
       if [[ "$start_attempt" -lt "$SERVER_START_RETRIES" ]]; then
         echo "Retrying same-spec benchmark after runtime readiness failure in ${SERVER_START_RETRY_DELAY_SECONDS}s (attempt ${start_attempt}/${SERVER_START_RETRIES})"
         sleep "$SERVER_START_RETRY_DELAY_SECONDS"
@@ -892,6 +906,9 @@ else
 
     if [[ "$runtime_ready_status" -ne 0 ]]; then
       echo "Ascend runtime did not become ready after ${ASCEND_RUNTIME_READY_TIMEOUT_SECONDS}s"
+      if [[ "$runtime_ready_status" -eq "$SUDO_AUTH_EXIT_CODE" ]]; then
+        exit "$runtime_ready_status"
+      fi
       if [[ "$start_attempt" -lt "$SERVER_START_RETRIES" ]]; then
         echo "Retrying server start after runtime readiness failure in ${SERVER_START_RETRY_DELAY_SECONDS}s (attempt ${start_attempt}/${SERVER_START_RETRIES})"
         sleep "$SERVER_START_RETRY_DELAY_SECONDS"
