@@ -665,6 +665,26 @@ if [[ "$BENCH_SCENARIO" == "random-online" && "$SAME_SPEC_BENCHMARK_ENABLED" == 
       configure_single_card_ascend_device "$start_attempt"
     fi
 
+    if wait_for_ascend_runtime_ready; then
+      runtime_ready_status=0
+    else
+      runtime_ready_status=$?
+    fi
+
+    if [[ "$runtime_ready_status" -ne 0 ]]; then
+      echo "Ascend runtime did not become ready after ${ASCEND_RUNTIME_READY_TIMEOUT_SECONDS}s before same-spec benchmark startup"
+      if [[ "$start_attempt" -lt "$SERVER_START_RETRIES" ]]; then
+        echo "Retrying same-spec benchmark after runtime readiness failure in ${SERVER_START_RETRY_DELAY_SECONDS}s (attempt ${start_attempt}/${SERVER_START_RETRIES})"
+        sleep "$SERVER_START_RETRY_DELAY_SECONDS"
+        continue
+      fi
+      if [[ "$runtime_ready_status" -eq "$RESOURCE_BUSY_EXIT_CODE" ]]; then
+        echo "Detected transient Ascend resource busy state during same-spec runtime readiness after exhausting ${SERVER_START_RETRIES} attempt(s)"
+        exit "$RESOURCE_BUSY_EXIT_CODE"
+      fi
+      exit "$runtime_ready_status"
+    fi
+
     if run_same_spec_current_benchmark; then
       break
     else
