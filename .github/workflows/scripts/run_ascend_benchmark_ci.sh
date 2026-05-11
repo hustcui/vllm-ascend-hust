@@ -80,6 +80,7 @@ ASCEND_RUNTIME_READY_TIMEOUT_SECONDS=${ASCEND_RUNTIME_READY_TIMEOUT_SECONDS:-30}
 ASCEND_RUNTIME_READY_POLL_SECONDS=${ASCEND_RUNTIME_READY_POLL_SECONDS:-10}
 RESOURCE_BUSY_EXIT_CODE=${RESOURCE_BUSY_EXIT_CODE:-75}
 ASCEND_BENCHMARK_USE_SUDO=${ASCEND_BENCHMARK_USE_SUDO:-0}
+ASCEND_BENCHMARK_ROOT_HELPER=${ASCEND_BENCHMARK_ROOT_HELPER:-$VLLM_ASCEND_HUST_REPO/.github/workflows/scripts/run_ascend_benchmark_root_helper.sh}
 
 server_pid=""
 server_group_pid=""
@@ -116,9 +117,22 @@ SUDO_PRESERVE_ENV_VARS=(
   BENCH_SCENARIO
   CHIP_COUNT
   CI_HOME
+  CONSTRAINTS_FILE
   CMAKE_PREFIX_PATH
+  CURRENT_CLIENT_PORT
+  CURRENT_DATA_SOURCE
+  CURRENT_GIT_COMMIT
+  CURRENT_GITHUB_REF
+  CURRENT_GITHUB_REPOSITORY
+  CURRENT_MODEL_PATH
+  CURRENT_PLUGIN_ENGINE
+  CURRENT_PLUGIN_GIT_COMMIT
+  CURRENT_PLUGIN_GITHUB_REF
+  CURRENT_PLUGIN_GITHUB_REPOSITORY
   CURRENT_RUNTIME_CWD
   CURRENT_RUNTIME_PYTHON
+  CURRENT_SERVER_PORT
+  CURRENT_SUBMITTER
   CURRENT_VLLM_ASCEND_HUST_REPO
   CURRENT_VLLM_CACHE_ROOT
   CURRENT_VLLM_HUST_REPO
@@ -139,6 +153,7 @@ SUDO_PRESERVE_ENV_VARS=(
   NODE_COUNT
   PATH
   PORT
+  PYTHON_BIN
   PYTHONPATH
   RESULT_DIR
   RESULT_ROOT
@@ -150,6 +165,7 @@ SUDO_PRESERVE_ENV_VARS=(
   VLLM_ASCEND_TORCH_PREFLIGHT
   VLLM_ASCEND_TORCH_PREFLIGHT_DEVICE
   VLLM_ASCEND_HUST_REPO
+  VLLM_HUST_WORKSPACE_ROOT
   VLLM_HUST_BENCHMARK_REPO
   VLLM_HUST_REPO
   WORKSPACE_ROOT
@@ -174,31 +190,22 @@ build_sudo_env_preserve_list() {
   printf '%s\n' "$joined"
 }
 
-build_ascend_command_prefix() {
+run_ascend_root_helper() {
   if [[ "$ASCEND_BENCHMARK_USE_SUDO" == "1" ]]; then
     local preserve_list
     preserve_list=$(build_sudo_env_preserve_list)
+    if [[ ! -x "$ASCEND_BENCHMARK_ROOT_HELPER" ]]; then
+      echo "Ascend benchmark root helper is not executable: $ASCEND_BENCHMARK_ROOT_HELPER" >&2
+      return 1
+    fi
     if [[ -n "$preserve_list" ]]; then
-      printf 'sudo --preserve-env=%q -E -n' "$preserve_list"
+      sudo --preserve-env="$preserve_list" -E -n "$ASCEND_BENCHMARK_ROOT_HELPER" "$@"
     else
-      printf 'sudo -E -n'
+      sudo -E -n "$ASCEND_BENCHMARK_ROOT_HELPER" "$@"
     fi
   else
-    printf ''
-  fi
-}
-
-run_ascend_command() {
-  if [[ "$ASCEND_BENCHMARK_USE_SUDO" == "1" ]]; then
-    local preserve_list
-    preserve_list=$(build_sudo_env_preserve_list)
-    if [[ -n "$preserve_list" ]]; then
-      sudo --preserve-env="$preserve_list" -E -n "$@"
-    else
-      sudo -E -n "$@"
-    fi
-  else
-    "$@"
+    echo "run_ascend_root_helper requires ASCEND_BENCHMARK_USE_SUDO=1" >&2
+    return 2
   fi
 }
 
@@ -300,7 +307,11 @@ wait_for_ascend_runtime_ready() {
   fi
 
   for runtime_attempt in $(seq 1 "$max_attempts"); do
-    if run_ascend_command "${PYTHON_BIN}" - <<'PY' >"$RUNTIME_READY_LOG" 2>&1
+    if [[ "$ASCEND_BENCHMARK_USE_SUDO" == "1" ]]; then
+      if run_ascend_root_helper runtime-ready >"$RUNTIME_READY_LOG" 2>&1; then
+        return 0
+      fi
+    elif "${PYTHON_BIN}" - <<'PY' >"$RUNTIME_READY_LOG" 2>&1
 import sys
 
 try:
@@ -346,19 +357,15 @@ resolve_npu_smi_bin() {
 }
 
 start_server() {
-  local ascend_command_prefix
-  ascend_command_prefix=$(build_ascend_command_prefix)
-
   if command -v setsid >/dev/null 2>&1; then
-    if [[ -n "$ascend_command_prefix" ]]; then
-      setsid bash -lc "${ascend_command_prefix} env VLLM_ASCEND_TORCH_PREFLIGHT=0 \"\$@\"" _ "${VLLM_SERVE[@]}" \
-        --model "$MODEL_NAME" \
-        --host "$HOST" \
-        --port "$PORT" \
-        --dtype "$DTYPE" \
-        --max-model-len "$MAX_MODEL_LEN" \
-        --max-num-seqs "$MAX_NUM_SEQS" \
-        --enforce-eager >"$SERVER_LOG" 2>&1 &
+    if [[ "$ASCEND_BENCHMARK_USE_SUDO" == "1" ]]; then
+      local preserve_list
+      preserve_list=$(build_sudo_env_preserve_list)
+      if [[ -n "$preserve_list" ]]; then
+        setsid sudo --preserve-env="$preserve_list" -E -n "$ASCEND_BENCHMARK_ROOT_HELPER" serve >"$SERVER_LOG" 2>&1 &
+      else
+        setsid sudo -E -n "$ASCEND_BENCHMARK_ROOT_HELPER" serve >"$SERVER_LOG" 2>&1 &
+      fi
     else
       setsid env VLLM_ASCEND_TORCH_PREFLIGHT=0 "${VLLM_SERVE[@]}" \
         --model "$MODEL_NAME" \
@@ -374,14 +381,18 @@ start_server() {
     printf '%s\n' "$server_pid" >"$SERVER_PID_MARKER"
     printf '%s\n' "$server_group_pid" >"$SERVER_PGID_MARKER"
   else
-    run_ascend_command env VLLM_ASCEND_TORCH_PREFLIGHT=0 "${VLLM_SERVE[@]}" \
-      --model "$MODEL_NAME" \
-      --host "$HOST" \
-      --port "$PORT" \
-      --dtype "$DTYPE" \
-      --max-model-len "$MAX_MODEL_LEN" \
-      --max-num-seqs "$MAX_NUM_SEQS" \
-      --enforce-eager >"$SERVER_LOG" 2>&1 &
+    if [[ "$ASCEND_BENCHMARK_USE_SUDO" == "1" ]]; then
+      run_ascend_root_helper serve >"$SERVER_LOG" 2>&1 &
+    else
+      env VLLM_ASCEND_TORCH_PREFLIGHT=0 "${VLLM_SERVE[@]}" \
+        --model "$MODEL_NAME" \
+        --host "$HOST" \
+        --port "$PORT" \
+        --dtype "$DTYPE" \
+        --max-model-len "$MAX_MODEL_LEN" \
+        --max-num-seqs "$MAX_NUM_SEQS" \
+        --enforce-eager >"$SERVER_LOG" 2>&1 &
+    fi
     server_pid=$!
     printf '%s\n' "$server_pid" >"$SERVER_PID_MARKER"
   fi
@@ -410,29 +421,54 @@ run_same_spec_current_benchmark() {
   rm -f "$same_spec_raw_result" "$RAW_RESULT_FILE"
   rm -rf "$same_spec_submission_dir" "$SUBMISSION_DIR"
 
-  run_ascend_command env \
+  if [[ "$ASCEND_BENCHMARK_USE_SUDO" == "1" ]]; then
     VLLM_HUST_WORKSPACE_ROOT="$WORKSPACE_ROOT" \
-    CURRENT_RUNTIME_CWD=/tmp \
-    CURRENT_RUNTIME_PYTHON="$PYTHON_BIN" \
-    CURRENT_MODEL_PATH="$MODEL_NAME" \
-    CURRENT_VLLM_HUST_REPO="$VLLM_HUST_REPO" \
-    CURRENT_VLLM_ASCEND_HUST_REPO="$VLLM_ASCEND_HUST_REPO" \
-    CURRENT_VLLM_CACHE_ROOT="$CI_RUNTIME_ROOT/current-ascend-same-spec-cache" \
-    CURRENT_GITHUB_REPOSITORY="vLLM-HUST/vllm-hust" \
-    CURRENT_GITHUB_REF="$VLLM_HUST_REF" \
-    CURRENT_GIT_COMMIT="$current_vllm_hust_commit" \
-    CURRENT_PLUGIN_ENGINE="vllm-ascend-hust" \
-    CURRENT_PLUGIN_GITHUB_REPOSITORY="$ASCEND_HUST_TARGET_REPOSITORY" \
-    CURRENT_PLUGIN_GITHUB_REF="$ASCEND_HUST_TARGET_REF" \
-    CURRENT_PLUGIN_GIT_COMMIT="$ASCEND_HUST_TARGET_SHA" \
-    CURRENT_SUBMITTER="${GITHUB_ACTOR:-ci}" \
-    CURRENT_DATA_SOURCE="vllm-ascend-hust-ci-same-spec" \
-    RESULT_DIR="$RESULT_ROOT" \
-    RUN_ID="$RUN_ID" \
-    CURRENT_SERVER_PORT="$PORT" \
-    CURRENT_CLIENT_PORT="$PORT" \
-    CONSTRAINTS_FILE="$SAME_SPEC_CONSTRAINTS_FILE" \
-    bash "$same_spec_runner" "$SAME_SPEC_SPEC_FILE"
+      CURRENT_RUNTIME_CWD=/tmp \
+      CURRENT_RUNTIME_PYTHON="$PYTHON_BIN" \
+      CURRENT_MODEL_PATH="$MODEL_NAME" \
+      CURRENT_VLLM_HUST_REPO="$VLLM_HUST_REPO" \
+      CURRENT_VLLM_ASCEND_HUST_REPO="$VLLM_ASCEND_HUST_REPO" \
+      CURRENT_VLLM_CACHE_ROOT="$CI_RUNTIME_ROOT/current-ascend-same-spec-cache" \
+      CURRENT_GITHUB_REPOSITORY="vLLM-HUST/vllm-hust" \
+      CURRENT_GITHUB_REF="$VLLM_HUST_REF" \
+      CURRENT_GIT_COMMIT="$current_vllm_hust_commit" \
+      CURRENT_PLUGIN_ENGINE="vllm-ascend-hust" \
+      CURRENT_PLUGIN_GITHUB_REPOSITORY="$ASCEND_HUST_TARGET_REPOSITORY" \
+      CURRENT_PLUGIN_GITHUB_REF="$ASCEND_HUST_TARGET_REF" \
+      CURRENT_PLUGIN_GIT_COMMIT="$ASCEND_HUST_TARGET_SHA" \
+      CURRENT_SUBMITTER="${GITHUB_ACTOR:-ci}" \
+      CURRENT_DATA_SOURCE="vllm-ascend-hust-ci-same-spec" \
+      RESULT_DIR="$RESULT_ROOT" \
+      RUN_ID="$RUN_ID" \
+      CURRENT_SERVER_PORT="$PORT" \
+      CURRENT_CLIENT_PORT="$PORT" \
+      CONSTRAINTS_FILE="$SAME_SPEC_CONSTRAINTS_FILE" \
+      run_ascend_root_helper same-spec "$same_spec_runner" "$SAME_SPEC_SPEC_FILE"
+  else
+    env \
+      VLLM_HUST_WORKSPACE_ROOT="$WORKSPACE_ROOT" \
+      CURRENT_RUNTIME_CWD=/tmp \
+      CURRENT_RUNTIME_PYTHON="$PYTHON_BIN" \
+      CURRENT_MODEL_PATH="$MODEL_NAME" \
+      CURRENT_VLLM_HUST_REPO="$VLLM_HUST_REPO" \
+      CURRENT_VLLM_ASCEND_HUST_REPO="$VLLM_ASCEND_HUST_REPO" \
+      CURRENT_VLLM_CACHE_ROOT="$CI_RUNTIME_ROOT/current-ascend-same-spec-cache" \
+      CURRENT_GITHUB_REPOSITORY="vLLM-HUST/vllm-hust" \
+      CURRENT_GITHUB_REF="$VLLM_HUST_REF" \
+      CURRENT_GIT_COMMIT="$current_vllm_hust_commit" \
+      CURRENT_PLUGIN_ENGINE="vllm-ascend-hust" \
+      CURRENT_PLUGIN_GITHUB_REPOSITORY="$ASCEND_HUST_TARGET_REPOSITORY" \
+      CURRENT_PLUGIN_GITHUB_REF="$ASCEND_HUST_TARGET_REF" \
+      CURRENT_PLUGIN_GIT_COMMIT="$ASCEND_HUST_TARGET_SHA" \
+      CURRENT_SUBMITTER="${GITHUB_ACTOR:-ci}" \
+      CURRENT_DATA_SOURCE="vllm-ascend-hust-ci-same-spec" \
+      RESULT_DIR="$RESULT_ROOT" \
+      RUN_ID="$RUN_ID" \
+      CURRENT_SERVER_PORT="$PORT" \
+      CURRENT_CLIENT_PORT="$PORT" \
+      CONSTRAINTS_FILE="$SAME_SPEC_CONSTRAINTS_FILE" \
+      bash "$same_spec_runner" "$SAME_SPEC_SPEC_FILE"
+  fi
 
   if [[ ! -f "$same_spec_raw_result" ]]; then
     echo "same-spec benchmark did not produce raw result: $same_spec_raw_result" >&2
