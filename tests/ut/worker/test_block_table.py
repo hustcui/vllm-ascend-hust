@@ -18,8 +18,8 @@ from unittest.mock import MagicMock, patch
 
 import numpy as np
 import torch
+from vllm.v1.attention.backends.utils import PAD_SLOT_ID
 
-# import vllm.utils.cpu_triton_utils as cpu_tl
 from vllm.distributed.parallel_state import GroupCoordinator
 
 from tests.ut.base import TestBase
@@ -102,6 +102,7 @@ class TestBlockTableComputeSlotMapping(TestBase):
 
                 num_reqs = max(req_indices) + 1 if len(req_indices) > 0 else 1
                 self.setup_block_table_data(block_table, num_reqs=num_reqs)
+                block_table.commit_block_table(num_reqs)
 
                 # Build query_start_loc [num_reqs + 1] from req_indices.
                 # query_start_loc holds the cumulative token count per request,
@@ -114,8 +115,14 @@ class TestBlockTableComputeSlotMapping(TestBase):
                 # positions must be a torch int64 tensor to match the
                 # _compute_slot_mapping_kernel's positions_ptr type.
                 positions_tensor = torch.from_numpy(positions.astype(np.int64))
-                # block_table._compute_slot_mapping_kernel = cpu_tl.compute_slot_mapping_kernel
-                block_table.compute_slot_mapping(num_reqs, query_start_loc, positions_tensor)
+                with patch(
+                    "vllm_ascend.worker.block_table._compute_slot_mapping_kernel",
+                    # CPU unit tests do not register the upstream torch custom
+                    # op backing cpu_triton_utils, so force the local fallback.
+                    new=lambda *args, **kwargs: None,
+                ):
+                    block_table.compute_slot_mapping(num_reqs, query_start_loc, positions_tensor)
+                block_table.slot_mapping.copy_to_cpu(num_tokens)
 
                 actual_result = block_table.slot_mapping.np[:num_tokens]
 
@@ -125,6 +132,10 @@ class TestBlockTableComputeSlotMapping(TestBase):
                     f"DCP={dcp_world_size}, PCP={pcp_world_size}, "
                     f"interleave={cp_kv_cache_interleave_size}, "
                     f"dcp_rank={dcp_rank}, pcp_rank={pcp_rank}",
+                )
+                np.testing.assert_array_equal(
+                    block_table.slot_mapping.gpu[:num_tokens].cpu().numpy(),
+                    expected_result,
                 )
 
     def test_compute_slot_mapping_dcp1_pcp1_interleave1(self):
@@ -155,6 +166,26 @@ class TestBlockTableComputeSlotMapping(TestBase):
         self._test_slot_mapping_for_ranks(
             dcp_world_size=1, pcp_world_size=1, cp_kv_cache_interleave_size=1, test_configs=test_configs
         )
+
+    def test_compute_slot_mapping_falls_back_when_kernel_is_not_launchable(self):
+        block_table = self.create_block_table(
+            dcp_world_size=1,
+            dcp_rank=0,
+            pcp_world_size=1,
+            pcp_rank=0,
+            cp_kv_cache_interleave_size=1,
+        )
+        self.setup_block_table_data(block_table, num_reqs=2)
+
+        query_start_loc = torch.tensor([0, 2, 4], dtype=torch.int32)
+        positions = torch.tensor([0, 1, 0, 1], dtype=torch.int64)
+
+        with patch("vllm_ascend.worker.block_table._compute_slot_mapping_kernel", new=lambda *args, **kwargs: None):
+            block_table.compute_slot_mapping(2, query_start_loc, positions)
+
+        expected = np.array([0, 1, 512, 513, PAD_SLOT_ID, PAD_SLOT_ID, PAD_SLOT_ID, PAD_SLOT_ID], dtype=np.int32)
+        np.testing.assert_array_equal(block_table.slot_mapping.np[:8], expected)
+        np.testing.assert_array_equal(block_table.slot_mapping.gpu[:8].cpu().numpy(), expected)
 
     def test_compute_slot_mapping_dcp4_pcp2_interleave1(self):
         """Test compute_slot_mapping with DCP=4, PCP=2, interleave_size=1

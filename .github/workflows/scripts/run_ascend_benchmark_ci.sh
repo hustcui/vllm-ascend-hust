@@ -6,6 +6,8 @@ WORKSPACE_ROOT=${WORKSPACE_ROOT:-${GITHUB_WORKSPACE:-$PWD}}
 VLLM_HUST_REPO=${VLLM_HUST_REPO:-$WORKSPACE_ROOT/vllm-hust}
 VLLM_ASCEND_HUST_REPO=${VLLM_ASCEND_HUST_REPO:-$WORKSPACE_ROOT}
 VLLM_HUST_BENCHMARK_REPO=${VLLM_HUST_BENCHMARK_REPO:-$WORKSPACE_ROOT/vllm-hust-benchmark}
+CI_STATE_ROOT=${CI_STATE_ROOT:-$WORKSPACE_ROOT/../vllm-ascend-hust-ci-state}
+BENCHMARK_RESULTS_ROOT=${BENCHMARK_RESULTS_ROOT:-$CI_STATE_ROOT/benchmarks/ci}
 ASCEND_HUST_TARGET_REPOSITORY=${ASCEND_HUST_TARGET_REPOSITORY:-${GITHUB_REPOSITORY:-unknown}}
 ASCEND_HUST_TARGET_REF=${ASCEND_HUST_TARGET_REF:-${GITHUB_REF_NAME:-detached}}
 ASCEND_HUST_TARGET_SHA=${ASCEND_HUST_TARGET_SHA:-${GITHUB_SHA:-local}}
@@ -13,14 +15,14 @@ ASCEND_HUST_TARGET_COMMIT_URL=${ASCEND_HUST_TARGET_COMMIT_URL:-${GITHUB_SERVER_U
 ASCEND_HUST_TARGET_SHA_SHORT=$(printf '%s' "$ASCEND_HUST_TARGET_SHA" | cut -c1-8)
 
 RUN_ID=${RUN_ID:-ci-${GITHUB_RUN_ID:-manual}-${GITHUB_RUN_ATTEMPT:-1}-${ASCEND_HUST_TARGET_SHA_SHORT}}
-RESULT_ROOT=${RESULT_ROOT:-$VLLM_ASCEND_HUST_REPO/.benchmarks/ci/$RUN_ID}
+RESULT_ROOT=${RESULT_ROOT:-$BENCHMARK_RESULTS_ROOT/$RUN_ID}
 RAW_RESULT_FILE=${RAW_RESULT_FILE:-$RESULT_ROOT/raw_benchmark.json}
 SUBMISSIONS_ROOT=${SUBMISSIONS_ROOT:-$RESULT_ROOT/submissions}
 SUBMISSION_DIR=${SUBMISSION_DIR:-$SUBMISSIONS_ROOT/$RUN_ID}
 AGGREGATE_OUTPUT_DIR=${AGGREGATE_OUTPUT_DIR:-$RESULT_ROOT/leaderboard-data}
 SERVER_LOG=${SERVER_LOG:-$RESULT_ROOT/server.log}
 RUNTIME_READY_LOG=${RUNTIME_READY_LOG:-$RESULT_ROOT/runtime-ready.log}
-CI_RUNTIME_ROOT=${CI_RUNTIME_ROOT:-$WORKSPACE_ROOT/.ci-runtime}
+CI_RUNTIME_ROOT=${CI_RUNTIME_ROOT:-$CI_STATE_ROOT/runtime}
 PROCESS_MARKER_DIR=${PROCESS_MARKER_DIR:-$CI_RUNTIME_ROOT/process-markers}
 SERVER_PID_MARKER=${SERVER_PID_MARKER:-$PROCESS_MARKER_DIR/ascend-benchmark-server.pid}
 SERVER_PGID_MARKER=${SERVER_PGID_MARKER:-$PROCESS_MARKER_DIR/ascend-benchmark-server.pgid}
@@ -63,11 +65,11 @@ PYTHON_BIN="$(hust_resolve_python_bin 2>/dev/null)" || {
   exit 1
 }
 
-CI_HOME=${CI_HOME:-$WORKSPACE_ROOT/.ci-home}
+CI_HOME=${CI_HOME:-$CI_STATE_ROOT/home}
 HOME=$CI_HOME
 XDG_CACHE_HOME=$CI_HOME/.cache
 XDG_CONFIG_HOME=$CI_HOME/.config
-export CI_HOME HOME XDG_CACHE_HOME XDG_CONFIG_HOME
+export CI_STATE_ROOT BENCHMARK_RESULTS_ROOT CI_HOME HOME XDG_CACHE_HOME XDG_CONFIG_HOME
 
 export PYTHONPATH="${VLLM_HUST_REPO}:${VLLM_HUST_BENCHMARK_REPO}/src${PYTHONPATH:+:${PYTHONPATH}}"
 VLLM_CLI=("${PYTHON_BIN}" -m vllm.entrypoints.cli.main)
@@ -79,9 +81,245 @@ SERVER_START_RETRY_DELAY_SECONDS=${SERVER_START_RETRY_DELAY_SECONDS:-10}
 ASCEND_RUNTIME_READY_TIMEOUT_SECONDS=${ASCEND_RUNTIME_READY_TIMEOUT_SECONDS:-30}
 ASCEND_RUNTIME_READY_POLL_SECONDS=${ASCEND_RUNTIME_READY_POLL_SECONDS:-10}
 RESOURCE_BUSY_EXIT_CODE=${RESOURCE_BUSY_EXIT_CODE:-75}
+SUDO_AUTH_EXIT_CODE=${SUDO_AUTH_EXIT_CODE:-76}
+INVALID_BENCHMARK_RESULT_EXIT_CODE=${INVALID_BENCHMARK_RESULT_EXIT_CODE:-77}
+ASCEND_BENCHMARK_USE_SUDO=${ASCEND_BENCHMARK_USE_SUDO:-0}
+DEFAULT_SYSTEM_ASCEND_BENCHMARK_ROOT_HELPER=${DEFAULT_SYSTEM_ASCEND_BENCHMARK_ROOT_HELPER:-/usr/local/bin/run_ascend_benchmark_root_helper.sh}
+REPO_ASCEND_BENCHMARK_ROOT_HELPER=$VLLM_ASCEND_HUST_REPO/.github/workflows/scripts/run_ascend_benchmark_root_helper.sh
+REPO_ASCEND_BENCHMARK_ROOT_HELPER_INSTALL_SCRIPT=$VLLM_ASCEND_HUST_REPO/scripts/install_ascend_benchmark_root_helper.sh
+BENCHMARK_DIAGNOSTICS_FILE=${BENCHMARK_DIAGNOSTICS_FILE:-$RESULT_ROOT/benchmark_diagnostics.md}
+if [[ -n "${ASCEND_BENCHMARK_ROOT_HELPER:-}" ]]; then
+  ASCEND_BENCHMARK_ROOT_HELPER=$ASCEND_BENCHMARK_ROOT_HELPER
+elif [[ -x "$DEFAULT_SYSTEM_ASCEND_BENCHMARK_ROOT_HELPER" ]]; then
+  ASCEND_BENCHMARK_ROOT_HELPER=$DEFAULT_SYSTEM_ASCEND_BENCHMARK_ROOT_HELPER
+else
+  ASCEND_BENCHMARK_ROOT_HELPER=$REPO_ASCEND_BENCHMARK_ROOT_HELPER
+fi
 
 server_pid=""
 server_group_pid=""
+
+SUDO_PRESERVE_ENV_VARS=(
+  ASCEND_AICPU_PATH
+  ASCEND_BENCHMARK_USE_SUDO
+  ASCEND_HOME_PATH
+  ASCEND_OPP_PATH
+  ASCEND_RT_VISIBLE_DEVICES
+  ASCEND_TOOLKIT_HOME
+  ASCEND_TOOLKIT_LATEST_HOME
+  ASCEND_VISIBLE_DEVICES
+  ATB_COMPARE_TILING_EVERY_KERNEL
+  ATB_HOME_PATH
+  ATB_MATMUL_SHUFFLE_K_ENABLE
+  ATB_OPSRUNNER_KERNEL_CACHE_GLOABL_COUNT
+  ATB_OPSRUNNER_KERNEL_CACHE_LOCAL_COUNT
+  ATB_SHARE_MEMORY_NAME_SUFFIX
+  ATB_STREAM_SYNC_EVERY_KERNEL_ENABLE
+  ATB_STREAM_SYNC_EVERY_OPERATION_ENABLE
+  ATB_STREAM_SYNC_EVERY_RUNNER_ENABLE
+  ATB_WORKSPACE_MEM_ALLOC_ALG_TYPE
+  BENCH_CONSTRAINTS_FILE
+  BENCH_DATASET_PATH
+  BENCH_INPUT_LEN
+  BENCH_MAX_CONCURRENCY
+  BENCH_NUM_PROMPTS
+  BENCH_OUTPUT_LEN
+  BENCH_RANDOM_BATCH_SIZE
+  BENCH_RANDOM_INPUT_LEN
+  BENCH_RANDOM_OUTPUT_LEN
+  BENCH_REQUEST_RATE
+  BENCH_SCENARIO
+  CHIP_COUNT
+  CI_HOME
+  CONSTRAINTS_FILE
+  CMAKE_PREFIX_PATH
+  CURRENT_CLIENT_PORT
+  CURRENT_DATA_SOURCE
+  CURRENT_GIT_COMMIT
+  CURRENT_GITHUB_REF
+  CURRENT_GITHUB_REPOSITORY
+  CURRENT_MODEL_PATH
+  CURRENT_PLUGIN_ENGINE
+  CURRENT_PLUGIN_GIT_COMMIT
+  CURRENT_PLUGIN_GITHUB_REF
+  CURRENT_PLUGIN_GITHUB_REPOSITORY
+  CURRENT_RUNTIME_CWD
+  CURRENT_RUNTIME_PYTHON
+  CURRENT_SERVER_PORT
+  CURRENT_SUBMITTER
+  CURRENT_VLLM_ASCEND_HUST_REPO
+  CURRENT_VLLM_CACHE_ROOT
+  CURRENT_VLLM_HUST_REPO
+  DTYPE
+  GITHUB_ACTOR
+  GITHUB_EVENT_NAME
+  HCCL_CONNECT_TIMEOUT
+  HCCL_EXEC_TIMEOUT
+  HF_HOME
+  HOME
+  HOST
+  LD_LIBRARY_PATH
+  MAX_MODEL_LEN
+  MAX_NUM_SEQS
+  MODEL_NAME
+  MODEL_PARAMETERS
+  MODEL_PRECISION
+  NODE_COUNT
+  PATH
+  PORT
+  PYTHON_BIN
+  PYTHONPATH
+  RESULT_DIR
+  RESULT_ROOT
+  RUN_ID
+  SAME_SPEC_CONSTRAINTS_FILE
+  SAME_SPEC_SPEC_FILE
+  SERVER_LOG
+  TMPDIR
+  VLLM_ASCEND_TORCH_PREFLIGHT
+  VLLM_ASCEND_TORCH_PREFLIGHT_DEVICE
+  VLLM_ASCEND_HUST_REPO
+  VLLM_HUST_WORKSPACE_ROOT
+  VLLM_HUST_BENCHMARK_REPO
+  VLLM_HUST_REPO
+  WORKSPACE_ROOT
+  XDG_CACHE_HOME
+  XDG_CONFIG_HOME
+)
+
+build_sudo_env_preserve_list() {
+  local preserved=()
+  local var_name
+
+  for var_name in "${SUDO_PRESERVE_ENV_VARS[@]}"; do
+    if [[ -n "${!var_name+x}" ]]; then
+      preserved+=("$var_name")
+    fi
+  done
+
+  local joined=""
+  if [[ "${#preserved[@]}" -gt 0 ]]; then
+    joined=$(IFS=,; printf '%s' "${preserved[*]}")
+  fi
+  printf '%s\n' "$joined"
+}
+
+append_benchmark_diagnostic() {
+  local line=${1:-}
+
+  [[ -z "$line" ]] && return 0
+  printf '%s\n' "$line" >> "$BENCHMARK_DIAGNOSTICS_FILE"
+}
+
+benchmark_root_helper_fix_command() {
+  printf 'sudo RUNNER_USER=grunner bash %s\n' "$REPO_ASCEND_BENCHMARK_ROOT_HELPER_INSTALL_SCRIPT"
+}
+
+report_runner_checkout_fix() {
+  local missing_path=${1:-}
+
+  [[ -n "$missing_path" ]] && echo "Runner-local benchmark script missing from checkout: $missing_path" >&2
+  echo "Runner checkout fix: restore or sync the vllm-ascend-hust checkout on the runner host, then rerun the benchmark workflow." >&2
+
+  if [[ -n "$missing_path" ]]; then
+    append_benchmark_diagnostic "- Runner checkout script: missing at \`$missing_path\`"
+  fi
+  append_benchmark_diagnostic "- Runner checkout fix: \`restore or sync the vllm-ascend-hust checkout on the runner host, then rerun the benchmark workflow\`"
+}
+
+report_runner_host_fix() {
+  local fix_command
+
+  if [[ -f "$REPO_ASCEND_BENCHMARK_ROOT_HELPER_INSTALL_SCRIPT" ]]; then
+    fix_command=$(benchmark_root_helper_fix_command)
+    echo "Runner host fix: $fix_command" >&2
+    append_benchmark_diagnostic "- Runner host fix: \`$fix_command\`"
+    return 0
+  fi
+
+  echo "Runner-local install script missing from checkout: $REPO_ASCEND_BENCHMARK_ROOT_HELPER_INSTALL_SCRIPT" >&2
+  append_benchmark_diagnostic "- Runner install script: missing at \`$REPO_ASCEND_BENCHMARK_ROOT_HELPER_INSTALL_SCRIPT\`"
+  report_runner_checkout_fix "$REPO_ASCEND_BENCHMARK_ROOT_HELPER_INSTALL_SCRIPT"
+}
+
+export_sudo_preserved_env_vars() {
+  local var_name
+
+  for var_name in "${SUDO_PRESERVE_ENV_VARS[@]}"; do
+    if [[ -n "${!var_name+x}" ]]; then
+      export "$var_name"
+    fi
+  done
+}
+
+run_ascend_root_helper() {
+  if [[ "$ASCEND_BENCHMARK_USE_SUDO" == "1" ]]; then
+    local preserve_list
+    export_sudo_preserved_env_vars
+    preserve_list=$(build_sudo_env_preserve_list)
+    if [[ ! -x "$ASCEND_BENCHMARK_ROOT_HELPER" ]]; then
+      echo "Ascend benchmark root helper is not executable: $ASCEND_BENCHMARK_ROOT_HELPER" >&2
+      append_benchmark_diagnostic "- Benchmark execution: \`benchmark root helper is not executable at $ASCEND_BENCHMARK_ROOT_HELPER\`"
+      if [[ "$ASCEND_BENCHMARK_ROOT_HELPER" == "$DEFAULT_SYSTEM_ASCEND_BENCHMARK_ROOT_HELPER" ]]; then
+        report_runner_host_fix
+      fi
+      return 1
+    fi
+    if [[ -n "$preserve_list" ]]; then
+      sudo --preserve-env="$preserve_list" -E -n "$ASCEND_BENCHMARK_ROOT_HELPER" "$@"
+    else
+      sudo -E -n "$ASCEND_BENCHMARK_ROOT_HELPER" "$@"
+    fi
+  else
+    echo "run_ascend_root_helper requires ASCEND_BENCHMARK_USE_SUDO=1" >&2
+    return 2
+  fi
+}
+
+verify_root_helper_matches_repo() {
+  if [[ "$ASCEND_BENCHMARK_USE_SUDO" != "1" ]]; then
+    return 0
+  fi
+  if [[ ! -f "$REPO_ASCEND_BENCHMARK_ROOT_HELPER" ]]; then
+    echo "Runner-local benchmark root helper source missing from checkout: $REPO_ASCEND_BENCHMARK_ROOT_HELPER" >&2
+    append_benchmark_diagnostic "- Benchmark execution: \`runner-local benchmark root helper source is missing\`"
+    report_runner_checkout_fix "$REPO_ASCEND_BENCHMARK_ROOT_HELPER"
+    return 2
+  fi
+  if [[ ! -f "$REPO_ASCEND_BENCHMARK_ROOT_HELPER_INSTALL_SCRIPT" ]]; then
+    echo "Runner-local benchmark helper install script missing from checkout: $REPO_ASCEND_BENCHMARK_ROOT_HELPER_INSTALL_SCRIPT" >&2
+    append_benchmark_diagnostic "- Benchmark execution: \`runner-local benchmark helper install script is missing\`"
+    report_runner_checkout_fix "$REPO_ASCEND_BENCHMARK_ROOT_HELPER_INSTALL_SCRIPT"
+    return 2
+  fi
+  if [[ "$ASCEND_BENCHMARK_ROOT_HELPER" != "$DEFAULT_SYSTEM_ASCEND_BENCHMARK_ROOT_HELPER" ]]; then
+    if [[ ! -x "$ASCEND_BENCHMARK_ROOT_HELPER" ]]; then
+      echo "Configured Ascend benchmark root helper is not executable: $ASCEND_BENCHMARK_ROOT_HELPER" >&2
+      append_benchmark_diagnostic "- Benchmark execution: \`configured benchmark root helper is not executable at $ASCEND_BENCHMARK_ROOT_HELPER\`"
+      return 2
+    fi
+    return 0
+  fi
+  if [[ ! -x "$ASCEND_BENCHMARK_ROOT_HELPER" ]]; then
+    echo "Installed Ascend benchmark root helper is missing or not executable: $ASCEND_BENCHMARK_ROOT_HELPER" >&2
+    append_benchmark_diagnostic "- Benchmark execution: \`installed benchmark root helper is missing or not executable at $ASCEND_BENCHMARK_ROOT_HELPER\`"
+    report_runner_host_fix
+    return 2
+  fi
+  if [[ ! -r "$ASCEND_BENCHMARK_ROOT_HELPER" || ! -r "$REPO_ASCEND_BENCHMARK_ROOT_HELPER" ]]; then
+    return 0
+  fi
+  if cmp -s "$ASCEND_BENCHMARK_ROOT_HELPER" "$REPO_ASCEND_BENCHMARK_ROOT_HELPER"; then
+    return 0
+  fi
+
+  echo "Installed Ascend benchmark root helper is stale: $ASCEND_BENCHMARK_ROOT_HELPER" >&2
+  echo "Expected it to match: $REPO_ASCEND_BENCHMARK_ROOT_HELPER" >&2
+  append_benchmark_diagnostic "- Benchmark execution: \`installed benchmark root helper is stale at $ASCEND_BENCHMARK_ROOT_HELPER\`"
+  append_benchmark_diagnostic "- Expected helper source: \`$REPO_ASCEND_BENCHMARK_ROOT_HELPER\`"
+  report_runner_host_fix
+  return 2
+}
 
 cleanup() {
   if [[ -n "$server_group_pid" ]]; then
@@ -117,6 +355,10 @@ server_log_indicates_resource_busy() {
 
 runtime_ready_log_indicates_resource_busy() {
   [[ -f "$RUNTIME_READY_LOG" ]] && grep -qE 'Resource_Busy\(EL0005\)|aclInit, error code is 507899|The resources are busy' "$RUNTIME_READY_LOG"
+}
+
+runtime_ready_log_indicates_sudo_auth_failure() {
+  [[ -f "$RUNTIME_READY_LOG" ]] && grep -qE 'sudo: (a password is required|a terminal is required|sorry, you must have a tty|is not allowed to execute)' "$RUNTIME_READY_LOG"
 }
 
 cleanup_previous_ci_processes() {
@@ -181,7 +423,11 @@ wait_for_ascend_runtime_ready() {
   fi
 
   for runtime_attempt in $(seq 1 "$max_attempts"); do
-    if "${PYTHON_BIN}" - <<'PY' >"$RUNTIME_READY_LOG" 2>&1
+    if [[ "$ASCEND_BENCHMARK_USE_SUDO" == "1" ]]; then
+      if run_ascend_root_helper runtime-ready >"$RUNTIME_READY_LOG" 2>&1; then
+        return 0
+      fi
+    elif "${PYTHON_BIN}" - <<'PY' >"$RUNTIME_READY_LOG" 2>&1
 import sys
 
 try:
@@ -196,6 +442,12 @@ PY
     fi
 
     cat "$RUNTIME_READY_LOG" >&2
+
+    if runtime_ready_log_indicates_sudo_auth_failure; then
+      echo "Ascend runtime sudo fallback is not authorized for helper: $ASCEND_BENCHMARK_ROOT_HELPER" >&2
+      echo "Grant passwordless sudo for this helper script with SETENV support, or disable ASCEND_BENCHMARK_USE_SUDO." >&2
+      return "$SUDO_AUTH_EXIT_CODE"
+    fi
 
     if [[ "$runtime_attempt" -eq "$max_attempts" ]]; then
       if runtime_ready_log_indicates_resource_busy; then
@@ -228,27 +480,42 @@ resolve_npu_smi_bin() {
 
 start_server() {
   if command -v setsid >/dev/null 2>&1; then
-    setsid env VLLM_ASCEND_TORCH_PREFLIGHT=0 "${VLLM_SERVE[@]}" \
-      --model "$MODEL_NAME" \
-      --host "$HOST" \
-      --port "$PORT" \
-      --dtype "$DTYPE" \
-      --max-model-len "$MAX_MODEL_LEN" \
-      --max-num-seqs "$MAX_NUM_SEQS" \
-      --enforce-eager >"$SERVER_LOG" 2>&1 &
+    if [[ "$ASCEND_BENCHMARK_USE_SUDO" == "1" ]]; then
+      local preserve_list
+      export_sudo_preserved_env_vars
+      preserve_list=$(build_sudo_env_preserve_list)
+      if [[ -n "$preserve_list" ]]; then
+        setsid sudo --preserve-env="$preserve_list" -E -n "$ASCEND_BENCHMARK_ROOT_HELPER" serve >"$SERVER_LOG" 2>&1 &
+      else
+        setsid sudo -E -n "$ASCEND_BENCHMARK_ROOT_HELPER" serve >"$SERVER_LOG" 2>&1 &
+      fi
+    else
+      setsid env VLLM_ASCEND_TORCH_PREFLIGHT=0 "${VLLM_SERVE[@]}" \
+        --model "$MODEL_NAME" \
+        --host "$HOST" \
+        --port "$PORT" \
+        --dtype "$DTYPE" \
+        --max-model-len "$MAX_MODEL_LEN" \
+        --max-num-seqs "$MAX_NUM_SEQS" \
+        --enforce-eager >"$SERVER_LOG" 2>&1 &
+    fi
     server_pid=$!
     server_group_pid=$server_pid
     printf '%s\n' "$server_pid" >"$SERVER_PID_MARKER"
     printf '%s\n' "$server_group_pid" >"$SERVER_PGID_MARKER"
   else
-    env VLLM_ASCEND_TORCH_PREFLIGHT=0 "${VLLM_SERVE[@]}" \
-      --model "$MODEL_NAME" \
-      --host "$HOST" \
-      --port "$PORT" \
-      --dtype "$DTYPE" \
-      --max-model-len "$MAX_MODEL_LEN" \
-      --max-num-seqs "$MAX_NUM_SEQS" \
-      --enforce-eager >"$SERVER_LOG" 2>&1 &
+    if [[ "$ASCEND_BENCHMARK_USE_SUDO" == "1" ]]; then
+      run_ascend_root_helper serve >"$SERVER_LOG" 2>&1 &
+    else
+      env VLLM_ASCEND_TORCH_PREFLIGHT=0 "${VLLM_SERVE[@]}" \
+        --model "$MODEL_NAME" \
+        --host "$HOST" \
+        --port "$PORT" \
+        --dtype "$DTYPE" \
+        --max-model-len "$MAX_MODEL_LEN" \
+        --max-num-seqs "$MAX_NUM_SEQS" \
+        --enforce-eager >"$SERVER_LOG" 2>&1 &
+    fi
     server_pid=$!
     printf '%s\n' "$server_pid" >"$SERVER_PID_MARKER"
   fi
@@ -277,29 +544,54 @@ run_same_spec_current_benchmark() {
   rm -f "$same_spec_raw_result" "$RAW_RESULT_FILE"
   rm -rf "$same_spec_submission_dir" "$SUBMISSION_DIR"
 
-  env \
+  if [[ "$ASCEND_BENCHMARK_USE_SUDO" == "1" ]]; then
     VLLM_HUST_WORKSPACE_ROOT="$WORKSPACE_ROOT" \
-    CURRENT_RUNTIME_CWD=/tmp \
-    CURRENT_RUNTIME_PYTHON="$PYTHON_BIN" \
-    CURRENT_MODEL_PATH="$MODEL_NAME" \
-    CURRENT_VLLM_HUST_REPO="$VLLM_HUST_REPO" \
-    CURRENT_VLLM_ASCEND_HUST_REPO="$VLLM_ASCEND_HUST_REPO" \
-    CURRENT_VLLM_CACHE_ROOT="$CI_RUNTIME_ROOT/current-ascend-same-spec-cache" \
-    CURRENT_GITHUB_REPOSITORY="vLLM-HUST/vllm-hust" \
-    CURRENT_GITHUB_REF="$VLLM_HUST_REF" \
-    CURRENT_GIT_COMMIT="$current_vllm_hust_commit" \
-    CURRENT_PLUGIN_ENGINE="vllm-ascend-hust" \
-    CURRENT_PLUGIN_GITHUB_REPOSITORY="$ASCEND_HUST_TARGET_REPOSITORY" \
-    CURRENT_PLUGIN_GITHUB_REF="$ASCEND_HUST_TARGET_REF" \
-    CURRENT_PLUGIN_GIT_COMMIT="$ASCEND_HUST_TARGET_SHA" \
-    CURRENT_SUBMITTER="${GITHUB_ACTOR:-ci}" \
-    CURRENT_DATA_SOURCE="vllm-ascend-hust-ci-same-spec" \
-    RESULT_DIR="$RESULT_ROOT" \
-    RUN_ID="$RUN_ID" \
-    CURRENT_SERVER_PORT="$PORT" \
-    CURRENT_CLIENT_PORT="$PORT" \
-    CONSTRAINTS_FILE="$SAME_SPEC_CONSTRAINTS_FILE" \
-    bash "$same_spec_runner" "$SAME_SPEC_SPEC_FILE"
+      CURRENT_RUNTIME_CWD=/tmp \
+      CURRENT_RUNTIME_PYTHON="$PYTHON_BIN" \
+      CURRENT_MODEL_PATH="$MODEL_NAME" \
+      CURRENT_VLLM_HUST_REPO="$VLLM_HUST_REPO" \
+      CURRENT_VLLM_ASCEND_HUST_REPO="$VLLM_ASCEND_HUST_REPO" \
+      CURRENT_VLLM_CACHE_ROOT="$CI_RUNTIME_ROOT/current-ascend-same-spec-cache" \
+      CURRENT_GITHUB_REPOSITORY="vLLM-HUST/vllm-hust" \
+      CURRENT_GITHUB_REF="$VLLM_HUST_REF" \
+      CURRENT_GIT_COMMIT="$current_vllm_hust_commit" \
+      CURRENT_PLUGIN_ENGINE="vllm-ascend-hust" \
+      CURRENT_PLUGIN_GITHUB_REPOSITORY="$ASCEND_HUST_TARGET_REPOSITORY" \
+      CURRENT_PLUGIN_GITHUB_REF="$ASCEND_HUST_TARGET_REF" \
+      CURRENT_PLUGIN_GIT_COMMIT="$ASCEND_HUST_TARGET_SHA" \
+      CURRENT_SUBMITTER="${GITHUB_ACTOR:-ci}" \
+      CURRENT_DATA_SOURCE="vllm-ascend-hust-ci-same-spec" \
+      RESULT_DIR="$RESULT_ROOT" \
+      RUN_ID="$RUN_ID" \
+      CURRENT_SERVER_PORT="$PORT" \
+      CURRENT_CLIENT_PORT="$PORT" \
+      CONSTRAINTS_FILE="$SAME_SPEC_CONSTRAINTS_FILE" \
+      run_ascend_root_helper same-spec "$same_spec_runner" "$SAME_SPEC_SPEC_FILE"
+  else
+    env \
+      VLLM_HUST_WORKSPACE_ROOT="$WORKSPACE_ROOT" \
+      CURRENT_RUNTIME_CWD=/tmp \
+      CURRENT_RUNTIME_PYTHON="$PYTHON_BIN" \
+      CURRENT_MODEL_PATH="$MODEL_NAME" \
+      CURRENT_VLLM_HUST_REPO="$VLLM_HUST_REPO" \
+      CURRENT_VLLM_ASCEND_HUST_REPO="$VLLM_ASCEND_HUST_REPO" \
+      CURRENT_VLLM_CACHE_ROOT="$CI_RUNTIME_ROOT/current-ascend-same-spec-cache" \
+      CURRENT_GITHUB_REPOSITORY="vLLM-HUST/vllm-hust" \
+      CURRENT_GITHUB_REF="$VLLM_HUST_REF" \
+      CURRENT_GIT_COMMIT="$current_vllm_hust_commit" \
+      CURRENT_PLUGIN_ENGINE="vllm-ascend-hust" \
+      CURRENT_PLUGIN_GITHUB_REPOSITORY="$ASCEND_HUST_TARGET_REPOSITORY" \
+      CURRENT_PLUGIN_GITHUB_REF="$ASCEND_HUST_TARGET_REF" \
+      CURRENT_PLUGIN_GIT_COMMIT="$ASCEND_HUST_TARGET_SHA" \
+      CURRENT_SUBMITTER="${GITHUB_ACTOR:-ci}" \
+      CURRENT_DATA_SOURCE="vllm-ascend-hust-ci-same-spec" \
+      RESULT_DIR="$RESULT_ROOT" \
+      RUN_ID="$RUN_ID" \
+      CURRENT_SERVER_PORT="$PORT" \
+      CURRENT_CLIENT_PORT="$PORT" \
+      CONSTRAINTS_FILE="$SAME_SPEC_CONSTRAINTS_FILE" \
+      bash "$same_spec_runner" "$SAME_SPEC_SPEC_FILE"
+  fi
 
   if [[ ! -f "$same_spec_raw_result" ]]; then
     echo "same-spec benchmark did not produce raw result: $same_spec_raw_result" >&2
@@ -309,11 +601,54 @@ run_same_spec_current_benchmark() {
     echo "same-spec benchmark did not produce submission artifacts under: $same_spec_submission_dir" >&2
     return 2
   fi
+  local validation_status=0
+  validate_benchmark_result_file "$same_spec_raw_result" || validation_status=$?
+  if [[ "$validation_status" -ne 0 ]]; then
+    return "$validation_status"
+  fi
 
   mkdir -p "$SUBMISSION_DIR"
   cp "$same_spec_raw_result" "$RAW_RESULT_FILE"
   cp "$same_spec_submission_dir/leaderboard_manifest.json" "$SUBMISSION_DIR/leaderboard_manifest.json"
   cp "$same_spec_submission_dir/run_leaderboard.json" "$SUBMISSION_DIR/run_leaderboard.json"
+}
+
+validate_benchmark_result_file() {
+  local result_file=${1:-}
+
+  if [[ -z "$result_file" ]]; then
+    echo "validate_benchmark_result_file requires a result file path" >&2
+    return 2
+  fi
+  if [[ ! -f "$result_file" ]]; then
+    echo "benchmark result file not found: $result_file" >&2
+    return 2
+  fi
+
+  RESULT_FILE="$result_file" INVALID_EXIT_CODE="$INVALID_BENCHMARK_RESULT_EXIT_CODE" "${PYTHON_BIN}" - <<'PY'
+import json
+import os
+import sys
+
+result_file = os.environ["RESULT_FILE"]
+invalid_exit_code = int(os.environ["INVALID_EXIT_CODE"])
+
+with open(result_file, "r", encoding="utf-8") as handle:
+    payload = json.load(handle)
+
+completed = int(payload.get("completed", 0) or 0)
+failed = int(payload.get("failed", 0) or 0)
+total = int(payload.get("total_input", completed + failed) or (completed + failed))
+
+if completed == 0 and failed > 0:
+    print(
+        f"invalid-all-failed completed={completed} failed={failed} total_input={total}",
+        file=sys.stderr,
+    )
+    sys.exit(invalid_exit_code)
+
+print(f"validated benchmark result: completed={completed}, failed={failed}, total_input={total}")
+PY
 }
 
 allocate_local_port() {
@@ -333,6 +668,7 @@ if [[ -z "$PORT" ]]; then
 fi
 
 mkdir -p "$RESULT_ROOT" "$SUBMISSIONS_ROOT" "$AGGREGATE_OUTPUT_DIR" "$HOME" "$XDG_CACHE_HOME" "$XDG_CONFIG_HOME" "$PROCESS_MARKER_DIR"
+: > "$BENCHMARK_DIAGNOSTICS_FILE"
 cleanup_previous_ci_processes
 
 NPU_SMI_BIN="$(resolve_npu_smi_bin 2>/dev/null || true)"
@@ -342,11 +678,17 @@ else
   echo "Could not resolve npu-smi binary; single-card device selection may be unavailable"
 fi
 
+USER_PROVIDED_ASCEND_VISIBLE_DEVICES=0
+if [[ -n "${ASCEND_RT_VISIBLE_DEVICES:-}" ]]; then
+  USER_PROVIDED_ASCEND_VISIBLE_DEVICES=1
+fi
+
 select_ascend_device() {
   ASCEND_DEVICE_SELECTION_ATTEMPT="${1:-1}" NPU_SMI_BIN="${2:-}" "${PYTHON_BIN}" - <<'PY'
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 
@@ -411,7 +753,7 @@ def run_npu_smi(*args: str) -> subprocess.CompletedProcess[str] | None:
   }
 
   try:
-    return subprocess.run(
+    result = subprocess.run(
       [npu_smi_bin, *args],
       check=False,
       capture_output=True,
@@ -419,6 +761,44 @@ def run_npu_smi(*args: str) -> subprocess.CompletedProcess[str] | None:
       timeout=5,
       env=clean_env,
     )
+    if result.returncode == 0 or os.geteuid() == 0:
+      return result
+
+    if os.environ.get("NPU_SMI_USE_SUDO_FALLBACK", "1") == "0":
+      print(f"sudo fallback disabled for npu-smi {' '.join(args)}", file=sys.stderr)
+      return result
+
+    sudo_bin = shutil.which("sudo", path=clean_env["PATH"])
+    if not sudo_bin:
+      print(f"sudo fallback unavailable for npu-smi {' '.join(args)}: sudo not found in PATH", file=sys.stderr)
+      return result
+
+    try:
+      sudo_result = subprocess.run(
+        [sudo_bin, "-n", npu_smi_bin, *args],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=5,
+        env=clean_env,
+      )
+    except subprocess.TimeoutExpired:
+      print(f"sudo npu-smi {' '.join(args)} timed out after 5s", file=sys.stderr)
+      return result
+    except Exception as exc:
+      print(f"sudo npu-smi {' '.join(args)} failed: {exc}", file=sys.stderr)
+      return result
+
+    if sudo_result.returncode == 0:
+      print(f"sudo fallback succeeded for npu-smi {' '.join(args)}", file=sys.stderr)
+      return sudo_result
+
+    print(
+      f"sudo fallback for npu-smi {' '.join(args)} returned {sudo_result.returncode}: "
+      f"{format_npu_smi_failure(sudo_result)}",
+      file=sys.stderr,
+    )
+    return result
   except subprocess.TimeoutExpired:
     print(f"npu-smi {' '.join(args)} timed out after 5s", file=sys.stderr)
     return None
@@ -517,6 +897,30 @@ if devnode_devices:
 PY
 }
 
+configure_single_card_ascend_device() {
+  local start_attempt="${1:-1}"
+  local selected_device_info=""
+
+  if [[ "$USER_PROVIDED_ASCEND_VISIBLE_DEVICES" == "1" ]]; then
+    export VLLM_ASCEND_TORCH_PREFLIGHT_DEVICE="${VLLM_ASCEND_TORCH_PREFLIGHT_DEVICE:-npu:0}"
+    echo "using explicit Ascend visible devices from environment: $ASCEND_RT_VISIBLE_DEVICES"
+    echo "skipping automatic single-card Ascend device selection"
+    return 0
+  fi
+
+  selected_device_info="$(select_ascend_device "$start_attempt" "$NPU_SMI_BIN")"
+  if [[ -n "$selected_device_info" ]]; then
+    IFS=$'\t' read -r SELECTED_ASCEND_DEVICE SELECTED_ASCEND_DEVICE_SOURCE <<<"$selected_device_info"
+    export ASCEND_RT_VISIBLE_DEVICES="$SELECTED_ASCEND_DEVICE"
+    export VLLM_ASCEND_TORCH_PREFLIGHT_DEVICE="npu:0"
+    echo "selected single-card Ascend device: $ASCEND_RT_VISIBLE_DEVICES (${SELECTED_ASCEND_DEVICE_SOURCE})"
+  else
+    unset ASCEND_RT_VISIBLE_DEVICES
+    unset VLLM_ASCEND_TORCH_PREFLIGHT_DEVICE
+    echo "Could not resolve a single-card Ascend device; probing runtime without device scoping"
+  fi
+}
+
 echo "== Ascend benchmark CI =="
 echo "workspace root: $WORKSPACE_ROOT"
 echo "vllm-hust repo: $VLLM_HUST_REPO"
@@ -531,6 +935,9 @@ echo "benchmark port: $PORT"
 echo "benchmark scenario: $BENCH_SCENARIO"
 echo "publish to hf: $PUBLISH_TO_HF"
 echo "same-spec benchmark enabled: $SAME_SPEC_BENCHMARK_ENABLED"
+echo "ascend benchmark use sudo: $ASCEND_BENCHMARK_USE_SUDO"
+
+verify_root_helper_matches_repo
 
 case "$BENCH_SCENARIO" in
   random-online)
@@ -594,17 +1001,30 @@ fi
 if [[ "$BENCH_SCENARIO" == "random-online" && "$SAME_SPEC_BENCHMARK_ENABLED" == "1" ]]; then
   for start_attempt in $(seq 1 "$SERVER_START_RETRIES"); do
     if [[ "$CHIP_COUNT" == "1" ]]; then
-      SELECTED_ASCEND_DEVICE_INFO="$(select_ascend_device "$start_attempt" "$NPU_SMI_BIN")"
-      if [[ -n "$SELECTED_ASCEND_DEVICE_INFO" ]]; then
-        IFS=$'\t' read -r SELECTED_ASCEND_DEVICE SELECTED_ASCEND_DEVICE_SOURCE <<<"$SELECTED_ASCEND_DEVICE_INFO"
-        export ASCEND_RT_VISIBLE_DEVICES="$SELECTED_ASCEND_DEVICE"
-        export VLLM_ASCEND_TORCH_PREFLIGHT_DEVICE="npu:0"
-        echo "selected single-card Ascend device: $ASCEND_RT_VISIBLE_DEVICES (${SELECTED_ASCEND_DEVICE_SOURCE})"
-      else
-        unset ASCEND_RT_VISIBLE_DEVICES
-        unset VLLM_ASCEND_TORCH_PREFLIGHT_DEVICE
-        echo "Could not resolve a single-card Ascend device; probing runtime without device scoping"
+      configure_single_card_ascend_device "$start_attempt"
+    fi
+
+    if wait_for_ascend_runtime_ready; then
+      runtime_ready_status=0
+    else
+      runtime_ready_status=$?
+    fi
+
+    if [[ "$runtime_ready_status" -ne 0 ]]; then
+      echo "Ascend runtime did not become ready after ${ASCEND_RUNTIME_READY_TIMEOUT_SECONDS}s before same-spec benchmark startup"
+      if [[ "$runtime_ready_status" -eq "$SUDO_AUTH_EXIT_CODE" ]]; then
+        exit "$runtime_ready_status"
       fi
+      if [[ "$start_attempt" -lt "$SERVER_START_RETRIES" ]]; then
+        echo "Retrying same-spec benchmark after runtime readiness failure in ${SERVER_START_RETRY_DELAY_SECONDS}s (attempt ${start_attempt}/${SERVER_START_RETRIES})"
+        sleep "$SERVER_START_RETRY_DELAY_SECONDS"
+        continue
+      fi
+      if [[ "$runtime_ready_status" -eq "$RESOURCE_BUSY_EXIT_CODE" ]]; then
+        echo "Detected transient Ascend resource busy state during same-spec runtime readiness after exhausting ${SERVER_START_RETRIES} attempt(s)"
+        exit "$RESOURCE_BUSY_EXIT_CODE"
+      fi
+      exit "$runtime_ready_status"
     fi
 
     if run_same_spec_current_benchmark; then
@@ -633,17 +1053,7 @@ else
 
   for start_attempt in $(seq 1 "$SERVER_START_RETRIES"); do
     if [[ "$CHIP_COUNT" == "1" ]]; then
-      SELECTED_ASCEND_DEVICE_INFO="$(select_ascend_device "$start_attempt" "$NPU_SMI_BIN")"
-      if [[ -n "$SELECTED_ASCEND_DEVICE_INFO" ]]; then
-        IFS=$'\t' read -r SELECTED_ASCEND_DEVICE SELECTED_ASCEND_DEVICE_SOURCE <<<"$SELECTED_ASCEND_DEVICE_INFO"
-        export ASCEND_RT_VISIBLE_DEVICES="$SELECTED_ASCEND_DEVICE"
-        export VLLM_ASCEND_TORCH_PREFLIGHT_DEVICE="npu:0"
-        echo "selected single-card Ascend device: $ASCEND_RT_VISIBLE_DEVICES (${SELECTED_ASCEND_DEVICE_SOURCE})"
-      else
-        unset ASCEND_RT_VISIBLE_DEVICES
-        unset VLLM_ASCEND_TORCH_PREFLIGHT_DEVICE
-        echo "Could not resolve a single-card Ascend device; probing runtime without device scoping"
-      fi
+      configure_single_card_ascend_device "$start_attempt"
     fi
 
     if wait_for_ascend_runtime_ready; then
@@ -654,6 +1064,9 @@ else
 
     if [[ "$runtime_ready_status" -ne 0 ]]; then
       echo "Ascend runtime did not become ready after ${ASCEND_RUNTIME_READY_TIMEOUT_SECONDS}s"
+      if [[ "$runtime_ready_status" -eq "$SUDO_AUTH_EXIT_CODE" ]]; then
+        exit "$runtime_ready_status"
+      fi
       if [[ "$start_attempt" -lt "$SERVER_START_RETRIES" ]]; then
         echo "Retrying server start after runtime readiness failure in ${SERVER_START_RETRY_DELAY_SECONDS}s (attempt ${start_attempt}/${SERVER_START_RETRIES})"
         sleep "$SERVER_START_RETRY_DELAY_SECONDS"
@@ -730,6 +1143,8 @@ else
     --save-result \
     --result-dir "$RESULT_ROOT" \
     --result-filename "$(basename "$RAW_RESULT_FILE")"
+
+  validate_benchmark_result_file "$RAW_RESULT_FILE"
 
   CORE_VERSION=$("${PYTHON_BIN}" - <<'PY'
 import vllm

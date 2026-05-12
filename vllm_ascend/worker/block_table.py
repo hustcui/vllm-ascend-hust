@@ -131,6 +131,10 @@ class BlockTable:
         query_start_loc: torch.Tensor,
         positions: torch.Tensor,
     ) -> None:
+        if not hasattr(_compute_slot_mapping_kernel, "__getitem__"):
+            self._compute_slot_mapping_fallback(num_reqs, query_start_loc, positions)
+            return
+
         num_tokens = positions.shape[0]
         total_cp_world_size = self.pcp_world_size * self.dcp_world_size
         total_cp_rank = self.pcp_rank * self.dcp_world_size + self.dcp_rank
@@ -149,6 +153,73 @@ class BlockTable:
             PAD_ID=PAD_SLOT_ID,
             BLOCK_SIZE=1024,
         )
+
+    def _compute_slot_mapping_fallback(
+        self,
+        num_reqs: int,
+        query_start_loc: torch.Tensor,
+        positions: torch.Tensor,
+    ) -> None:
+        query_start_loc_np = self._to_numpy(query_start_loc)[: num_reqs + 1]
+        positions_np = self._to_numpy(positions)
+        num_tokens = positions_np.shape[0]
+        max_num_tokens = min(self.max_num_batched_tokens, self.slot_mapping.np.shape[0])
+
+        if num_tokens == 0:
+            self.slot_mapping.np[:max_num_tokens] = PAD_SLOT_ID
+            self.slot_mapping.copy_to_gpu(max_num_tokens)
+            return
+
+        counts = np.diff(query_start_loc_np)
+        req_indices = np.repeat(np.arange(num_reqs, dtype=np.int64), counts)
+        if req_indices.shape[0] != num_tokens:
+            raise ValueError(
+                "query_start_loc and positions describe different token counts: "
+                f"{req_indices.shape[0]} != {num_tokens}"
+            )
+
+        if self.dcp_world_size * self.pcp_world_size > 1:
+            virtual_block_size = self.block_size * self.dcp_world_size * self.pcp_world_size
+            logical_block_idx = positions_np // virtual_block_size
+            block_table_indices = self._get_block_table_indices(req_indices, logical_block_idx)
+            block_numbers = self.block_table.np.ravel()[block_table_indices]
+            virtual_block_offsets = positions_np % virtual_block_size
+            current_rank = self.dcp_world_size * self.pcp_rank + self.dcp_rank
+            mask = (
+                virtual_block_offsets // self.cp_kv_cache_interleave_size % (self.dcp_world_size * self.pcp_world_size)
+                == current_rank
+            )
+            block_offsets = (
+                virtual_block_offsets
+                // (self.dcp_world_size * self.pcp_world_size * self.cp_kv_cache_interleave_size)
+                * self.cp_kv_cache_interleave_size
+                + virtual_block_offsets % self.cp_kv_cache_interleave_size
+            )
+            slot_mapping = block_numbers * self.block_size + block_offsets
+            self.slot_mapping.np[:num_tokens] = np.where(mask, slot_mapping, PAD_SLOT_ID)
+        else:
+            logical_block_idx = positions_np // self.block_size
+            block_table_indices = self._get_block_table_indices(req_indices, logical_block_idx)
+            block_numbers = self.block_table.np.ravel()[block_table_indices]
+            block_offsets = positions_np % self.block_size
+            np.add(block_numbers * self.block_size, block_offsets, out=self.slot_mapping.np[:num_tokens])
+
+        if num_tokens < max_num_tokens:
+            self.slot_mapping.np[num_tokens:max_num_tokens] = PAD_SLOT_ID
+
+        self.slot_mapping.copy_to_gpu(max_num_tokens)
+
+    def _get_block_table_indices(self, req_indices: np.ndarray, logical_block_idx: np.ndarray) -> np.ndarray:
+        row_stride = self.max_num_blocks_per_req * self.blocks_per_phys_block
+        return req_indices * row_stride + logical_block_idx
+
+    @staticmethod
+    def _to_numpy(value) -> np.ndarray:
+        if isinstance(value, np.ndarray):
+            return value.astype(np.int64, copy=False)
+        if isinstance(value, torch.Tensor):
+            return value.detach().cpu().numpy().astype(np.int64, copy=False)
+        return np.asarray(value, dtype=np.int64)
 
     def compute_slot_mapping_draft(self, req_indices: np.ndarray, positions: np.ndarray) -> None:
         # E.g., [0, 1, 0, 1, 2, 3, 4, 0, 1, 2]
