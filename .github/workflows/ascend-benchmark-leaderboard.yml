@@ -134,11 +134,7 @@ jobs:
       - name: Pre-clean stale checkout state
         shell: bash
         run: |
-          ci_state_root="$(python3 - <<'PY'
-import os
-print(os.path.realpath(os.path.join(os.environ['GITHUB_WORKSPACE'], '..', 'vllm-ascend-hust-ci-state')))
-PY
-          )"
+          ci_state_root="$(python3 -c 'import os; print(os.path.realpath(os.path.join(os.environ["GITHUB_WORKSPACE"], "..", "vllm-ascend-hust-ci-state")))')"
           benchmark_results_root="${ci_state_root}/benchmarks/ci"
           ci_home="${ci_state_root}/home"
           ci_runtime_root="${ci_state_root}/runtime"
