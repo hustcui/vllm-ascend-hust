@@ -1,5 +1,6 @@
 import torch
 import vllm.envs as envs
+from vllm.logger import init_logger
 from vllm.triton_utils import HAS_TRITON
 from vllm.v1.sample.metadata import SamplingMetadata
 from vllm.v1.sample.ops.topk_topp_sampler import TopKTopPSampler
@@ -10,6 +11,8 @@ from vllm_ascend.sample.penalties import apply_all_penalties
 from vllm_ascend.utils import AscendDeviceType, get_ascend_device_type, global_stream, npu_stream_switch
 
 DEFAULT_LOGPROBS_MODE = "raw_logprobs"
+logger = init_logger(__name__)
+_MISSING_TOP_K_TOP_P_OP_WARNED = False
 
 
 def random_sample(
@@ -164,8 +167,27 @@ def _apply_top_k_top_p_ascendc(
     return torch.ops._C_ascend.npu_apply_top_k_top_p(logits, k=k, p=p)
 
 
-apply_top_k_top_p = (
-    _apply_top_k_top_p_ascendc
-    if get_ascend_device_type() in [AscendDeviceType.A2, AscendDeviceType.A3]
-    else _apply_top_k_top_p_pytorch
-)
+def _has_ascend_top_k_top_p_op() -> bool:
+    ascend_namespace = getattr(torch.ops, "_C_ascend", None)
+    return hasattr(ascend_namespace, "npu_apply_top_k_top_p")
+
+
+def apply_top_k_top_p(
+    logits: torch.Tensor,
+    k: torch.Tensor,
+    p: torch.Tensor,
+) -> torch.Tensor:
+    global _MISSING_TOP_K_TOP_P_OP_WARNED
+
+    if get_ascend_device_type() not in [AscendDeviceType.A2, AscendDeviceType.A3]:
+        return _apply_top_k_top_p_pytorch(logits, k, p)
+
+    if _has_ascend_top_k_top_p_op():
+        return _apply_top_k_top_p_ascendc(logits, k, p)
+
+    if not _MISSING_TOP_K_TOP_P_OP_WARNED:
+        logger.warning(
+            "Custom op npu_apply_top_k_top_p is unavailable; falling back to the pytorch implementation."
+        )
+        _MISSING_TOP_K_TOP_P_OP_WARNED = True
+    return _apply_top_k_top_p_pytorch(logits, k, p)

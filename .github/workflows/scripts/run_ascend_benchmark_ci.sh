@@ -83,12 +83,13 @@ SUDO_AUTH_EXIT_CODE=${SUDO_AUTH_EXIT_CODE:-76}
 INVALID_BENCHMARK_RESULT_EXIT_CODE=${INVALID_BENCHMARK_RESULT_EXIT_CODE:-77}
 ASCEND_BENCHMARK_USE_SUDO=${ASCEND_BENCHMARK_USE_SUDO:-0}
 DEFAULT_SYSTEM_ASCEND_BENCHMARK_ROOT_HELPER=${DEFAULT_SYSTEM_ASCEND_BENCHMARK_ROOT_HELPER:-/usr/local/bin/run_ascend_benchmark_root_helper.sh}
+REPO_ASCEND_BENCHMARK_ROOT_HELPER=$VLLM_ASCEND_HUST_REPO/.github/workflows/scripts/run_ascend_benchmark_root_helper.sh
 if [[ -n "${ASCEND_BENCHMARK_ROOT_HELPER:-}" ]]; then
   ASCEND_BENCHMARK_ROOT_HELPER=$ASCEND_BENCHMARK_ROOT_HELPER
 elif [[ -x "$DEFAULT_SYSTEM_ASCEND_BENCHMARK_ROOT_HELPER" ]]; then
   ASCEND_BENCHMARK_ROOT_HELPER=$DEFAULT_SYSTEM_ASCEND_BENCHMARK_ROOT_HELPER
 else
-  ASCEND_BENCHMARK_ROOT_HELPER=$VLLM_ASCEND_HUST_REPO/.github/workflows/scripts/run_ascend_benchmark_root_helper.sh
+  ASCEND_BENCHMARK_ROOT_HELPER=$REPO_ASCEND_BENCHMARK_ROOT_HELPER
 fi
 
 server_pid=""
@@ -227,6 +228,26 @@ run_ascend_root_helper() {
     echo "run_ascend_root_helper requires ASCEND_BENCHMARK_USE_SUDO=1" >&2
     return 2
   fi
+}
+
+verify_root_helper_matches_repo() {
+  if [[ "$ASCEND_BENCHMARK_USE_SUDO" != "1" ]]; then
+    return 0
+  fi
+  if [[ "$ASCEND_BENCHMARK_ROOT_HELPER" != "$DEFAULT_SYSTEM_ASCEND_BENCHMARK_ROOT_HELPER" ]]; then
+    return 0
+  fi
+  if [[ ! -r "$ASCEND_BENCHMARK_ROOT_HELPER" || ! -r "$REPO_ASCEND_BENCHMARK_ROOT_HELPER" ]]; then
+    return 0
+  fi
+  if cmp -s "$ASCEND_BENCHMARK_ROOT_HELPER" "$REPO_ASCEND_BENCHMARK_ROOT_HELPER"; then
+    return 0
+  fi
+
+  echo "Installed Ascend benchmark root helper is stale: $ASCEND_BENCHMARK_ROOT_HELPER" >&2
+  echo "Expected it to match: $REPO_ASCEND_BENCHMARK_ROOT_HELPER" >&2
+  echo "Runner host fix: sudo RUNNER_USER=grunner bash $VLLM_ASCEND_HUST_REPO/scripts/install_ascend_benchmark_root_helper.sh" >&2
+  return 2
 }
 
 cleanup() {
@@ -509,8 +530,10 @@ run_same_spec_current_benchmark() {
     echo "same-spec benchmark did not produce submission artifacts under: $same_spec_submission_dir" >&2
     return 2
   fi
-  if ! validate_benchmark_result_file "$same_spec_raw_result"; then
-    return $?
+  local validation_status=0
+  validate_benchmark_result_file "$same_spec_raw_result" || validation_status=$?
+  if [[ "$validation_status" -ne 0 ]]; then
+    return "$validation_status"
   fi
 
   mkdir -p "$SUBMISSION_DIR"
@@ -841,6 +864,8 @@ echo "benchmark scenario: $BENCH_SCENARIO"
 echo "publish to hf: $PUBLISH_TO_HF"
 echo "same-spec benchmark enabled: $SAME_SPEC_BENCHMARK_ENABLED"
 echo "ascend benchmark use sudo: $ASCEND_BENCHMARK_USE_SUDO"
+
+verify_root_helper_matches_repo
 
 case "$BENCH_SCENARIO" in
   random-online)
