@@ -119,6 +119,7 @@ jobs:
       CHIP_COUNT: "1"
       NODE_COUNT: "1"
       ASCEND_BENCHMARK_USE_SUDO: ${{ vars.VLLM_ASCEND_HUST_BENCHMARK_USE_SUDO || '1' }}
+      ASCEND_BENCHMARK_ROOT_HELPER: ${{ vars.VLLM_ASCEND_HUST_BENCHMARK_ROOT_HELPER || '' }}
       ASCEND_RT_VISIBLE_DEVICES: ${{ vars.VLLM_ASCEND_HUST_BENCHMARK_VISIBLE_DEVICES || '' }}
       ALLOW_RANDOM_HF_PUBLISH: ${{ vars.VLLM_ASCEND_HUST_ALLOW_RANDOM_HF_PUBLISH || '0' }}
       SAME_SPEC_BENCHMARK_ENABLED: ${{ vars.VLLM_ASCEND_HUST_SAME_SPEC_BENCHMARK_ENABLED || '1' }}
@@ -387,6 +388,7 @@ jobs:
           ascend_hust_ref = os.environ.get('ASCEND_HUST_TARGET_REF', os.environ.get('GITHUB_REF_NAME', 'unknown'))
           ascend_hust_sha = os.environ.get('ASCEND_HUST_TARGET_SHA', os.environ.get('GITHUB_SHA', 'unknown'))
           ascend_hust_commit_url = f"{os.environ['GITHUB_SERVER_URL']}/{ascend_hust_repository}/commit/{ascend_hust_sha}"
+          benchmark_root_helper = os.environ.get('ASCEND_BENCHMARK_ROOT_HELPER', '').strip() or '/usr/local/bin/run_ascend_benchmark_root_helper.sh'
 
           lines = [
             '## Ascend Benchmark Summary',
@@ -419,7 +421,7 @@ jobs:
           if runtime_ready_log.is_file():
             runtime_ready_text = runtime_ready_log.read_text(encoding='utf-8', errors='replace')
             if 'sudo: a password is required' in runtime_ready_text:
-              sudo_note = '- Benchmark execution: `passwordless sudo is required for .github/workflows/scripts/run_ascend_benchmark_root_helper.sh on the runner host`'
+              sudo_note = f'- Benchmark execution: `passwordless sudo is required for {benchmark_root_helper} on the runner host`'
               lines.append(sudo_note)
               comment_lines.append(sudo_note)
           if raw_result.is_file():
