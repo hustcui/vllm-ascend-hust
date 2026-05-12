@@ -13,6 +13,23 @@ shift || true
 export PATH="${PATH:-/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin}"
 export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
 export PYTHONPATH="${PYTHONPATH:-}"
+export PYTHONDONTWRITEBYTECODE="${PYTHONDONTWRITEBYTECODE:-1}"
+
+restore_user_workspace_ownership() {
+  local target_uid=${SUDO_UID:-}
+  local target_gid=${SUDO_GID:-}
+  local target
+
+  if [[ -z "$target_uid" || -z "$target_gid" ]]; then
+    return 0
+  fi
+
+  for target in "$@"; do
+    [[ -z "$target" ]] && continue
+    [[ ! -e "$target" ]] && continue
+    chown -R "$target_uid:$target_gid" "$target" 2>/dev/null || true
+  done
+}
 
 case "$subcommand" in
   runtime-ready)
@@ -31,6 +48,13 @@ PY
     same_spec_runner=${1:?same-spec runner path is required}
     same_spec_spec_file=${2:?same-spec spec file path is required}
     bash "$same_spec_runner" "$same_spec_spec_file"
+    restore_user_workspace_ownership \
+      "${RESULT_DIR:-}" \
+      "${RESULT_ROOT:-}" \
+      "${CURRENT_VLLM_CACHE_ROOT:-}" \
+      "${CI_HOME:-}" \
+      "${XDG_CACHE_HOME:-}" \
+      "${XDG_CONFIG_HOME:-}"
     ;;
   serve)
     exec env VLLM_ASCEND_TORCH_PREFLIGHT=0 \
