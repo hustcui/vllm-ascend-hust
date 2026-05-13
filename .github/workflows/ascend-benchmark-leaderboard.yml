@@ -293,6 +293,97 @@ jobs:
           ssh-strict: ${{ env.BENCHMARK_CHECKOUT_USE_SSH_443 != '1' }}
           persist-credentials: false
 
+      - name: Preflight benchmark root helper
+        shell: bash
+        run: |
+          if [[ "${ASCEND_BENCHMARK_USE_SUDO}" != "1" ]]; then
+            echo "Skipping benchmark root helper preflight because ASCEND_BENCHMARK_USE_SUDO=${ASCEND_BENCHMARK_USE_SUDO}."
+            exit 0
+          fi
+
+          repo_helper="$GITHUB_WORKSPACE/.github/workflows/scripts/run_ascend_benchmark_root_helper.sh"
+          install_script="$GITHUB_WORKSPACE/scripts/install_ascend_benchmark_root_helper.sh"
+          configured_helper="${ASCEND_BENCHMARK_ROOT_HELPER:-}"
+          system_helper="$DEFAULT_SYSTEM_ASCEND_BENCHMARK_ROOT_HELPER"
+          effective_helper="$configured_helper"
+
+          if [[ -z "$effective_helper" ]]; then
+            if [[ -x "$system_helper" ]]; then
+              effective_helper="$system_helper"
+            else
+              effective_helper="$repo_helper"
+            fi
+          fi
+
+          summary_title="## Ascend Benchmark Root Helper Preflight"
+          admin_fix="Contact the self-hosted runner administrator to sync the runner checkout and refresh the benchmark root helper installation."
+          reinstall_cmd="sudo RUNNER_USER=grunner bash scripts/install_ascend_benchmark_root_helper.sh"
+
+          write_failure_summary() {
+            local reason="$1"
+
+            if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+              {
+                echo "$summary_title"
+                echo
+                echo "Status: FAIL"
+                echo
+                echo "Reason: $reason"
+                echo
+                echo "$admin_fix"
+                echo
+                echo "Recommended runner-host command: $reinstall_cmd"
+              } >> "$GITHUB_STEP_SUMMARY"
+            fi
+          }
+
+          if [[ ! -f "$repo_helper" ]]; then
+            reason="Runner checkout is missing the repository helper source: $repo_helper"
+            echo "$reason" >&2
+            echo "$admin_fix" >&2
+            write_failure_summary "$reason"
+            exit 1
+          fi
+
+          if [[ ! -f "$install_script" ]]; then
+            reason="Runner checkout is missing the helper install script: $install_script"
+            echo "$reason" >&2
+            echo "$admin_fix" >&2
+            write_failure_summary "$reason"
+            exit 1
+          fi
+
+          if [[ "$effective_helper" != "$system_helper" ]]; then
+            if [[ ! -x "$effective_helper" ]]; then
+              reason="Configured benchmark root helper is not executable: $effective_helper"
+              echo "$reason" >&2
+              echo "$admin_fix" >&2
+              write_failure_summary "$reason"
+              exit 1
+            fi
+
+            echo "Benchmark root helper preflight passed with configured helper: $effective_helper"
+            exit 0
+          fi
+
+          if [[ ! -x "$effective_helper" ]]; then
+            reason="Installed benchmark root helper is missing or not executable: $effective_helper"
+            echo "$reason" >&2
+            echo "$admin_fix" >&2
+            write_failure_summary "$reason"
+            exit 1
+          fi
+
+          if ! cmp -s "$effective_helper" "$repo_helper"; then
+            reason="Installed benchmark root helper is stale: $effective_helper does not match $repo_helper"
+            echo "$reason" >&2
+            echo "$admin_fix" >&2
+            write_failure_summary "$reason"
+            exit 1
+          fi
+
+          echo "Benchmark root helper preflight passed: $effective_helper matches $repo_helper"
+
       - name: Prepare Hugging Face cache directories
         run: |
           mkdir -p "$HF_HOME" "$HUGGINGFACE_HUB_CACHE" "$TRANSFORMERS_CACHE"
