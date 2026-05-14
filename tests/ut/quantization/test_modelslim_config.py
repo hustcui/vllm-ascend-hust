@@ -224,6 +224,19 @@ class TestAscendModelSlimConfig(TestBase):
 
         self.assertEqual(config.quant_description, quant_data)
 
+    def test_maybe_update_config_accepts_hf_config_keyword(self):
+        config = AscendModelSlimConfig()
+        quant_data = {"layer1.weight": "INT8"}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = os.path.join(tmpdir, MODELSLIM_CONFIG_FILENAME)
+            with open(config_path, "w") as f:
+                json.dump(quant_data, f)
+
+            config.maybe_update_config(tmpdir, hf_config=MagicMock())
+
+        self.assertEqual(config.quant_description, quant_data)
+
     def test_maybe_update_config_raises_when_file_missing(self):
         config = AscendModelSlimConfig()
 

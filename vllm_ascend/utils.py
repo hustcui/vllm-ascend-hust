@@ -650,6 +650,16 @@ def register_ascend_customop(vllm_config: VllmConfig | None = None):
         AscendVocabParallelEmbedding,
     )
 
+    try:
+        from vllm_ascend.ops.fused_moe.fused_moe import AscendFusedMoE, AscendSharedFusedMoE
+    except ModuleNotFoundError as exc:
+        logger.warning(
+            "Skipping Ascend fused MoE custom op registration because an optional "
+            "upstream dependency is unavailable: %s",
+            exc,
+        )
+        AscendFusedMoE = None
+        AscendSharedFusedMoE = None
     is_moe_model = bool(
         vllm_config is not None
         and vllm_config.model_config is not None

@@ -599,7 +599,7 @@ class AscendModelSlimConfig(QuantizationConfig):
     def maybe_update_config(
         self,
         model_name: str,
-        hf_config: PretrainedConfig | None = None,
+        hf_config: PretrainedConfig | str | None = None,
         revision: str | None = None,
     ) -> None:
         """Load the ModelSlim quantization config from model directory.
@@ -617,11 +617,17 @@ class AscendModelSlimConfig(QuantizationConfig):
         Args:
             model_name: Path to the model directory or HuggingFace /
                 ModelScope repo id.
-            hf_config: The Hugging Face config of the model
+            hf_config: Hugging Face config object passed by newer vLLM
+                releases. Unused here, but accepted for interface
+                compatibility. If a string is passed positionally, treat it
+                as a legacy revision argument.
             revision: Optional revision (branch, tag, or commit hash) for
                 remote repos.
         """
         from vllm_ascend.quantization.utils import get_model_file
+
+        if isinstance(hf_config, str) and revision is None:
+            revision = hf_config
 
         # If quant_description is already populated (e.g. from from_config()),
         # there is nothing to do.
