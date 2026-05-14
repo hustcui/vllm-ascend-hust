@@ -632,7 +632,8 @@ def register_ascend_customop(vllm_config: VllmConfig | None = None):
         from vllm_ascend.ops.fused_moe.fused_moe import AscendFusedMoE, AscendSharedFusedMoE
     except ModuleNotFoundError as exc:
         logger.warning(
-            "Skipping Ascend fused MoE custom op registration because an optional upstream dependency is unavailable: %s",
+            "Skipping Ascend fused MoE custom op registration because an optional "
+            "upstream dependency is unavailable: %s",
             exc,
         )
         AscendFusedMoE = None
