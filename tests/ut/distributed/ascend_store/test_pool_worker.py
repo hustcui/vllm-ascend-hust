@@ -472,12 +472,12 @@ class TestKVPoolWorkerRegisterAndTransfer(unittest.TestCase):
         config.kv_events_config = None
         return config
 
-    def _make_worker(self, kv_role="kv_producer", extra_config=None):
+    def _make_worker(self, kv_role="kv_producer", extra_config=None, use_layerwize=False):
         self._patch_all()
         config = self._make_config(kv_role=kv_role, extra_config=extra_config)
         from vllm_ascend.distributed.kv_transfer.kv_pool.ascend_store.pool_worker import KVPoolWorker
 
-        worker = KVPoolWorker(config, use_layerwize=False)
+        worker = KVPoolWorker(config, use_layerwize=use_layerwize)
         return worker
 
     def setUp(self):
@@ -530,6 +530,93 @@ class TestKVPoolWorkerRegisterAndTransfer(unittest.TestCase):
         meta.add_request(req)
         worker.start_load_kv(meta)
         # No get called since no load_spec
+
+    def test_wait_for_layer_load_skips_token_count_when_not_debug(self):
+        worker = self._make_worker(use_layerwize=True)
+        worker.current_layer = worker.num_layers - 1
+        ret_token_mask = MagicMock()
+        worker.layerwise_retrievers = [iter([ret_token_mask])]
+
+        with patch(
+            "vllm_ascend.distributed.kv_transfer.kv_pool.ascend_store.pool_worker.logger.isEnabledFor",
+            return_value=False,
+        ), patch("vllm_ascend.distributed.kv_transfer.kv_pool.ascend_store.pool_worker.logger.debug") as mock_debug:
+            worker.wait_for_layer_load()
+
+        ret_token_mask.sum.assert_not_called()
+        mock_debug.assert_not_called()
+
+    def test_wait_for_layer_load_counts_tokens_only_in_debug(self):
+        worker = self._make_worker(use_layerwize=True)
+        worker.current_layer = worker.num_layers - 1
+        ret_token_mask = MagicMock()
+        ret_token_mask.sum.return_value.item.return_value = 7
+        worker.layerwise_retrievers = [iter([ret_token_mask])]
+
+        with patch(
+            "vllm_ascend.distributed.kv_transfer.kv_pool.ascend_store.pool_worker.logger.isEnabledFor",
+            return_value=True,
+        ), patch("vllm_ascend.distributed.kv_transfer.kv_pool.ascend_store.pool_worker.logger.debug") as mock_debug:
+            worker.wait_for_layer_load()
+
+        ret_token_mask.sum.assert_called_once()
+        mock_debug.assert_called_once_with("Retrieved %s tokens", 7)
+
+    def test_retrieve_layer_skips_token_count_when_not_debug(self):
+        worker = self._make_worker(use_layerwize=True)
+        worker.token_database.process_tokens = MagicMock(return_value=[])
+
+        load_spec = LoadSpec(vllm_cached_tokens=0, kvpool_cached_tokens=0, can_load=True, token_len=16)
+        req = ReqMeta(req_id="r1", token_len_chunk=16, block_ids=[0], block_hashes=["h0"], load_spec=load_spec)
+
+        ret_mask = MagicMock()
+        with patch(
+            "vllm_ascend.distributed.kv_transfer.kv_pool.ascend_store.pool_worker.torch.zeros",
+            return_value=ret_mask,
+        ), patch(
+            "vllm_ascend.distributed.kv_transfer.kv_pool.ascend_store.pool_worker.logger.isEnabledFor",
+            return_value=False,
+        ), patch("vllm_ascend.distributed.kv_transfer.kv_pool.ascend_store.pool_worker.logger.debug") as mock_debug:
+            retriever = worker.retrieve_layer(req)
+            self.assertIsNone(next(retriever))
+            self.assertIsNone(next(retriever))
+            self.assertIs(next(retriever), ret_mask)
+            with self.assertRaises(StopIteration):
+                next(retriever)
+
+        ret_mask.sum.assert_not_called()
+        mock_debug.assert_not_called()
+
+    def test_retrieve_layer_counts_tokens_only_in_debug(self):
+        worker = self._make_worker(use_layerwize=True)
+        worker.token_database.process_tokens = MagicMock(return_value=[])
+
+        load_spec = LoadSpec(vllm_cached_tokens=0, kvpool_cached_tokens=0, can_load=True, token_len=16)
+        req = ReqMeta(req_id="r1", token_len_chunk=16, block_ids=[0], block_hashes=["h0"], load_spec=load_spec)
+
+        ret_mask = MagicMock()
+        ret_mask.sum.return_value.item.return_value = 11
+        with patch(
+            "vllm_ascend.distributed.kv_transfer.kv_pool.ascend_store.pool_worker.torch.zeros",
+            return_value=ret_mask,
+        ), patch(
+            "vllm_ascend.distributed.kv_transfer.kv_pool.ascend_store.pool_worker.logger.isEnabledFor",
+            return_value=True,
+        ), patch("vllm_ascend.distributed.kv_transfer.kv_pool.ascend_store.pool_worker.logger.debug") as mock_debug:
+            retriever = worker.retrieve_layer(req)
+            self.assertIsNone(next(retriever))
+            self.assertIsNone(next(retriever))
+            self.assertIs(next(retriever), ret_mask)
+            with self.assertRaises(StopIteration):
+                next(retriever)
+
+        ret_mask.sum.assert_called_once()
+        mock_debug.assert_called_once_with(
+            "Retrieved %s out of %s out of total %s tokens",
+            11,
+            16,
+            16,
+        )
 
     def test_wait_for_save(self):
         worker = self._make_worker()

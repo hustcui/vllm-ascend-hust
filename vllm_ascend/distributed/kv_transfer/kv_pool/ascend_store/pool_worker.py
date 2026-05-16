@@ -301,7 +301,7 @@ class KVPoolWorker:
     def wait_for_layer_load(self) -> None:
         for layerwise_retriever in self.layerwise_retrievers:
             ret_token_mask = next(layerwise_retriever)
-            if self.current_layer == self.num_layers - 1:
+            if self.current_layer == self.num_layers - 1 and logger.isEnabledFor(logging.DEBUG):
                 assert ret_token_mask is not None
                 num_retrieved_tokens = ret_token_mask.sum().item()
                 logger.debug("Retrieved %s tokens", num_retrieved_tokens)
@@ -418,8 +418,14 @@ class KVPoolWorker:
             for layer_id in range(self.num_layers):
                 yield None
 
-        retrieved_tokens = torch.sum(ret_mask)
-        logger.debug("Retrieved %s out of %s out of total %s tokens", retrieved_tokens, num_required_tokens, token_len)
+        if logger.isEnabledFor(logging.DEBUG):
+            retrieved_tokens = int(ret_mask.sum().item())
+            logger.debug(
+                "Retrieved %s out of %s out of total %s tokens",
+                retrieved_tokens,
+                num_required_tokens,
+                token_len,
+            )
 
         yield ret_mask
 
