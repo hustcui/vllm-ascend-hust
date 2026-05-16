@@ -98,6 +98,84 @@ fi
 
 server_pid=""
 server_group_pid=""
+cleanup_ran=0
+
+find_orphaned_engine_pids() {
+  python - <<'PY'
+import os
+
+
+def read_proc_bytes(path: str) -> bytes:
+    try:
+        with open(path, "rb") as proc_file:
+            return proc_file.read()
+    except OSError:
+        return b""
+
+
+def read_environ(pid: str) -> dict[str, str]:
+    env = {}
+    for item in read_proc_bytes(f"/proc/{pid}/environ").split(b"\0"):
+        if b"=" not in item:
+            continue
+        key, value = item.split(b"=", 1)
+        env[key.decode(errors="ignore")] = value.decode(errors="ignore")
+    return env
+
+
+run_id = os.environ.get("GITHUB_RUN_ID", "")
+job_name = os.environ.get("GITHUB_JOB", "")
+repository = os.environ.get("GITHUB_REPOSITORY", "")
+workspace = os.environ.get("RUNNER_WORKSPACE", "")
+current_pid = str(os.getpid())
+matches = []
+
+if not run_id or not job_name or not repository:
+    print("")
+    raise SystemExit(0)
+
+for entry in os.listdir("/proc"):
+    if not entry.isdigit() or entry == current_pid:
+        continue
+
+    status_text = read_proc_bytes(f"/proc/{entry}/status").decode(errors="ignore")
+    status_name = ""
+    for line in status_text.splitlines():
+        if line.startswith("Name:\t"):
+            status_name = line.split("\t", 1)[1].strip()
+            break
+
+    if status_name != "VLLM::EngineCor":
+        cmdline_text = read_proc_bytes(f"/proc/{entry}/cmdline").replace(b"\0", b" ").decode(errors="ignore")
+        if "VLLM::EngineCore" not in cmdline_text:
+            continue
+
+    proc_env = read_environ(entry)
+    if proc_env.get("GITHUB_RUN_ID") != run_id:
+        continue
+    if proc_env.get("GITHUB_JOB") != job_name:
+        continue
+    if proc_env.get("GITHUB_REPOSITORY") != repository:
+        continue
+    if workspace and proc_env.get("RUNNER_WORKSPACE") != workspace:
+        continue
+
+    matches.append(entry)
+
+print(" ".join(matches))
+PY
+}
+
+kill_matching_pids() {
+  local signal="$1"
+  shift
+
+  if [[ "$#" -eq 0 ]]; then
+    return
+  fi
+
+  kill "-$signal" "$@" 2>/dev/null || true
+}
 
 SUDO_PRESERVE_ENV_VARS=(
   ASCEND_AICPU_PATH
@@ -322,6 +400,11 @@ verify_root_helper_matches_repo() {
 }
 
 cleanup() {
+  if [[ "$cleanup_ran" == "1" ]]; then
+    return
+  fi
+  cleanup_ran=1
+
   if [[ -n "$server_group_pid" ]]; then
     kill -TERM -- "-$server_group_pid" 2>/dev/null || true
     for _ in $(seq 1 10); do
@@ -337,6 +420,33 @@ cleanup() {
 
   if [[ -n "$server_pid" ]]; then
     wait "$server_pid" || true
+  fi
+
+  # GitHub Actions cancellation can outlive the vLLM launcher and leave
+  # EngineCore workers behind, so sweep matching leftovers by run metadata.
+  local orphaned_engine_pids
+  orphaned_engine_pids="$(find_orphaned_engine_pids)"
+  if [[ -n "$orphaned_engine_pids" ]]; then
+    kill_matching_pids TERM $orphaned_engine_pids
+    for _ in $(seq 1 10); do
+      local remaining_engine_pids=()
+      local orphaned_pid
+      for orphaned_pid in $orphaned_engine_pids; do
+        if kill -0 "$orphaned_pid" 2>/dev/null; then
+          remaining_engine_pids+=("$orphaned_pid")
+        fi
+      done
+      if [[ "${#remaining_engine_pids[@]}" -eq 0 ]]; then
+        orphaned_engine_pids=""
+        break
+      fi
+      orphaned_engine_pids="${remaining_engine_pids[*]}"
+      sleep 1
+    done
+
+    if [[ -n "$orphaned_engine_pids" ]]; then
+      kill_matching_pids KILL $orphaned_engine_pids
+    fi
   fi
 
   server_pid=""
@@ -662,6 +772,8 @@ PY
 }
 
 trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 if [[ -z "$PORT" ]]; then
   PORT=$(allocate_local_port)
