@@ -2,7 +2,9 @@ import numpy as np
 import torch
 from vllm.distributed import get_dcp_group, get_pcp_group
 from vllm.utils.math_utils import cdiv
+from vllm.v1.attention.backends.utils import PAD_SLOT_ID
 from vllm.v1.utils import CpuGpuBuffer
+from vllm.v1.worker.block_table import _compute_slot_mapping_kernel
 from vllm.v1.worker.cp_utils import get_total_cp_world_size
 
 
@@ -123,7 +125,103 @@ class BlockTable:
 
         self.block_table.np[[src, tgt]] = self.block_table.np[[tgt, src]]
 
-    def compute_slot_mapping(self, req_indices: np.ndarray, positions: np.ndarray) -> None:
+    def compute_slot_mapping(
+        self,
+        num_reqs: int,
+        query_start_loc: torch.Tensor,
+        positions: torch.Tensor,
+    ) -> None:
+        if not hasattr(_compute_slot_mapping_kernel, "__getitem__"):
+            self._compute_slot_mapping_fallback(num_reqs, query_start_loc, positions)
+            return
+
+        num_tokens = positions.shape[0]
+        total_cp_world_size = self.pcp_world_size * self.dcp_world_size
+        total_cp_rank = self.pcp_rank * self.dcp_world_size + self.dcp_rank
+        _compute_slot_mapping_kernel[(num_reqs + 1,)](
+            num_tokens,
+            self.max_num_batched_tokens,
+            query_start_loc,
+            positions,
+            self.block_table.gpu,
+            self.block_table.gpu.stride(0),
+            self.block_size,
+            self.slot_mapping.gpu,
+            TOTAL_CP_WORLD_SIZE=total_cp_world_size,
+            TOTAL_CP_RANK=total_cp_rank,
+            CP_KV_CACHE_INTERLEAVE_SIZE=self.cp_kv_cache_interleave_size,
+            PAD_ID=PAD_SLOT_ID,
+            BLOCK_SIZE=1024,
+        )
+
+    def _compute_slot_mapping_fallback(
+        self,
+        num_reqs: int,
+        query_start_loc: torch.Tensor,
+        positions: torch.Tensor,
+    ) -> None:
+        query_start_loc_np = self._to_numpy(query_start_loc)[: num_reqs + 1]
+        positions_np = self._to_numpy(positions)
+        num_tokens = positions_np.shape[0]
+        max_num_tokens = min(self.max_num_batched_tokens, self.slot_mapping.np.shape[0])
+
+        if num_tokens == 0:
+            self.slot_mapping.np[:max_num_tokens] = PAD_SLOT_ID
+            self.slot_mapping.copy_to_gpu(max_num_tokens)
+            return
+
+        counts = np.diff(query_start_loc_np)
+        req_indices = np.repeat(np.arange(num_reqs, dtype=np.int64), counts)
+        if req_indices.shape[0] != num_tokens:
+            raise ValueError(
+                "query_start_loc and positions describe different token counts: "
+                f"{req_indices.shape[0]} != {num_tokens}"
+            )
+
+        if self.dcp_world_size * self.pcp_world_size > 1:
+            virtual_block_size = self.block_size * self.dcp_world_size * self.pcp_world_size
+            logical_block_idx = positions_np // virtual_block_size
+            block_table_indices = self._get_block_table_indices(req_indices, logical_block_idx)
+            block_numbers = self.block_table.np.ravel()[block_table_indices]
+            virtual_block_offsets = positions_np % virtual_block_size
+            current_rank = self.dcp_world_size * self.pcp_rank + self.dcp_rank
+            mask = (
+                virtual_block_offsets // self.cp_kv_cache_interleave_size % (self.dcp_world_size * self.pcp_world_size)
+                == current_rank
+            )
+            block_offsets = (
+                virtual_block_offsets
+                // (self.dcp_world_size * self.pcp_world_size * self.cp_kv_cache_interleave_size)
+                * self.cp_kv_cache_interleave_size
+                + virtual_block_offsets % self.cp_kv_cache_interleave_size
+            )
+            slot_mapping = block_numbers * self.block_size + block_offsets
+            self.slot_mapping.np[:num_tokens] = np.where(mask, slot_mapping, PAD_SLOT_ID)
+        else:
+            logical_block_idx = positions_np // self.block_size
+            block_table_indices = self._get_block_table_indices(req_indices, logical_block_idx)
+            block_numbers = self.block_table.np.ravel()[block_table_indices]
+            block_offsets = positions_np % self.block_size
+            np.add(block_numbers * self.block_size, block_offsets, out=self.slot_mapping.np[:num_tokens])
+
+        if num_tokens < max_num_tokens:
+            self.slot_mapping.np[num_tokens:max_num_tokens] = PAD_SLOT_ID
+
+        self.slot_mapping.copy_to_gpu(max_num_tokens)
+
+    def _get_block_table_indices(self, req_indices: np.ndarray, logical_block_idx: np.ndarray) -> np.ndarray:
+        row_stride = self.max_num_blocks_per_req * self.blocks_per_phys_block
+        return req_indices * row_stride + logical_block_idx
+
+    @staticmethod
+    def _to_numpy(value) -> np.ndarray:
+        if isinstance(value, np.ndarray):
+            return value.astype(np.int64, copy=False)
+        if isinstance(value, torch.Tensor):
+            return value.detach().cpu().numpy().astype(np.int64, copy=False)
+        return np.asarray(value, dtype=np.int64)
+
+    def compute_slot_mapping_draft(self, req_indices: np.ndarray, positions: np.ndarray) -> None:
         # E.g., [0, 1, 0, 1, 2, 3, 4, 0, 1, 2]
         # -> [0, 0, K, K, K + 1, K + 1, K + 2, 2 * K, 2 * K, 2 * K + 1]
         # where K is the max_num_blocks_per_req and the block size is 2.
@@ -193,9 +291,6 @@ class BlockTable:
 
     def commit_block_table(self, num_reqs: int) -> None:
         self.block_table.copy_to_gpu(num_reqs)
-
-    def commit_slot_mapping(self, num_tokens: int) -> None:
-        self.slot_mapping.copy_to_gpu(num_tokens)
 
     def clear(self) -> None:
         self.block_table.fill_(0)
@@ -309,17 +404,22 @@ class MultiGroupBlockTable:
         for block_table in self.block_tables:
             block_table.swap_row(src, tgt)
 
-    def compute_slot_mapping(self, req_indices: np.ndarray, positions: np.ndarray) -> None:
+    def compute_slot_mapping(
+        self,
+        num_reqs: int,
+        query_start_loc: torch.Tensor,
+        positions: torch.Tensor,
+    ) -> None:
         for block_table in self.block_tables:
-            block_table.compute_slot_mapping(req_indices, positions)
+            block_table.compute_slot_mapping(num_reqs, query_start_loc, positions)
+
+    def compute_slot_mapping_draft(self, req_indices: np.ndarray, positions: np.ndarray) -> None:
+        for block_table in self.block_tables:
+            block_table.compute_slot_mapping_draft(req_indices, positions)
 
     def commit_block_table(self, num_reqs: int) -> None:
         for block_table in self.block_tables:
             block_table.commit_block_table(num_reqs)
-
-    def commit_slot_mapping(self, num_tokens: int) -> None:
-        for block_table in self.block_tables:
-            block_table.commit_slot_mapping(num_tokens)
 
     def clear(self) -> None:
         for block_table in self.block_tables:

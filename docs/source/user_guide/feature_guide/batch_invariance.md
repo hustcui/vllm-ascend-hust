@@ -2,7 +2,7 @@
 
 ```{note}
 Batch invariance is currently in beta. Some features are still under active development.
-Track progress and planned improvements in the `vllm-ascend-hust` issue tracker: <https://github.com/intellistream/vllm-ascend-hust/issues>
+Track progress and planned improvements at <https://github.com/vllm-project/vllm-ascend/issues/5487>
 ```
 
 This document shows how to enable batch invariance in vLLM-Ascend. Batch invariance ensures that the output of a model is deterministic and independent of the batch size or the order of requests in a batch.
@@ -18,13 +18,12 @@ Batch invariance is crucial for several use cases:
 
 ## Hardware Requirements
 
-Batch invariance currently requires Ascend NPUs for 910B,
-because only 910B supports batch invariance with HCCL communication for now,
-we will support other NPUs in the future.
+Batch invariance currently requires Ascend Atlas A2 inference products NPUs, because only the Atlas A2 inference products supports batch invariance with HCCL communication for now.
+We will support other NPUs in the future.
 
 ## Software Requirements
 
-Batch invariance requires a customed operator library for 910B.
+Batch invariance requires a custom operator library for Atlas A2 inference products.
 We will release the customed operator library in future versions.
 
 ## Enabling Batch Invariance
@@ -110,7 +109,7 @@ Batch invariance has been tested and verified on the following models:
 - **Qwen3 (Dense)**: `Qwen/Qwen3-1.7B`, `Qwen/Qwen3-8B`
 - **Qwen3 (MoE)**: `Qwen/Qwen3-30B-A3B`
 
-Other models may also work, but these have been explicitly validated. If you encounter issues with a specific model, please report them on the [GitHub issue tracker](https://github.com/intellistream/vllm-ascend-hust/issues/new/choose).
+Other models may also work, but these have been explicitly validated. If you encounter issues with a specific model, please report them on the [GitHub issue tracker](https://github.com/vllm-project/vllm-ascend/issues/new/choose).
 
 ## Implementation Details
 
@@ -133,4 +132,4 @@ The batch invariance feature is under active development. Planned improvements i
 - Performance optimizations
 - Additional testing and validation
 
-For the latest status and to contribute ideas, see the [vllm-ascend-hust issue tracker](https://github.com/intellistream/vllm-ascend-hust/issues).
+For the latest status and to contribute ideas, see the [tracking issue](https://github.com/vllm-project/vllm-ascend/issues/5487).

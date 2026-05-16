@@ -1,10 +1,10 @@
 # Prefill-Decode Disaggregation (Qwen2.5-VL)
 
-## Getting Start
+## Getting Started
 
-vLLM-Ascend now supports prefill-decode (PD) disaggregation. This guide takes one-by-one steps to verify these features with constrained resources.
+vLLM-Ascend now supports prefill-decode (PD) disaggregation. This guide provides step-by-step instructions to verify this features in resource-constrained environments.
 
-Using the Qwen2.5-VL-7B-Instruct model as an example, use vllm-ascend v0.11.0rc1 (with vLLM v0.11.0) on 1 Atlas 800T A2 server to deploy the "1P1D" architecture. Assume the IP address is 192.0.0.1.
+Using the Qwen2.5-VL-7B-Instruct model as an example, use vLLM-Ascend v0.11.0rc1 (with vLLM v0.11.0) on 1 Atlas 800T A2 server to deploy the "1P1D" architecture (one Prefiller and one Decoder on the same node). Assume the IP address is 192.0.0.1.
 
 ## Verify Communication Environment
 
@@ -12,48 +12,48 @@ Using the Qwen2.5-VL-7B-Instruct model as an example, use vllm-ascend v0.11.0rc1
 
 1. Single Node Verification:
 
-Execute the following commands in sequence. The results must all be `success` and the status must be `UP`:
+    Execute the following commands in sequence. The results must all be `success` and the status must be `UP`:
 
-```bash
-# Check the remote switch ports
-for i in {0..7}; do hccn_tool -i $i -lldp -g | grep Ifname; done
-# Get the link status of the Ethernet ports (UP or DOWN)
-for i in {0..7}; do hccn_tool -i $i -link -g ; done
-# Check the network health status
-for i in {0..7}; do hccn_tool -i $i -net_health -g ; done
-# View the network detected IP configuration
-for i in {0..7}; do hccn_tool -i $i -netdetect -g ; done
-# View gateway configuration
-for i in {0..7}; do hccn_tool -i $i -gateway -g ; done
-```
+    ```bash
+    # Check the remote switch ports
+    for i in {0..7}; do hccn_tool -i $i -lldp -g | grep Ifname; done
+    # Get the link status of the Ethernet ports (UP or DOWN)
+    for i in {0..7}; do hccn_tool -i $i -link -g ; done
+    # Check the network health status
+    for i in {0..7}; do hccn_tool -i $i -net_health -g ; done
+    # View the network detected IP configuration
+    for i in {0..7}; do hccn_tool -i $i -netdetect -g ; done
+    # View gateway configuration
+    for i in {0..7}; do hccn_tool -i $i -gateway -g ; done
+    ```
 
 2. Check NPU HCCN Configuration:
 
-Ensure that the hccn.conf file exists in the environment. If using Docker, mount it into the container.
+    Ensure that the hccn.conf file exists in the environment. If using Docker, mount it into the container.
 
-```bash
-cat /etc/hccn.conf
-```
+    ```bash
+    cat /etc/hccn.conf
+    ```
 
 3. Get NPU IP Addresses
 
-```bash
-for i in {0..7}; do hccn_tool -i $i -ip -g;done
-```
+    ```bash
+    for i in {0..7}; do hccn_tool -i $i -ip -g;done
+    ```
 
 4. Cross-Node PING Test
 
-```bash
-# Execute on the target node (replace 'x.x.x.x' with actual npu ip address).
-for i in {0..7}; do hccn_tool -i $i -ping -g address x.x.x.x;done
-```
+    ```bash
+    # Execute on the target node (replace 'x.x.x.x' with actual npu ip address).
+    for i in {0..7}; do hccn_tool -i $i -ping -g address x.x.x.x;done
+    ```
 
 5. Check NPU TLS Configuration
 
-```bash
-# The tls settings should be consistent across all nodes
-for i in {0..7}; do hccn_tool -i $i -tls -g ; done | grep switch
-```
+    ```bash
+    # The tls settings should be consistent across all nodes
+    for i in {0..7}; do hccn_tool -i $i -tls -g ; done | grep switch
+    ```
 
 ## Run with Docker
 
@@ -237,7 +237,7 @@ If you want to run "2P1D", please set ASCEND_RT_VISIBLE_DEVICES and port to diff
 
 ## Example Proxy for Deployment
 
-Run a proxy server on the same node with the prefiller service instance. You can get the proxy program in the repository's examples: [load\_balance\_proxy\_server\_example.py](https://github.com/intellistream/vllm-ascend-hust/blob/main/examples/disaggregated_prefill_v1/load_balance_proxy_server_example.py)
+Run a proxy server on the same node with the prefiller service instance. You can get the proxy program in the repository's examples: [load\_balance\_proxy\_server\_example.py](https://github.com/vllm-project/vllm-ascend/blob/main/examples/disaggregated_prefill_v1/load_balance_proxy_server_example.py)
 
 ```shell
 python load_balance_proxy_server_example.py \

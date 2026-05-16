@@ -1,23 +1,18 @@
 import torch
+import vllm.envs as envs
 from vllm.logger import init_logger
+from vllm.triton_utils import HAS_TRITON
+from vllm.v1.sample.metadata import SamplingMetadata
 from vllm.v1.sample.ops.topk_topp_sampler import TopKTopPSampler
 from vllm.v1.sample.sampler import Sampler
 
 from vllm_ascend.ascend_config import get_ascend_config
-from vllm_ascend.compat import is_batch_invariant_enabled
+from vllm_ascend.sample.penalties import apply_all_penalties
 from vllm_ascend.utils import AscendDeviceType, get_ascend_device_type, global_stream, npu_stream_switch
 
 DEFAULT_LOGPROBS_MODE = "raw_logprobs"
 logger = init_logger(__name__)
-_warned_topk_topp_fallback = False
-
-
-def _has_ascendc_topk_topp() -> bool:
-    try:
-        getattr(torch.ops._C_ascend, "npu_apply_top_k_top_p")
-        return True
-    except AttributeError:
-        return False
+_MISSING_TOP_K_TOP_P_OP_WARNED = False
 
 
 def random_sample(
@@ -47,6 +42,28 @@ def random_sample(
 
 
 class AscendSampler(Sampler):
+    @staticmethod
+    def apply_penalties(
+        logits: torch.Tensor,
+        sampling_metadata: SamplingMetadata,
+        output_token_ids: list[list[int]],
+    ) -> torch.Tensor:
+        """Use Triton-Ascend penalties on NPU when Triton is available; else vLLM default."""
+        if not HAS_TRITON:
+            return Sampler.apply_penalties(logits, sampling_metadata, output_token_ids)
+
+        if sampling_metadata.no_penalties:
+            return logits
+        assert sampling_metadata.prompt_token_ids is not None
+        return apply_all_penalties(
+            logits,
+            sampling_metadata.prompt_token_ids,
+            sampling_metadata.presence_penalties,
+            sampling_metadata.frequency_penalties,
+            sampling_metadata.repetition_penalties,
+            output_token_ids,
+        )
+
     def __init__(self, logprobs_mode=DEFAULT_LOGPROBS_MODE):
         # TODO: support logprobs_mode in vllm-ascend
         super().__init__(logprobs_mode=logprobs_mode)
@@ -87,7 +104,7 @@ class AscendTopKTopPSampler(TopKTopPSampler):
         """Override pytorch native implementation to torch_npu"""
         # when batch_invariant mode is enabled, we should use vllm's implementation.
         # or it will make batch_invariant mode not working.
-        if is_batch_invariant_enabled():
+        if envs.VLLM_BATCH_INVARIANT:
             return super().forward_native(logits, generators, k, p)
         logits = self.apply_top_k_top_p(logits, k, p)
         logits_to_return = None
@@ -145,22 +162,32 @@ def _apply_top_k_top_p_ascendc(
     k: torch.Tensor,
     p: torch.Tensor,
 ) -> torch.Tensor:
-    global _warned_topk_topp_fallback
     if p is None and k is None:
         return logits
-    try:
-        return torch.ops._C_ascend.npu_apply_top_k_top_p(logits, k=k, p=p)
-    except AttributeError:
-        if not _warned_topk_topp_fallback:
-            logger.warning(
-                "Custom op npu_apply_top_k_top_p is unavailable; falling back to the PyTorch implementation."
-            )
-            _warned_topk_topp_fallback = True
+    return torch.ops._C_ascend.npu_apply_top_k_top_p(logits, k=k, p=p)
+
+
+def _has_ascend_top_k_top_p_op() -> bool:
+    ascend_namespace = getattr(torch.ops, "_C_ascend", None)
+    return hasattr(ascend_namespace, "npu_apply_top_k_top_p")
+
+
+def apply_top_k_top_p(
+    logits: torch.Tensor,
+    k: torch.Tensor,
+    p: torch.Tensor,
+) -> torch.Tensor:
+    global _MISSING_TOP_K_TOP_P_OP_WARNED
+
+    if get_ascend_device_type() not in [AscendDeviceType.A2, AscendDeviceType.A3]:
         return _apply_top_k_top_p_pytorch(logits, k, p)
 
+    if _has_ascend_top_k_top_p_op():
+        return _apply_top_k_top_p_ascendc(logits, k, p)
 
-apply_top_k_top_p = (
-    _apply_top_k_top_p_ascendc
-    if get_ascend_device_type() in [AscendDeviceType.A2, AscendDeviceType.A3] and _has_ascendc_topk_topp()
-    else _apply_top_k_top_p_pytorch
-)
+    if not _MISSING_TOP_K_TOP_P_OP_WARNED:
+        logger.warning(
+            "Custom op npu_apply_top_k_top_p is unavailable; falling back to the pytorch implementation."
+        )
+        _MISSING_TOP_K_TOP_P_OP_WARNED = True
+    return _apply_top_k_top_p_pytorch(logits, k, p)

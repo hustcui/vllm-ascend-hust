@@ -33,7 +33,7 @@ on:
         description: Model used for the benchmark run
         required: false
         type: string
-        default: Qwen/Qwen2.5-0.5B-Instruct
+        default: Qwen/Qwen2.5-14B-Instruct
       dataset_path:
         description: Dataset path on the trusted runner for formal workloads such as sharegpt-online
         required: false
@@ -48,12 +48,12 @@ on:
         description: Number of prompts to benchmark
         required: false
         type: string
-        default: "8"
+        default: "200"
       request_rate:
         description: Request rate passed to vllm bench serve
         required: false
         type: string
-        default: inf
+        default: "1"
       max_concurrency:
         description: Max concurrency passed to vllm bench serve
         required: false
@@ -86,6 +86,7 @@ jobs:
     timeout-minutes: 60
     env:
       BENCHMARK_CHECKOUT_USE_SSH_443: ${{ secrets.VLLM_ASCEND_HUST_BENCHMARK_SSH_KEY != '' && '1' || '0' }}
+      DEFAULT_SYSTEM_ASCEND_BENCHMARK_ROOT_HELPER: /usr/local/bin/run_ascend_benchmark_root_helper.sh
       COMPILE_CUSTOM_KERNELS: "1"
       HF_HUB_DISABLE_TELEMETRY: "1"
       HF_ENDPOINT: ${{ vars.HF_ENDPOINT || 'https://hf-mirror.com' }}
@@ -95,20 +96,22 @@ jobs:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
       HF_REPO_ID: ${{ vars.VLLM_ASCEND_HUST_BENCHMARK_HF_REPO || 'intellistream/vllm-ascend-hust-benchmark-results' }}
       ASCEND_HUST_TARGET: ${{ github.event_name == 'workflow_dispatch' && inputs.ascend_hust_target || format('{0}@{1}', github.repository, github.ref_name) }}
+      VLLM_HUST_CONDA_ENV: vllm-hust-dev
       VLLM_HUST_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.vllm_hust_ref || vars.VLLM_ASCEND_HUST_VLLM_HUST_REF || 'main' }}
-      MODEL_NAME: ${{ github.event_name == 'workflow_dispatch' && inputs.model_name || 'Qwen/Qwen2.5-0.5B-Instruct' }}
+      MODEL_NAME: ${{ github.event_name == 'workflow_dispatch' && inputs.model_name || 'Qwen/Qwen2.5-14B-Instruct' }}
+      SOC_VERSION: ascend910b1
       BENCH_SCENARIO: ${{ github.event_name == 'workflow_dispatch' && inputs.benchmark_scenario || (github.event_name == 'pull_request' && vars.VLLM_ASCEND_HUST_PR_BENCHMARK_SCENARIO) || (github.event_name == 'push' && vars.VLLM_ASCEND_HUST_MAIN_BENCHMARK_SCENARIO) || 'random-online' }}
       BENCH_DATASET_PATH: ${{ github.event_name == 'workflow_dispatch' && inputs.dataset_path || (github.event_name == 'pull_request' && vars.VLLM_ASCEND_HUST_PR_BENCHMARK_DATASET_PATH) || (github.event_name == 'push' && vars.VLLM_ASCEND_HUST_MAIN_BENCHMARK_DATASET_PATH) || '' }}
       BENCH_CONSTRAINTS_FILE: ${{ github.event_name == 'workflow_dispatch' && inputs.constraints_file || (github.event_name == 'pull_request' && vars.VLLM_ASCEND_HUST_PR_BENCHMARK_CONSTRAINTS_FILE) || (github.event_name == 'push' && vars.VLLM_ASCEND_HUST_MAIN_BENCHMARK_CONSTRAINTS_FILE) || '' }}
-      MODEL_PARAMETERS: 0.5B
-      MODEL_PRECISION: BF16
-      DTYPE: bfloat16
-      MAX_MODEL_LEN: "256"
+      MODEL_PARAMETERS: 14B
+      MODEL_PRECISION: FP16
+      DTYPE: float16
+      MAX_MODEL_LEN: "1024"
       MAX_NUM_SEQS: "1"
-      BENCH_NUM_PROMPTS: ${{ github.event_name == 'workflow_dispatch' && inputs.num_prompts || '8' }}
-      BENCH_RANDOM_INPUT_LEN: "64"
-      BENCH_RANDOM_OUTPUT_LEN: "16"
-      BENCH_REQUEST_RATE: ${{ github.event_name == 'workflow_dispatch' && inputs.request_rate || 'inf' }}
+      BENCH_NUM_PROMPTS: ${{ github.event_name == 'workflow_dispatch' && inputs.num_prompts || '200' }}
+      BENCH_RANDOM_INPUT_LEN: "1024"
+      BENCH_RANDOM_OUTPUT_LEN: "256"
+      BENCH_REQUEST_RATE: ${{ github.event_name == 'workflow_dispatch' && inputs.request_rate || '1' }}
       BENCH_MAX_CONCURRENCY: ${{ github.event_name == 'workflow_dispatch' && inputs.max_concurrency || '4' }}
       BENCH_INPUT_LEN: ''
       BENCH_OUTPUT_LEN: ''
@@ -116,11 +119,57 @@ jobs:
       HARDWARE_CHIP_MODEL: 910B3
       CHIP_COUNT: "1"
       NODE_COUNT: "1"
+      ASCEND_BENCHMARK_USE_SUDO: ${{ vars.VLLM_ASCEND_HUST_BENCHMARK_USE_SUDO || '1' }}
+      ASCEND_BENCHMARK_ROOT_HELPER: ${{ vars.VLLM_ASCEND_HUST_BENCHMARK_ROOT_HELPER || '' }}
+      ASCEND_RT_VISIBLE_DEVICES: ${{ vars.VLLM_ASCEND_HUST_BENCHMARK_VISIBLE_DEVICES || '' }}
       ALLOW_RANDOM_HF_PUBLISH: ${{ vars.VLLM_ASCEND_HUST_ALLOW_RANDOM_HF_PUBLISH || '0' }}
+      SAME_SPEC_BENCHMARK_ENABLED: ${{ vars.VLLM_ASCEND_HUST_SAME_SPEC_BENCHMARK_ENABLED || '1' }}
+      SYNC_GITHUB_SNAPSHOTS: ${{ vars.VLLM_ASCEND_HUST_SYNC_BENCHMARK_SNAPSHOTS_TO_GITHUB || '1' }}
+      GITHUB_SNAPSHOT_TARGET_BRANCH: ${{ vars.VLLM_HUST_BENCHMARK_SNAPSHOT_BRANCH || 'main' }}
       WEBSITE_LEADERBOARD_URL: ${{ vars.VLLM_ASCEND_HUST_LEADERBOARD_URL || vars.VLLM_HUST_LEADERBOARD_URL || '' }}
       PUBLISH_TO_HF: ${{ (((github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.VLLM_ASCEND_HUST_PUBLISH_BENCHMARK_ON_MAIN == '1') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && vars.VLLM_ASCEND_HUST_PUBLISH_BENCHMARK_ON_PR == '1') || (github.event_name == 'workflow_dispatch' && inputs.publish_to_hf)) && secrets.HF_TOKEN != '') && '1' || '0' }}
+      HUST_ASCEND_MANAGER_REPO: ${{ github.workspace }}/ascend-runtime-manager
 
     steps:
+      - name: Pre-clean stale checkout state
+        shell: bash
+        run: |
+          ci_state_root="$(python3 -c 'import os; print(os.path.realpath(os.path.join(os.environ["GITHUB_WORKSPACE"], "..", "vllm-ascend-hust-ci-state")))')"
+          benchmark_results_root="${ci_state_root}/benchmarks/ci"
+          ci_home="${ci_state_root}/home"
+          ci_runtime_root="${ci_state_root}/runtime"
+
+          {
+            echo "CI_STATE_ROOT=${ci_state_root}"
+            echo "BENCHMARK_RESULTS_ROOT=${benchmark_results_root}"
+            echo "CI_HOME=${ci_home}"
+            echo "CI_RUNTIME_ROOT=${ci_runtime_root}"
+          } >> "$GITHUB_ENV"
+
+          legacy_paths=(
+            "${GITHUB_WORKSPACE}/.benchmarks"
+            "${GITHUB_WORKSPACE}/.ci-home"
+            "${GITHUB_WORKSPACE}/.ci-runtime"
+            "${GITHUB_WORKSPACE}/vllm-hust"
+            "${GITHUB_WORKSPACE}/vllm-hust-benchmark"
+            "${GITHUB_WORKSPACE}/ascend-runtime-manager"
+            "${GITHUB_WORKSPACE}/vllm-hust-website"
+          )
+
+          shopt -s nullglob dotglob
+          workspace_entries=("${GITHUB_WORKSPACE}"/*)
+          shopt -u nullglob dotglob
+          cleanup_paths=("${legacy_paths[@]}" "${workspace_entries[@]}")
+
+          if command -v sudo >/dev/null 2>&1 \
+            && [[ -x "$DEFAULT_SYSTEM_ASCEND_BENCHMARK_ROOT_HELPER" ]] \
+            && sudo -n "$DEFAULT_SYSTEM_ASCEND_BENCHMARK_ROOT_HELPER" cleanup-paths "${cleanup_paths[@]}"; then
+            mkdir -p "$ci_state_root" "$benchmark_results_root" "$ci_home" "$ci_runtime_root"
+          else
+            rm -rf "${cleanup_paths[@]}"
+            mkdir -p "$ci_state_root" "$benchmark_results_root" "$ci_home" "$ci_runtime_root"
+          fi
+
       - name: Resolve benchmark target
         shell: bash
         run: |
@@ -165,7 +214,7 @@ jobs:
         with:
           ssh-key: ${{ secrets.VLLM_ASCEND_HUST_BENCHMARK_SSH_KEY }}
           ssh-strict: ${{ env.BENCHMARK_CHECKOUT_USE_SSH_443 != '1' }}
-          persist-credentials: false
+          persist-credentials: true
 
       - name: Checkout manual benchmark repo history
         if: ${{ github.event_name == 'workflow_dispatch' && env.ASCEND_HUST_LOCAL_CHECKOUT == '1' }}
@@ -174,7 +223,7 @@ jobs:
           fetch-depth: 0
           ssh-key: ${{ secrets.VLLM_ASCEND_HUST_BENCHMARK_SSH_KEY }}
           ssh-strict: ${{ env.BENCHMARK_CHECKOUT_USE_SSH_443 != '1' }}
-          persist-credentials: false
+          persist-credentials: true
 
       - name: Checkout manual benchmark target
         if: ${{ github.event_name == 'workflow_dispatch' && env.ASCEND_HUST_LOCAL_CHECKOUT != '1' }}
@@ -202,6 +251,9 @@ jobs:
             echo "ASCEND_HUST_TARGET_SHA=$target_sha"
             echo "ASCEND_HUST_TARGET_SHA_SHORT=$target_sha_short"
             echo "RUN_ID=ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${target_sha_short}"
+            echo "RESULT_ROOT=${BENCHMARK_RESULTS_ROOT}/ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${target_sha_short}"
+            echo "SUBMISSION_DIR=${BENCHMARK_RESULTS_ROOT}/ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${target_sha_short}/submissions/ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${target_sha_short}"
+            echo "BENCHMARK_COMMENT_PATH=${BENCHMARK_RESULTS_ROOT}/ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${target_sha_short}/benchmark_comment.md"
           } >> "$GITHUB_ENV"
 
       - name: Checkout vllm-hust repo
@@ -221,6 +273,15 @@ jobs:
           path: vllm-hust-benchmark
           ssh-key: ${{ secrets.VLLM_ASCEND_HUST_BENCHMARK_SSH_KEY }}
           ssh-strict: ${{ env.BENCHMARK_CHECKOUT_USE_SSH_443 != '1' }}
+          persist-credentials: true
+
+      - name: Checkout ascend-runtime-manager repo
+        uses: actions/checkout@v6.0.1
+        with:
+          repository: vLLM-HUST/ascend-runtime-manager
+          path: ascend-runtime-manager
+          ssh-key: ${{ secrets.VLLM_ASCEND_HUST_BENCHMARK_SSH_KEY }}
+          ssh-strict: ${{ env.BENCHMARK_CHECKOUT_USE_SSH_443 != '1' }}
           persist-credentials: false
 
       - name: Checkout website repo
@@ -232,6 +293,97 @@ jobs:
           ssh-strict: ${{ env.BENCHMARK_CHECKOUT_USE_SSH_443 != '1' }}
           persist-credentials: false
 
+      - name: Preflight benchmark root helper
+        shell: bash
+        run: |
+          if [[ "${ASCEND_BENCHMARK_USE_SUDO}" != "1" ]]; then
+            echo "Skipping benchmark root helper preflight because ASCEND_BENCHMARK_USE_SUDO=${ASCEND_BENCHMARK_USE_SUDO}."
+            exit 0
+          fi
+
+          repo_helper="$GITHUB_WORKSPACE/.github/workflows/scripts/run_ascend_benchmark_root_helper.sh"
+          install_script="$GITHUB_WORKSPACE/scripts/install_ascend_benchmark_root_helper.sh"
+          configured_helper="${ASCEND_BENCHMARK_ROOT_HELPER:-}"
+          system_helper="$DEFAULT_SYSTEM_ASCEND_BENCHMARK_ROOT_HELPER"
+          effective_helper="$configured_helper"
+
+          if [[ -z "$effective_helper" ]]; then
+            if [[ -x "$system_helper" ]]; then
+              effective_helper="$system_helper"
+            else
+              effective_helper="$repo_helper"
+            fi
+          fi
+
+          summary_title="## Ascend Benchmark Root Helper Preflight"
+          admin_fix="Contact the self-hosted runner administrator to sync the runner checkout and refresh the benchmark root helper installation."
+          reinstall_cmd="sudo RUNNER_USER=grunner bash scripts/install_ascend_benchmark_root_helper.sh"
+
+          write_failure_summary() {
+            local reason="$1"
+
+            if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+              {
+                echo "$summary_title"
+                echo
+                echo "Status: FAIL"
+                echo
+                echo "Reason: $reason"
+                echo
+                echo "$admin_fix"
+                echo
+                echo "Recommended runner-host command: $reinstall_cmd"
+              } >> "$GITHUB_STEP_SUMMARY"
+            fi
+          }
+
+          if [[ ! -f "$repo_helper" ]]; then
+            reason="Runner checkout is missing the repository helper source: $repo_helper"
+            echo "$reason" >&2
+            echo "$admin_fix" >&2
+            write_failure_summary "$reason"
+            exit 1
+          fi
+
+          if [[ ! -f "$install_script" ]]; then
+            reason="Runner checkout is missing the helper install script: $install_script"
+            echo "$reason" >&2
+            echo "$admin_fix" >&2
+            write_failure_summary "$reason"
+            exit 1
+          fi
+
+          if [[ "$effective_helper" != "$system_helper" ]]; then
+            if [[ ! -x "$effective_helper" ]]; then
+              reason="Configured benchmark root helper is not executable: $effective_helper"
+              echo "$reason" >&2
+              echo "$admin_fix" >&2
+              write_failure_summary "$reason"
+              exit 1
+            fi
+
+            echo "Benchmark root helper preflight passed with configured helper: $effective_helper"
+            exit 0
+          fi
+
+          if [[ ! -x "$effective_helper" ]]; then
+            reason="Installed benchmark root helper is missing or not executable: $effective_helper"
+            echo "$reason" >&2
+            echo "$admin_fix" >&2
+            write_failure_summary "$reason"
+            exit 1
+          fi
+
+          if ! cmp -s "$effective_helper" "$repo_helper"; then
+            reason="Installed benchmark root helper is stale: $effective_helper does not match $repo_helper"
+            echo "$reason" >&2
+            echo "$admin_fix" >&2
+            write_failure_summary "$reason"
+            exit 1
+          fi
+
+          echo "Benchmark root helper preflight passed: $effective_helper matches $repo_helper"
+
       - name: Prepare Hugging Face cache directories
         run: |
           mkdir -p "$HF_HOME" "$HUGGINGFACE_HUB_CACHE" "$TRANSFORMERS_CACHE"
@@ -242,43 +394,104 @@ jobs:
         env:
           VLLM_HUST_REPO: ${{ github.workspace }}/vllm-hust
           VLLM_HUST_BENCHMARK_REPO: ${{ github.workspace }}/vllm-hust-benchmark
-          HOME: ${{ github.workspace }}/.ci-home
-          XDG_CACHE_HOME: ${{ github.workspace }}/.ci-home/.cache
-          XDG_CONFIG_HOME: ${{ github.workspace }}/.ci-home/.config
+          HOME: ${{ env.CI_HOME }}
+          XDG_CACHE_HOME: ${{ env.CI_HOME }}/.cache
+          XDG_CONFIG_HOME: ${{ env.CI_HOME }}/.config
         run: |
           mkdir -p "$HOME" "$XDG_CACHE_HOME" "$XDG_CONFIG_HOME"
           source scripts/use_single_ascend_env.sh
-          python -m pip install -e "$VLLM_HUST_REPO" --no-build-isolation --no-deps
+          export PYTHONPATH="$VLLM_HUST_REPO:$VLLM_HUST_BENCHMARK_REPO/src${PYTHONPATH:+:$PYTHONPATH}"
+          hust_run_pip install "torch==2.9.0" "torch-npu==2.9.0"
+          hust_run_pip install "numpy<2.0.0" scipy attrs decorator psutil
+          hust_run_pip install -r "$VLLM_HUST_REPO/requirements/common.txt"
           bash scripts/install_local_ascend_plugin.sh "$GITHUB_WORKSPACE"
-          python -m pip install -e "${VLLM_HUST_BENCHMARK_REPO}[publish]" jsonschema
+          hust_run_pip install "huggingface_hub>=0.20" jsonschema
 
       - name: Verify installation
+        env:
+          VLLM_HUST_REPO: ${{ github.workspace }}/vllm-hust
+          VLLM_HUST_BENCHMARK_REPO: ${{ github.workspace }}/vllm-hust-benchmark
         run: |
           source scripts/use_single_ascend_env.sh
-          python --version
-          python - <<'PY'
+          export PYTHONPATH="$VLLM_HUST_REPO:$VLLM_HUST_BENCHMARK_REPO/src${PYTHONPATH:+:$PYTHONPATH}"
+          PYTHON_BIN="$(hust_resolve_python_bin)"
+          "$PYTHON_BIN" --version
+          "$PYTHON_BIN" - <<'PY'
+          import numpy
+          import torch
+          import torch_npu
           import vllm
+          import vllm_hust_benchmark.cli
           from vllm_ascend._version import __version__ as plugin_version
 
+          print(f'numpy version: {numpy.__version__}')
+          print(f'torch version: {torch.__version__}')
+          print(f'torch_npu version: {torch_npu.__version__}')
           print(f'vLLM version: {vllm.__version__}')
           print(f'vLLM Ascend Hust version: {plugin_version}')
           PY
 
       - name: Run benchmark CI and optional HF sync
+        id: run_benchmark_ci
         env:
           WORKSPACE_ROOT: ${{ github.workspace }}
           VLLM_HUST_REPO: ${{ github.workspace }}/vllm-hust
           VLLM_ASCEND_HUST_REPO: ${{ github.workspace }}
           VLLM_HUST_BENCHMARK_REPO: ${{ github.workspace }}/vllm-hust-benchmark
           VLLM_HUST_WEBSITE_REPO: ${{ github.workspace }}/vllm-hust-website
+          CI_STATE_ROOT: ${{ env.CI_STATE_ROOT }}
+          BENCHMARK_RESULTS_ROOT: ${{ env.BENCHMARK_RESULTS_ROOT }}
+          CI_HOME: ${{ env.CI_HOME }}
+          CI_RUNTIME_ROOT: ${{ env.CI_RUNTIME_ROOT }}
+          RESULT_ROOT: ${{ env.RESULT_ROOT }}
         run: |
+          set +e
+          benchmark_lock_file="${ASCEND_BENCHMARK_LOCK_FILE:-/tmp/vllm-ascend-hust-benchmark.lock}"
+          mkdir -p "$(dirname "$benchmark_lock_file")"
+          if command -v flock >/dev/null 2>&1; then
+            echo "Acquiring Ascend benchmark host lock: $benchmark_lock_file"
+            flock "$benchmark_lock_file" bash -c 'source scripts/use_single_ascend_env.sh && bash .github/workflows/scripts/run_ascend_benchmark_ci.sh'
+          else
+            echo "flock is unavailable; running benchmark without host-level serialization"
+            source scripts/use_single_ascend_env.sh
+            bash .github/workflows/scripts/run_ascend_benchmark_ci.sh
+          fi
+          benchmark_exit_code=$?
+          set -e
+
+          echo "BENCHMARK_EXIT_CODE=$benchmark_exit_code" >> "$GITHUB_ENV"
+
+          if [[ "$benchmark_exit_code" -eq 75 && "$GITHUB_EVENT_NAME" == "pull_request" && "${SAME_SPEC_BENCHMARK_ENABLED:-1}" != "1" ]]; then
+            echo "Ascend benchmark hit shared-runner resource contention; treating this PR run as neutral instead of failing CI."
+            exit 0
+          fi
+
+          exit "$benchmark_exit_code"
+
+      - name: Sync GitHub leaderboard snapshots
+        if: ${{ success() && env.SYNC_GITHUB_SNAPSHOTS == '1' }}
+        env:
+          BENCHMARK_REPO_DIR: ${{ github.workspace }}/vllm-hust-benchmark
+          WEBSITE_REPO_DIR: ${{ github.workspace }}/vllm-hust-website
+          SNAPSHOT_TARGET_BRANCH: ${{ env.GITHUB_SNAPSHOT_TARGET_BRANCH }}
+        run: |
+          if [[ "${BENCHMARK_EXIT_CODE:-}" != "0" ]]; then
+            echo "Skipping GitHub snapshot sync because BENCHMARK_EXIT_CODE=${BENCHMARK_EXIT_CODE:-unset}."
+            exit 0
+          fi
+
           source scripts/use_single_ascend_env.sh
-          bash .github/workflows/scripts/run_ascend_benchmark_ci.sh
+          export PYTHONPATH="${GITHUB_WORKSPACE}/vllm-hust:${GITHUB_WORKSPACE}/vllm-hust-benchmark/src${PYTHONPATH:+:$PYTHONPATH}"
+          PYTHON_BIN="$(hust_resolve_python_bin)"
+          export PYTHON_BIN
+          export CURRENT_SUBMISSION_DIR="${SUBMISSION_DIR}"
+          export SNAPSHOT_COMMIT_MESSAGE="chore: sync vllm-ascend benchmark snapshots ${RUN_ID}"
+          bash .github/workflows/scripts/sync_benchmark_snapshots_to_github.sh
 
       - name: Build benchmark summary artifacts
         if: always()
         run: |
-          python - <<'PY'
+          python3 - <<'PY'
           import json
           import os
           from pathlib import Path
@@ -287,22 +500,35 @@ jobs:
           if not run_id:
             target_sha = os.environ.get('ASCEND_HUST_TARGET_SHA', os.environ['GITHUB_SHA'])
             run_id = f"ci-{os.environ['GITHUB_RUN_ID']}-{os.environ['GITHUB_RUN_ATTEMPT']}-{target_sha[:8]}"
-          result_root = Path(os.environ['GITHUB_WORKSPACE']) / '.benchmarks' / 'ci' / run_id
+          result_root = Path(os.environ['BENCHMARK_RESULTS_ROOT']) / run_id
           raw_result = result_root / 'raw_benchmark.json'
           leaderboard_entry = result_root / 'submissions' / run_id / 'run_leaderboard.json'
           summary_path = Path(os.environ['GITHUB_STEP_SUMMARY'])
           comment_path = result_root / 'benchmark_comment.md'
+          runtime_ready_log = result_root / 'runtime-ready.log'
+          diagnostics_path = result_root / 'benchmark_diagnostics.md'
           run_url = f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}"
           bench_scenario = os.environ.get('BENCH_SCENARIO', 'random-online')
-          publish_mode = 'hf-sync' if os.environ.get('PUBLISH_TO_HF') == '1' else 'artifact-preview'
+          benchmark_exit_code = os.environ.get('BENCHMARK_EXIT_CODE', '0')
+          publish_modes = []
+          if os.environ.get('PUBLISH_TO_HF') == '1':
+            publish_modes.append('hf-sync')
+          else:
+            publish_modes.append('artifact-preview')
+          if os.environ.get('SYNC_GITHUB_SNAPSHOTS') == '1' and benchmark_exit_code == '0':
+            publish_modes.append('github-snapshot')
+          publish_mode = '+'.join(publish_modes)
           model_name = os.environ.get('MODEL_NAME', 'unknown')
           hf_repo = os.environ.get('HF_REPO_ID', 'unknown')
+          github_snapshot_status = os.environ.get('GITHUB_SNAPSHOT_SYNC_STATUS')
+          github_snapshot_commit = os.environ.get('GITHUB_SNAPSHOT_SYNC_COMMIT')
           leaderboard_url = os.environ.get('WEBSITE_LEADERBOARD_URL', '').strip()
           vllm_hust_ref = os.environ.get('VLLM_HUST_REF', 'main')
           ascend_hust_repository = os.environ.get('ASCEND_HUST_TARGET_REPOSITORY', os.environ.get('GITHUB_REPOSITORY', 'unknown'))
           ascend_hust_ref = os.environ.get('ASCEND_HUST_TARGET_REF', os.environ.get('GITHUB_REF_NAME', 'unknown'))
           ascend_hust_sha = os.environ.get('ASCEND_HUST_TARGET_SHA', os.environ.get('GITHUB_SHA', 'unknown'))
           ascend_hust_commit_url = f"{os.environ['GITHUB_SERVER_URL']}/{ascend_hust_repository}/commit/{ascend_hust_sha}"
+          benchmark_root_helper = os.environ.get('ASCEND_BENCHMARK_ROOT_HELPER', '').strip() or '/usr/local/bin/run_ascend_benchmark_root_helper.sh'
 
           lines = [
             '## Ascend Benchmark Summary',
@@ -328,6 +554,23 @@ jobs:
             f'- Publish mode: `{publish_mode}`',
             f'- Workflow run: [view run]({run_url})',
           ]
+          if benchmark_exit_code == '75':
+            contention_note = '- Benchmark execution: `shared-runner resource contention (temporary)`'
+            lines.append(contention_note)
+            comment_lines.append(contention_note)
+          if runtime_ready_log.is_file():
+            runtime_ready_text = runtime_ready_log.read_text(encoding='utf-8', errors='replace')
+            if 'sudo: a password is required' in runtime_ready_text:
+              sudo_note = f'- Benchmark execution: `passwordless sudo is required for {benchmark_root_helper} on the runner host`'
+              lines.append(sudo_note)
+              comment_lines.append(sudo_note)
+          if diagnostics_path.is_file():
+            diagnostics_lines = [
+              line.strip() for line in diagnostics_path.read_text(encoding='utf-8', errors='replace').splitlines()
+              if line.strip()
+            ]
+            lines.extend(diagnostics_lines)
+            comment_lines.extend(diagnostics_lines)
           if raw_result.is_file():
             payload = json.loads(raw_result.read_text(encoding='utf-8'))
             metric_lines = [
@@ -341,13 +584,34 @@ jobs:
           else:
             lines.append('- Raw benchmark result: `missing`')
             comment_lines.append('- Raw benchmark result: `missing`')
+          artifact = None
           if leaderboard_entry.is_file():
             artifact = json.loads(leaderboard_entry.read_text(encoding='utf-8'))
             lines.append(f"- Leaderboard engine version: `{artifact.get('engine_version')}`")
             comment_lines.append(f"- Leaderboard engine version: `{artifact.get('engine_version')}`")
+            same_spec = artifact.get('same_spec') if isinstance(artifact, dict) else None
+            if isinstance(same_spec, dict):
+              spec_id = same_spec.get('spec_id') or 'unknown'
+              spec_hash = str(same_spec.get('resolved_spec_hash') or '')
+              spec_note = f'- Same-spec goal artifact: `{spec_id}`'
+              if spec_hash:
+                spec_note += f' (`{spec_hash[:8]}`)'
+              lines.append(spec_note)
+              comment_lines.append(spec_note)
           else:
             lines.append('- Leaderboard entry: `missing`')
             comment_lines.append('- Leaderboard entry: `missing`')
+
+          if github_snapshot_status:
+            snapshot_note = f'- GitHub snapshot sync: `{github_snapshot_status}`'
+            if github_snapshot_commit:
+              snapshot_note += f' (`{github_snapshot_commit[:8]}`)'
+            lines.append(snapshot_note)
+            comment_lines.append(snapshot_note)
+          elif os.environ.get('SYNC_GITHUB_SNAPSHOTS') == '1' and benchmark_exit_code == '75':
+            snapshot_note = '- GitHub snapshot sync: `skipped` because benchmark did not produce publishable results'
+            lines.append(snapshot_note)
+            comment_lines.append(snapshot_note)
 
           if bench_scenario != 'random-online':
             dataset_path = os.environ.get('BENCH_DATASET_PATH') or 'unset'
@@ -356,7 +620,7 @@ jobs:
             lines.append(f'- Constraints file: `{constraints_path}`')
             comment_lines.append(f'- Dataset path: `{dataset_path}`')
             comment_lines.append(f'- Constraints file: `{constraints_path}`')
-          elif publish_mode == 'artifact-preview':
+          elif publish_mode == 'artifact-preview' and not (artifact and isinstance(artifact.get('same_spec'), dict)):
             note = '- Note: random-online runs stay as preview artifacts unless random preview publish is explicitly enabled.'
             lines.append(note)
             comment_lines.append(note)
@@ -380,54 +644,54 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ascend-benchmark-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ github.workspace }}/.benchmarks/ci/
+          path: ${{ env.BENCHMARK_RESULTS_ROOT }}/
           if-no-files-found: warn
           retention-days: 14
 
       - name: Update PR benchmark comment
         if: ${{ always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
-        with:
-          script: |
-            const fs = require('fs');
-            const path = require('path');
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          from urllib import error, request
 
-            const runId = process.env.RUN_ID || `ci-${process.env.GITHUB_RUN_ID}-${process.env.GITHUB_RUN_ATTEMPT}-${(process.env.ASCEND_HUST_TARGET_SHA || process.env.GITHUB_SHA).slice(0, 8)}`;
-            const commentPath = path.join(process.env.GITHUB_WORKSPACE, '.benchmarks', 'ci', runId, 'benchmark_comment.md');
-            const marker = '<!-- ascend-benchmark-leaderboard-comment -->';
+          run_id = os.environ.get('RUN_ID') or f"ci-{os.environ['GITHUB_RUN_ID']}-{os.environ['GITHUB_RUN_ATTEMPT']}-{(os.environ.get('ASCEND_HUST_TARGET_SHA') or os.environ['GITHUB_SHA'])[:8]}"
+          comment_path = Path(os.environ['BENCHMARK_RESULTS_ROOT']) / run_id / 'benchmark_comment.md'
+          marker = '<!-- ascend-benchmark-leaderboard-comment -->'
 
-            if (!fs.existsSync(commentPath)) {
-              core.info(`Benchmark comment file not found: ${commentPath}`);
-              return;
-            }
+          if not comment_path.exists():
+              print(f'Benchmark comment file not found: {comment_path}')
+              raise SystemExit(0)
 
-            const body = fs.readFileSync(commentPath, 'utf8');
-            const issue_number = context.payload.pull_request.number;
-            const {owner, repo} = context.repo;
-            const comments = await github.paginate(github.rest.issues.listComments, {
-              owner,
-              repo,
-              issue_number,
-              per_page: 100,
-            });
-            const existing = comments.find((comment) => {
-              return comment.user?.type === 'Bot' && comment.body?.includes(marker);
-            });
+          body = comment_path.read_text(encoding='utf-8')
+          owner, repo = os.environ['GITHUB_REPOSITORY'].split('/', 1)
+          issue_number = os.environ['PR_NUMBER']
+          api_url = os.environ.get('GITHUB_API_URL', 'https://api.github.com')
+          token = os.environ['GH_TOKEN']
 
-            if (existing) {
-              await github.rest.issues.updateComment({
-                owner,
-                repo,
-                comment_id: existing.id,
-                body,
-              });
-              core.info(`Updated benchmark comment ${existing.id}`);
-            } else {
-              await github.rest.issues.createComment({
-                owner,
-                repo,
-                issue_number,
-                body,
-              });
-              core.info('Created benchmark PR comment');
-            }
+          def api_call(method: str, url: str, payload: dict | None = None):
+              data = None if payload is None else json.dumps(payload).encode('utf-8')
+              req = request.Request(url, data=data, method=method)
+              req.add_header('Authorization', f'Bearer {token}')
+              req.add_header('Accept', 'application/vnd.github+json')
+              req.add_header('Content-Type', 'application/json')
+              with request.urlopen(req) as resp:
+                  content = resp.read().decode('utf-8')
+                  return json.loads(content) if content else None
+
+          comments = api_call('GET', f'{api_url}/repos/{owner}/{repo}/issues/{issue_number}/comments?per_page=100')
+          existing = next((comment for comment in comments if comment.get('user', {}).get('type') == 'Bot' and marker in (comment.get('body') or '')), None)
+
+          if existing:
+              api_call('PATCH', f"{api_url}/repos/{owner}/{repo}/issues/comments/{existing['id']}", {'body': body})
+              print(f"Updated benchmark comment {existing['id']}")
+          else:
+              api_call('POST', f'{api_url}/repos/{owner}/{repo}/issues/{issue_number}/comments', {'body': body})
+              print('Created benchmark PR comment')
+          PY

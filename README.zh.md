@@ -20,6 +20,7 @@ vLLM Ascend Plugin
 ---
 *最新消息* 🔥
 
+- [2026/05] 我们发布了新的正式版本 [v0.18.0](https://github.com/vllm-project/vllm-ascend/releases/tag/v0.18.0)! 请按照[官方指南](https://docs.vllm.ai/projects/ascend/en/v0.18.0/)开始在Ascend上部署vLLM Ascend Plugin。
 - [2026/02] 我们发布了新的正式版本 [v0.13.0](https://github.com/vllm-project/vllm-ascend/releases/tag/v0.13.0)! 请按照[官方指南](https://docs.vllm.ai/projects/ascend/en/v0.13.0/)开始在Ascend上部署vLLM Ascend Plugin。
 - [2025/12] 我们发布了新的正式版本 [v0.11.0](https://github.com/vllm-project/vllm-ascend/releases/tag/v0.11.0)! 请按照[官方指南](https://docs.vllm.ai/projects/ascend/en/v0.11.0/)开始在Ascend上部署vLLM Ascend Plugin。
 - [2025/09] 我们发布了新的正式版本 [v0.9.1](https://github.com/vllm-project/vllm-ascend/releases/tag/v0.9.1)! 请按照[官方指南](https://docs.vllm.ai/projects/ascend/en/v0.9.1/tutorials/large_scale_ep.html)开始在Ascend上部署大型专家并行 (EP)。
@@ -35,11 +36,7 @@ vLLM Ascend Plugin
 
 ## 总览
 
-vLLM Hust 昇腾插件 (`vllm-ascend-hust`) 是面向 `vllm-hust` 的本地化
-Ascend 后端分发包。
-
-为兼容上游插件接口和现有运行时代码，Python 的 import/module 命名空间
-仍保持为 `vllm_ascend`。
+vLLM 昇腾插件 (`vllm-ascend`) 是一个由社区维护的让vLLM在Ascend NPU无缝运行的后端插件。
 
 此插件是 vLLM 社区中支持昇腾后端的推荐方式。它遵循[[RFC]: Hardware pluggable](https://github.com/vllm-project/vllm/issues/11162)所述原则：通过解耦的方式提供了vLLM对Ascend NPU的支持。
 
@@ -51,9 +48,9 @@ Ascend 后端分发包。
 - 操作系统：Linux
 - 软件：
     - Python >= 3.10, < 3.12
-    - CANN == 8.5.0 (Ascend HDK 版本参考[这里](https://www.hiascend.com/document/detail/zh/canncommercial/83RC2/releasenote/releasenote_0000.html))
+    - CANN == 8.5.1 (Ascend HDK 版本参考[这里](https://www.hiascend.com/document/detail/zh/canncommercial/83RC2/releasenote/releasenote_0000.html))
     - PyTorch == 2.9.0, torch-npu == 2.9.0
-    - vLLM / vLLM Hust（与 vllm-ascend-hust 兼容版本保持一致）
+    - vLLM (与vllm-ascend版本一致)
 
 ## 开始使用
 
@@ -61,54 +58,37 @@ Ascend 后端分发包。
 
 | Version    | Release type | Doc                                  |
 |------------|--------------|--------------------------------------|
-|v0.17.0rc1| 最新RC版本 |请查看[快速开始](https://docs.vllm.ai/projects/ascend/en/latest/quick_start.html)和[安装指南](https://docs.vllm.ai/projects/ascend/en/latest/installation.html)了解更多|
-|v0.13.0| 最新正式/稳定版本 |[快速开始](https://docs.vllm.ai/projects/ascend/en/v0.13.0/quick_start.html) and [安装指南](https://docs.vllm.ai/projects/ascend/en/v0.13.0/installation.html)了解更多|
-
-## 本地工作区辅助脚本
-
-这个 fork 的打包分发名是 `vllm-ascend-hust`，但 Python 模块名仍然是
-`vllm_ascend`。
-
-在本地 `vllm-hust` 多仓工作区中，常用的 Ascend 辅助脚本放在本仓库的
-`scripts/` 目录下。
-
-常见示例：
-
-```bash
-# 把当前仓库以 editable 方式安装到当前 Python 环境
-bash scripts/install_local_ascend_plugin.sh
-
-# 在当前 shell 中切换到单一 Ascend 运行时
-source scripts/use_single_ascend_env.sh /usr/local/Ascend/ascend-toolkit/latest
-```
+|v0.19.1rc1| 最新RC版本 |请查看[快速开始](https://docs.vllm.ai/projects/ascend/en/latest/quick_start.html)和[安装指南](https://docs.vllm.ai/projects/ascend/en/latest/installation.html)了解更多|
+|v0.18.0| 最新正式/稳定版本 |[快速开始](https://docs.vllm.ai/projects/ascend/en/v0.18.0/quick_start.html) and [安装指南](https://docs.vllm.ai/projects/ascend/en/v0.18.0/installation.html)了解更多|
 
 ## 贡献
 
-请参考 [CONTRIBUTING](CONTRIBUTING.md) 了解本 fork 的开发环境搭建、功能测试和 PR 提交规范。
+请参考[CONTRIBUTING](https://docs.vllm.ai/projects/ascend/en/latest/developer_guide/contribution/index.html)文档了解更多关于开发环境搭建、功能测试以及 PR 提交规范的信息。
 
 我们欢迎并重视任何形式的贡献与合作：
 
-- 请通过[Issue](https://github.com/intellistream/vllm-ascend-hust/issues)来告知我们您遇到的任何Bug。
+- 请通过[Issue](https://github.com/vllm-project/vllm-ascend/issues)来告知我们您遇到的任何Bug。
 - 请通过[用户论坛](https://discuss.vllm.ai/c/hardware-support/vllm-ascend-support)来交流使用问题和寻求帮助。
 
 ## 分支策略
 
-vllm-ascend-hust 保持 `main` 主分支，并可按需要维护与上游兼容版本对应的发布分支。
+vllm-ascend有主干分支和开发分支。
 
-- **main**: 本地化 fork 的主开发分支。
-- **releases/vX.Y.Z**: 在需要与特定上游版本线保持兼容时使用的可选发布分支。
+- **main**: 主干分支，与vLLM的主干分支对应，并通过昇腾CI持续进行质量看护。
+- **releases/vX.Y.Z**: 开发分支，随vLLM部分新版本发布而创建，比如`releases/v0.13.0`是vllm-ascend针对vLLM `v0.13.0` 版本的开发分支。
 
 下面是维护中的分支：
 
-| 分支         | 状态         | 备注                  |
-|------------|------------|---------------------|
-| main       | Maintained | 基于vLLM main分支和vLLM最新版本（v0.17.0）CI看护   |
-| v0.7.1-dev | Unmaintained | 只允许文档修复 |
-| v0.7.3-dev | Maintained | 基于vLLM v0.7.3版本CI看护, 只允许Bug修复，不会再发布新版本 |
-| v0.9.1-dev | Maintained | 基于vLLM v0.9.1版本CI看护 |
-| v0.11.0-dev | Maintained | 基于vLLM v0.11.0版本CI看护 |
-| releases/v0.13.0 | Maintained | 基于vLLM v0.13.0版本CI看护 |
-|rfc/feature-name| Maintained | 为协作创建的[特性分支](https://docs.vllm.ai/projects/ascend/en/latest/community/versioning_policy.html#feature-branches) |
+| 分支              | 状态         | 备注                  |
+|------------------|--------------|----------------------|
+| main             | Maintained   | 基于vLLM main分支和vLLM最新版本（v0.18.0）CI看护   |
+| v0.7.1-dev       | Unmaintained | 不再维护 |
+| v0.7.3-dev       | Unmaintained | 只允许Bug修复，不会再发布新版本 |
+| v0.9.1-dev       | Unmaintained | 只允许Bug修复，不会再发布新版本 |
+| v0.11.0-dev      | Unmaintained | 只允许Bug修复，不会再发布新版本 |
+| releases/v0.13.0 | Maintained   | 基于vLLM v0.13.0版本CI看护 |
+| releases/v0.18.0 | Maintained   | 基于vLLM v0.18.0版本CI看护 |
+| rfc/feature-name | Maintained   | 为协作创建的[特性分支](https://docs.vllm.ai/projects/ascend/en/latest/community/versioning_policy.html#feature-branches) |
 
 请参阅[版本策略](https://docs.vllm.ai/projects/ascend/en/latest/community/versioning_policy.html)了解更多详细信息。
 

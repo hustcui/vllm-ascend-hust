@@ -8,7 +8,7 @@ Welcome to the tutorial on optimizing Qwen Dense models in the vLLM-Ascend envir
 
 This document will show the main verification steps of the model, including supported features, feature configuration, environment preparation, accuracy and performance evaluation.
 
-The Qwen3 Dense models is first supported in [v0.8.4rc2](https://github.com/vllm-project/vllm-ascend/blob/main/docs/source/user_guide/release_notes.md#v084rc2---20250429). This example requires version **v0.11.0rc2**. Earlier versions may lack certain features.
+The Qwen3 Dense models are first supported in [v0.8.4rc2](https://github.com/vllm-project/vllm-ascend/blob/main/docs/source/user_guide/release_notes.md#v084rc2---20250429). This example requires version **v0.11.0rc2**. Earlier versions may lack certain features.
 
 ## Supported Features
 
@@ -93,7 +93,7 @@ In the [Run docker container](./Qwen3-Dense.md#run-docker-container), detailed e
 
 In addition, if you don't want to use the docker image as above, you can also build all from source:
 
-- Install `vllm-ascend-hust` from source, refer to [installation](../../installation.md).
+- Install `vllm-ascend` from source, refer to [installation](../../installation.md).
 
 If you want to deploy multi-node environment, you need to set up environment on each node.
 
@@ -288,7 +288,7 @@ Refer to [Using AISBench for performance evaluation](../../developer_guide/evalu
 
 Run performance evaluation of `Qwen3-32B-W8A8` as an example.
 
-Refer to [vllm benchmark](https://docs.vllm.ai/en/latest/contributing/benchmarks.html) for more details.
+Refer to [vllm benchmark](https://docs.vllm.ai/en/latest/benchmarking/) for more details.
 
 There are three `vllm bench` subcommands:
 

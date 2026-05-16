@@ -9,9 +9,9 @@ on:
     types: [synchronize]
 
 permissions:
-  issues: write
-  pull-requests: write
   contents: read
+  pull-requests: write
+  issues: write
 
 jobs:
   main:
@@ -19,7 +19,6 @@ jobs:
     steps:
       - name: check if prs are dirty
         uses: eps1lon/actions-label-merge-conflict@v3
-        continue-on-error: true
         with:
           dirtyLabel: "merge-conflicts"
           repoToken: "${{ secrets.GITHUB_TOKEN }}"

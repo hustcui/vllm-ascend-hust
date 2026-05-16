@@ -18,7 +18,11 @@
 import torch
 from vllm.triton_utils import HAS_TRITON
 
-import vllm_ascend.ops.fused_moe.fused_moe  # noqa
+try:
+    import vllm_ascend.ops.fused_moe.fused_moe  # noqa
+except ModuleNotFoundError as exc:
+    if exc.name != "vllm.model_executor.layers.fused_moe.runner.default_moe_runner":
+        raise
 import vllm_ascend.ops.layernorm  # noqa
 import vllm_ascend.ops.register_custom_ops  # noqa
 

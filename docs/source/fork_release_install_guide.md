@@ -19,13 +19,11 @@ Different distribution channels intentionally use different names:
 
 The current documentation set is aligned to the following recommended versions:
 
-| Component | Recommended value |
-|---|---|
-| `vllm` PyPI version | `|pip_vllm_version|` |
-| `vllm-ascend-hust` PyPI version | `|pip_vllm_ascend_version|` |
-| `vllm` source branch/tag | `|vllm_version|` |
-| `vllm-ascend-hust` source branch/tag | `|vllm_ascend_version|` |
-| CANN image tag | `|cann_image_tag|` |
+- `vllm` PyPI version: `|pip_vllm_version|`
+- `vllm-ascend-hust` PyPI version: `|pip_vllm_ascend_version|`
+- `vllm` source branch/tag: `|vllm_version|`
+- `vllm-ascend-hust` source branch/tag: `|vllm_ascend_version|`
+- CANN image tag: `|cann_image_tag|`
 
 For historical compatibility details, see
 [Versioning Policy](community/versioning_policy.md).

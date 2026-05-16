@@ -1,10 +1,6 @@
 # Installation
 
-This document describes how to install the `vllm-ascend-hust` distribution
-manually.
-
-For fork-specific naming, version mapping, and installation channel guidance,
-see [vLLM Hust Ascend Release and Install Guide](fork_release_install_guide.md).
+This document describes how to install vllm-ascend manually.
 
 ## Requirements
 
@@ -15,15 +11,15 @@ see [vLLM Hust Ascend Release and Install Guide](fork_release_install_guide.md).
 
     | Software      | Supported version                | Note                                      |
     |---------------|----------------------------------|-------------------------------------------|
-    | Ascend HDK    | Refer to the documentation [here](https://www.hiascend.com/document/detail/zh/canncommercial/83RC1/releasenote/releasenote_0000.html) | Required for CANN |
-   | CANN          | == 8.5.1                        | Required for vllm-ascend-hust and torch-npu    |
-   | torch-npu     | == 2.9.0             | Required for vllm-ascend-hust, No need to install manually, it will be auto installed in below steps |
+    | Ascend HDK    | Refer to the documentation [CANN 8.3.RC1](https://www.hiascend.com/document/detail/zh/canncommercial/83RC1/releasenote/releasenote_0000.html) | Required for CANN |
+    | CANN          | == 8.5.1                        | Required for vllm-ascend and torch-npu    |
+    | torch-npu     | == 2.9.0             | Required for vllm-ascend, No need to install manually, it will be auto installed in below steps |
     | torch         | == 2.9.0                          | Required for torch-npu and vllm           |
     | NNAL          | == 8.5.1                       | Required for libatb.so, enables advanced tensor operations |
 
 There are two installation methods:
 
-- **Using pip**: first prepare the environment manually or via a CANN image, then install `vllm-ascend-hust` using pip.
+- **Using pip**: first prepare the environment manually or via a CANN image, then install `vllm-ascend` using pip.
 - **Using docker**: use the `vllm-ascend` pre-built docker image directly.
 
 ## Configure Ascend CANN environment
@@ -120,7 +116,7 @@ No extra steps are needed if you are using the `vllm-ascend` prebuilt Docker ima
 ::::
 :::::
 
-Once this is done, you can start to set up `vllm` and `vllm-ascend-hust`.
+Once this is done, you can start to set up `vllm` and `vllm-ascend`.
 
 ## Set up using Python
 
@@ -132,7 +128,7 @@ sed -i 's|ports.ubuntu.com|mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.list
 apt-get update -y && apt-get install -y gcc g++ cmake libnuma-dev wget git curl jq
 # Or using yum
 # yum update -y && yum install -y gcc g++ cmake numactl-devel wget git curl jq
-# Config pip mirror
+# Config pip mirror,only versions 0.11.0 and earlier are supported, if using a version later than 0.11.0, do not execute this command
 pip config set global.index-url https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple
 ```
 
@@ -143,7 +139,13 @@ pip config set global.index-url https://mirrors.tuna.tsinghua.edu.cn/pypi/web/si
 pip config set global.extra-index-url "https://download.pytorch.org/whl/cpu/"
 ```
 
-Then you can install `vllm` and `vllm-ascend-hust` from a **pre-built wheel**:
+Then you can install `vllm` and `vllm-ascend` from a **pre-built wheel** using one of the following methods:
+
+:::::{tab-set}
+:sync-group: install-method
+
+::::{tab-item} Original installation
+:sync: original
 
 ```{code-block} bash
    :substitutions:
@@ -151,9 +153,41 @@ Then you can install `vllm` and `vllm-ascend-hust` from a **pre-built wheel**:
 # Install vllm-project/vllm. The newest supported version is |vllm_version|.
 pip install vllm==|pip_vllm_version|
 
-# Install intellistream/vllm-ascend-hust from PyPI.
-pip install vllm-ascend-hust==|pip_vllm_ascend_version|
+# Install vllm-project/vllm-ascend.
+pip install \
+--extra-index-url https://mirrors.huaweicloud.com/repository/pypi/simple  \
+vllm-ascend==|pip_vllm_ascend_version|
+
 ```
+
+::::
+
+::::{tab-item} uv-wheelnext installation
+:sync: uv-wheelnext
+
+The `uv-wheelnext` installation downloads only the delta on top of vllm, resulting in a smaller download size. First install `uv-wheelnext` to support incremental wheels:
+
+```bash
+# install uv-wheelnext
+curl -LsSf https://astral.sh/uv/install.sh | sed 's/verify_checksum "$_file"/true/' | INSTALLER_DOWNLOAD_URL=https://wheelnext.astral.sh sh
+source $HOME/.local/bin/env
+```
+
+```{code-block} bash
+   :substitutions:
+
+# Install vllm-project/vllm. The newest supported version is |vllm_version|.
+pip install vllm==|pip_vllm_version|
+
+# Install vllm-project/vllm-ascend from wheelnext index.
+uv pip install --system -v \
+--extra-index-url https://mirrors.huaweicloud.com/ascend/repos/pypi/variant   \
+vllm-ascend==|pip_vllm_ascend_version|
+
+```
+
+::::
+:::::
 
 :::{dropdown} Click here to see "Build from source code"
 or build from **source code**:
@@ -167,9 +201,9 @@ cd vllm
 VLLM_TARGET_DEVICE=empty pip install -v -e .
 cd ..
 
-# Install vLLM Hust Ascend.
-git clone --depth 1 --branch |vllm_ascend_version| https://github.com/intellistream/vllm-ascend-hust.git
-cd vllm-ascend-hust
+# Install vLLM Ascend.
+git clone --depth 1 --branch |vllm_ascend_version| https://github.com/vllm-project/vllm-ascend.git
+cd vllm-ascend
 git submodule update --init --recursive
 pip install -v -e .
 cd ..
@@ -192,26 +226,25 @@ If you are building in a CPU-only environment where `npu-smi` is unavailable, yo
 
 ## Set up using Docker
 
-The upstream official `vllm-ascend` project offers Docker images for
-deployment. You can pull the **prebuilt image** from [ascend/vllm-ascend](https://quay.io/repository/ascend/vllm-ascend?tab=tags) and run it directly.
+`vllm-ascend` offers Docker images for deployment. You can just pull the **prebuilt image** from the image repository [ascend/vllm-ascend](https://quay.io/repository/ascend/vllm-ascend?tab=tags) and run it with bash.
 
 Supported images as following.
 
 | image name | Hardware | OS |
 |-|-|-|
-| vllm-ascend:<image-tag> | Atlas A2 | Ubuntu |
-| vllm-ascend:<image-tag>-openeuler | Atlas A2 | openEuler |
-| vllm-ascend:<image-tag>-a3 | Atlas A3 | Ubuntu |
-| vllm-ascend:<image-tag>-a3-openeuler | Atlas A3 | openEuler |
-| vllm-ascend:<image-tag>-310p | Atlas 300I | Ubuntu |
-| vllm-ascend:<image-tag>-310p-openeuler | Atlas 300I | openEuler |
+| vllm-ascend:{{ vllm_ascend_version }} | Atlas A2 | Ubuntu |
+| vllm-ascend:{{ vllm_ascend_version }}-openeuler | Atlas A2 | openEuler |
+| vllm-ascend:{{ vllm_ascend_version }}-a3 | Atlas A3 | Ubuntu |
+| vllm-ascend:{{ vllm_ascend_version }}-a3-openeuler | Atlas A3 | openEuler |
+| vllm-ascend:{{ vllm_ascend_version }}-310p | Atlas 300I | Ubuntu |
+| vllm-ascend:{{ vllm_ascend_version }}-310p-openeuler | Atlas 300I | openEuler |
 
 :::{dropdown} Click here to see "Build from Dockerfile"
 or build IMAGE from **source code**:
 
 ```bash
-git clone https://github.com/intellistream/vllm-ascend-hust.git
-cd vllm-ascend-hust
+git clone https://github.com/vllm-project/vllm-ascend.git
+cd vllm-ascend
 docker build -t vllm-ascend-dev-image:latest -f ./Dockerfile .
 ```
 
@@ -249,7 +282,7 @@ docker run --rm \
     -it $IMAGE bash
 ```
 
-The default workdir is `/workspace`, vLLM and vLLM Ascend code are placed in `/vllm-workspace` and installed in [development mode](https://setuptools.pypa.io/en/latest/userguide/development_mode.html) (`pip install -e`) to help developer immediately take place changes without requiring a new installation.
+The default workdir is `/workspace`, vLLM and vLLM Ascend code are placed in `/vllm-workspace` and installed in [development mode](https://setuptools.pypa.io/en/latest/userguide/development_mode.html) (`pip install -e`) to help developers immediately make changes without requiring a new installation.
 
 ## Extra information
 
@@ -289,7 +322,7 @@ python example.py
 If you encounter a connection error with Hugging Face (e.g., `We couldn't connect to 'https://huggingface.co' to load the files, and couldn't find them in the cached files.`), run the following commands to use ModelScope as an alternative:
 
 ```bash
-export VLLM_USE_MODELSCOPE=true
+export VLLM_USE_MODELSCOPE=True
 pip install modelscope
 python example.py
 ```

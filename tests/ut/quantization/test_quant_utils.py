@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from tests.ut.base import TestBase
-from vllm_ascend.quantization.modelslim_config import MODELSLIM_CONFIG_FILENAME
+from vllm_ascend.quantization.constants import MODELSLIM_CONFIG_FILENAME
 from vllm_ascend.quantization.utils import (
     detect_quantization_method,
     maybe_auto_detect_quantization,

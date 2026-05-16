@@ -15,6 +15,11 @@ on:
       type:
         required: true
         type: string
+    secrets:
+      CODECOV_TOKEN:
+        required: false
+      VLLM_ASCEND_HUST_BENCHMARK_SSH_KEY:
+        required: false
 
 jobs:
   unit-test:
@@ -22,6 +27,7 @@ jobs:
     runs-on: ${{ inputs.runner }}
     env:
       HOME: ${{ github.workspace }}
+      CHECKOUT_USE_SSH_443: ${{ secrets.VLLM_ASCEND_HUST_BENCHMARK_SSH_KEY != '' && '1' || '0' }}
     container:
       image: ${{ inputs.image }}
       env:
@@ -43,10 +49,30 @@ jobs:
           pip config set global.index-url https://mirrors.huaweicloud.com/repository/pypi/simple
           pip config set global.trusted-host mirrors.huaweicloud.com
           apt-get update -y
-          apt-get install -y python3-pip git vim wget net-tools gcc g++ cmake libnuma-dev curl gnupg2
+          apt-get install -y python3-pip git openssh-client vim wget net-tools gcc g++ cmake libnuma-dev curl gnupg2
           git config --global --add safe.directory /__w/vllm-ascend-hust/vllm-ascend-hust
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           pip install uv
+
+      - name: Configure GitHub SSH over 443
+        if: ${{ env.CHECKOUT_USE_SSH_443 == '1' }}
+        run: |
+          mkdir -p "$HOME/.ssh"
+          chmod 700 "$HOME/.ssh"
+          printf '%s\n' '${{ secrets.VLLM_ASCEND_HUST_BENCHMARK_SSH_KEY }}' > "$HOME/.ssh/github_actions"
+          chmod 600 "$HOME/.ssh/github_actions"
+          cat > "$HOME/.ssh/config" <<'EOF'
+          Host github.com
+            HostName ssh.github.com
+            Port 443
+            User git
+            HostKeyAlias github.com
+            IdentityFile ~/.ssh/github_actions
+            IdentitiesOnly yes
+            StrictHostKeyChecking no
+          EOF
+          chmod 600 "$HOME/.ssh/config"
+          git config --global url."ssh://git@ssh.github.com:443/".insteadOf https://github.com/
 
       - name: Checkout vllm-project/vllm repo
         uses: actions/checkout@v6
@@ -54,6 +80,9 @@ jobs:
           repository: vllm-project/vllm
           ref: ${{ inputs.vllm }}
           path: ./vllm-empty
+          ssh-key: ${{ secrets.VLLM_ASCEND_HUST_BENCHMARK_SSH_KEY }}
+          ssh-strict: ${{ env.CHECKOUT_USE_SSH_443 != '1' }}
+          persist-credentials: false
 
       - name: Install vllm-project/vllm from source
         working-directory: ./vllm-empty
@@ -63,6 +92,10 @@ jobs:
 
       - name: Checkout vllm-project/vllm-ascend repo
         uses: actions/checkout@v6
+        with:
+          ssh-key: ${{ secrets.VLLM_ASCEND_HUST_BENCHMARK_SSH_KEY }}
+          ssh-strict: ${{ env.CHECKOUT_USE_SSH_443 != '1' }}
+          persist-credentials: false
 
       - name: Install vllm-project/vllm-ascend
         run: |

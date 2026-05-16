@@ -57,6 +57,7 @@ from vllm.distributed import (
     tensor_model_parallel_reduce_scatter,
 )
 from vllm.distributed.parallel_state import get_tp_group
+from vllm.model_executor.models.utils import extract_layer_index
 
 from vllm_ascend.ascend_config import get_ascend_config
 from vllm_ascend.ascend_forward_context import _EXTRA_CTX
@@ -74,6 +75,7 @@ from vllm_ascend.utils import (
     flashcomm2_enable,
     get_flashcomm2_reorgnized_batch_ids,
     get_weight_prefetch_method,
+    is_vl_model,
     matmul_allreduce_enable,
     mlp_tp_enable,
     oproj_tp_enable,
@@ -221,21 +223,6 @@ class MLPRowParallelOp(CustomRowParallelOp):
 class OProjRowParallelOp(CustomRowParallelOp):
     def __init__(self, layer):
         super().__init__(layer)
-        self._a2a_recv_buf: torch.Tensor | None = None
-
-    def _get_a2a_recv_buf(self, numel: int, ref_tensor: torch.Tensor) -> torch.Tensor:
-        # Reuse the receive buffer across iterations to reduce per-step
-        # device allocation overhead on the all-to-all path.
-        buf = self._a2a_recv_buf
-        if (
-            buf is None
-            or buf.numel() < numel
-            or buf.dtype != ref_tensor.dtype
-            or buf.device != ref_tensor.device
-        ):
-            buf = torch.empty(numel, dtype=ref_tensor.dtype, device=ref_tensor.device)
-            self._a2a_recv_buf = buf
-        return buf[:numel]
 
     @property
     def comm_group(self):
@@ -256,7 +243,8 @@ class OProjRowParallelOp(CustomRowParallelOp):
         # [batch, dim] -> [tp_size, batch, chunk] -> flattened
         send_buf = input_parallel.reshape(-1, self.tp_size, chunk_size).transpose(0, 1).contiguous().view(-1)
 
-        recv_buf = self._get_a2a_recv_buf(total_batch_size * chunk_size, input_parallel)
+        # Create receive buffer
+        recv_buf = torch.empty(total_batch_size * chunk_size, dtype=input_parallel.dtype, device=input_parallel.device)
 
         # Perform all-to-all communication
         dist.all_to_all_single(recv_buf, send_buf, group=self.comm_group.device_group)
@@ -284,7 +272,6 @@ class OProjRowParallelOp(CustomRowParallelOp):
 class Flashcomm2OProjRowParallelOp(CustomRowParallelOp):
     def __init__(self, layer):
         super().__init__(layer)
-        self._otp_recv_buf: torch.Tensor | None = None
         self.odp_group = get_flashcomm2_odp_group()
         self.odp_size = self.odp_group.world_size
         self.otp_size = get_ascend_config().flashcomm2_oproj_tensor_parallel_size
@@ -307,18 +294,6 @@ class Flashcomm2OProjRowParallelOp(CustomRowParallelOp):
         if get_ascend_config().flashcomm2_oproj_tensor_parallel_size == 1:
             return 1
         return self.comm_group.world_size
-
-    def _get_otp_recv_buf(self, numel: int, ref_tensor: torch.Tensor) -> torch.Tensor:
-        buf = self._otp_recv_buf
-        if (
-            buf is None
-            or buf.numel() < numel
-            or buf.dtype != ref_tensor.dtype
-            or buf.device != ref_tensor.device
-        ):
-            buf = torch.empty(numel, dtype=ref_tensor.dtype, device=ref_tensor.device)
-            self._otp_recv_buf = buf
-        return buf[:numel]
 
     def apply_impl(
         self,
@@ -356,7 +331,8 @@ class Flashcomm2OProjRowParallelOp(CustomRowParallelOp):
             chunk_size = x.size(0) // all2all_tp_size
             total_intermediate_size = local_intermediate_size * all2all_tp_size
 
-            recv_buf = self._get_otp_recv_buf(total_intermediate_size * chunk_size, x)
+            # Create receive buffer
+            recv_buf = torch.empty(total_intermediate_size * chunk_size, dtype=x.dtype, device=x.device)
 
             # Perform all-to-all communication
             dist.all_to_all_single(recv_buf, send_buf, group=self.odp_group.device_group)
@@ -456,8 +432,8 @@ class SequenceColumnParallelOp(CustomColumnParallelOp):
 
         # Matrix multiply.
         assert self.quant_method is not None
-
-        input_ = torch.ops.vllm.maybe_all_gather_and_maybe_unpad(input_, True)
+        need_all_gather = not (extract_layer_index(self.layer.prefix) == 0 and is_vl_model() and "attn" in self.prefix)
+        input_ = torch.ops.vllm.maybe_all_gather_and_maybe_unpad(input_, label=need_all_gather)
         output_parallel = self.quant_method.apply(self.layer, input_, bias)
 
         if self.gather_output:

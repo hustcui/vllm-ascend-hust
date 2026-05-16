@@ -4,10 +4,14 @@ set -euo pipefail
 # Canonical Ascend environment diagnosis entry.
 # All diagnosis logic is centralized in hust-ascend-manager.
 
-if ! command -v hust-ascend-manager >/dev/null 2>&1; then
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=/dev/null
+source "${SCRIPT_DIR}/hust_ascend_manager_helper.sh"
+
+if ! hust_ascend_manager_available; then
   echo "[ERROR] hust-ascend-manager is required but not found in PATH"
-  echo "[ERROR] Install manager first, then retry."
+  echo "[ERROR] No local ascend-runtime-manager fallback was found either."
   exit 1
 fi
 
-hust-ascend-manager doctor
+hust_ascend_manager_run doctor

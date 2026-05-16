@@ -2,23 +2,23 @@
 
 ## Mission
 
-`vllm-ascend-hust` is the Ascend backend plugin fork maintained for the `vllm-hust` ecosystem. It is dedicated to providing practical, upstream-merge-friendly LLM serving on Ascend NPUs while contributing compatible improvements back to the broader vLLM ecosystem whenever possible.
+As a vital component of vLLM, the vLLM Ascend project is dedicated to providing an easy, fast, and cheap LLM Serving for everyone on Ascend NPUs and to actively contributing to the enrichment of vLLM.
 
 ## Principles
 
-`vllm-ascend-hust` follows the repository code of conduct: [CODE OF CONDUCT](https://github.com/intellistream/vllm-ascend-hust/blob/main/CODE_OF_CONDUCT.md)
+vLLM Ascend follows the vLLM community's code of conduct: [vLLM - CODE OF CONDUCT](https://github.com/vllm-project/vllm/blob/main/CODE_OF_CONDUCT.md)
 
 ## Governance - Mechanics
 
-`vllm-ascend-hust` is an open-source fork maintained by the `vllm-ascend-hust` maintainers. The project stays aligned with upstream vLLM and vLLM Ascend where practical, but role assignment and repository permissions are governed within this fork.
+vLLM Ascend is an open-source project under the vLLM community, where the authority to appoint roles is ultimately determined by the vLLM community. It adopts a hierarchical technical governance structure.
 
 - Contributor:
 
-    **Responsibility:** Help new contributors on boarding, handle and respond to community questions, review RFCs and code.
+    **Responsibility:** Help new contributors onboarding, handle and respond to community questions, review RFCs and code.
 
     **Requirements:** Complete at least 1 contribution. A contributor is someone who consistently and actively participates in a project, including but not limited to issue/review/commits/community involvement.
 
-    The contributor permissions are granted by the [intellistream/vllm-ascend-hust](https://github.com/intellistream/vllm-ascend-hust) repository on GitHub, including repo read and clone plus issue and PR management needed for efficient collaboration.
+    The contributor permissions are granted by the [vllm-project/vllm-ascend](https://github.com/vllm-project/vllm-ascend)'s repo `Triage` on GitHub, including repo read and clone, issue and PR management, facilitating efficient collaboration between community developers.
 
 - Maintainer:
 
@@ -30,13 +30,14 @@
     - **Quality contribution‌:** Successfully develop and deliver at least one major feature while maintaining consistent high-quality contributions.
     - **Community involvement‌:** Actively address issues, respond to forum inquiries, participate in discussions, and engage in community-driven tasks.
 
-The approval from existing maintainers is required. Maintainers will be granted write access to the [intellistream/vllm-ascend-hust](https://github.com/intellistream/vllm-ascend-hust) GitHub repo. This includes permission to read, clone, and push to the repository, as well as manage issues and pull requests.
+The approval from existing Maintainers is required. The vLLM community has the final decision-making authority.
+Maintainers will be granted write access to the [vllm-project/vllm-ascend](https://github.com/vllm-project/vllm-ascend) GitHub repo. This includes permission to read, clone, and push to the repository, as well as manage issues and pull requests.
 
 ## Nominating and Removing Maintainers
 
 ### The Principles
 
-- Membership in vLLM Ascend is given to individuals on merit basis after they demonstrate their strong expertise in vLLM/vLLM Ascend through contributions, reviews, and discussions.
+- Membership in vLLM Ascend is given to individuals on a merit basis after they demonstrate their strong expertise in vLLM/vLLM Ascend through contributions, reviews, and discussions.
 
 - For membership in the maintainer group, individuals have to demonstrate strong and continued alignment with the overall vLLM/vLLM Ascend principles.
 

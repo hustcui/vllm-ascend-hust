@@ -7,6 +7,18 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ASCEND_REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+WORKSPACE_ROOT="$(cd "${ASCEND_REPO_ROOT}/.." && pwd)"
+VLLM_HUST_REPO="${VLLM_HUST_REPO:-${WORKSPACE_ROOT}/vllm-hust}"
+
+# shellcheck source=/dev/null
+source "${SCRIPT_DIR}/hust_ascend_manager_helper.sh"
+
+PYTHON_BIN="$(hust_resolve_python_bin 2>/dev/null)" || {
+  echo "[ERROR] Could not locate python3/python for latency benchmark" >&2
+  exit 1
+}
+
+hust_apply_default_hf_mirror
 
 ASCEND_ROOT="${1:-${ASCEND_ROOT:-}}"
 if [[ -n "${ASCEND_ROOT}" ]]; then
@@ -21,17 +33,55 @@ export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"
 export TRANSFORMERS_OFFLINE="${TRANSFORMERS_OFFLINE:-1}"
 export ASCEND_RT_VISIBLE_DEVICES="${ASCEND_RT_VISIBLE_DEVICES:-1}"
 
+if [[ -d "${VLLM_HUST_REPO}/vllm" ]]; then
+  export PYTHONPATH="${VLLM_HUST_REPO}${PYTHONPATH:+:${PYTHONPATH}}"
+fi
+
+hust_ascend_manager_run runtime check \
+  --repo "${VLLM_HUST_REPO}" \
+  --require-plugin \
+  --require-npu
+
 cd "${ASCEND_REPO_ROOT}"
 
-python - <<'PY'
+"${PYTHON_BIN}" - <<'PY'
 import argparse
+import json
+import tempfile
+from pathlib import Path
+
 from vllm.benchmarks.latency import add_cli_args, main
 
-parser = argparse.ArgumentParser()
-add_cli_args(parser)
+dummy_gpt2_config = {
+  "architectures": ["GPT2LMHeadModel"],
+  "model_type": "gpt2",
+  "vocab_size": 50257,
+  "n_positions": 1024,
+  "n_ctx": 1024,
+  "n_embd": 64,
+  "n_layer": 2,
+  "n_head": 2,
+  "bos_token_id": 50256,
+  "eos_token_id": 50256,
+  "activation_function": "gelu_new",
+  "layer_norm_epsilon": 1e-5,
+  "initializer_range": 0.02,
+  "resid_pdrop": 0.0,
+  "embd_pdrop": 0.0,
+  "attn_pdrop": 0.0,
+  "use_cache": True,
+}
 
-args = parser.parse_args([
-    "--model", "sshleifer/tiny-gpt2",
+with tempfile.TemporaryDirectory(prefix="vllm-ascend-bench-") as model_dir:
+  config_path = Path(model_dir) / "config.json"
+  config_path.write_text(json.dumps(dummy_gpt2_config), encoding="utf-8")
+
+  parser = argparse.ArgumentParser()
+  add_cli_args(parser)
+
+  args = parser.parse_args([
+    "--model", model_dir,
+    "--hf-config-path", model_dir,
     "--input-len", "32",
     "--output-len", "32",
     "--batch-size", "1",
@@ -39,11 +89,12 @@ args = parser.parse_args([
     "--num-iters", "3",
     "--dtype", "float16",
     "--gpu-memory-utilization", "0.1",
-    "--trust-remote-code",
     "--load-format", "dummy",
     "--enforce-eager",
+    "--skip-tokenizer-init",
+    "--disable-detokenize",
     "--compilation-config", '{"cudagraph_mode":"NONE"}',
-])
+  ])
 
-main(args)
+  main(args)
 PY
