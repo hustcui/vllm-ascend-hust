@@ -93,7 +93,7 @@ jobs:
       - name: uninstall vlm vllm-ascend and remove code (if pr test)
         if: ${{ github.event_name == 'pull_request' }}
         run: |
-          pip uninstall -y vllm-ascend || true
+          pip uninstall -y vllm-ascend-hust || true
           cp -r /vllm-workspace/vllm-ascend/benchmark /tmp/aisbench-backup || true
           rm -rf  /vllm-workspace/vllm-ascend
 

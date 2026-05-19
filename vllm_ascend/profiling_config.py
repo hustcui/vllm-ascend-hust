@@ -26,9 +26,21 @@ import tempfile
 from pathlib import Path
 
 import vllm
+from packaging.version import Version
 from vllm.logger import logger
 
-VLLM_VERSION = vllm.__version__
+
+def _normalize_vllm_version(version_str: str) -> str:
+  version = Version(version_str)
+  normalized = ".".join(str(part) for part in version.release)
+  if version.pre is not None:
+    normalized += f"{version.pre[0]}{version.pre[1]}"
+  return normalized
+
+
+VLLM_VERSION = getattr(vllm, "__upstream_version__", None) or _normalize_vllm_version(
+  vllm.__version__
+)
 # Configuration file name
 CONFIG_FILENAME = f"service_profiling_symbols.{VLLM_VERSION}.yaml"
 

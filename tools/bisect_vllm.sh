@@ -159,7 +159,7 @@ detect_ascend_repo() {
         return
     fi
     local pip_location
-    pip_location=$(pip show vllm-ascend 2>/dev/null \
+    pip_location=$(pip show vllm-ascend-hust 2>/dev/null \
         | awk -F': ' '
             /^Editable project location:/ { editable=$2 }
             /^Location:/ && !location { location=$2 }
@@ -421,7 +421,7 @@ run_bisect() {
                 continue
             fi
             saved_dir="$(pwd)"
-            python3 -m pip uninstall -y vllm vllm_ascend>/dev/null 2>&1 || true
+            python3 -m pip uninstall -y vllm vllm-ascend-hust>/dev/null 2>&1 || true
             cd "${VLLM_REPO}"
             bash -lc "${vllm_install_cmd}" >"${vllm_reinstall_log}" 2>&1 || {
                 log_warn "vllm reinstall failed for ${short_commit}, skipping"

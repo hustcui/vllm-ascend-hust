@@ -138,7 +138,7 @@ checkout_src() {
     echo "====> Checkout source code"
     mkdir -p "$WORKSPACE"
     cd "$WORKSPACE"
-    pip uninstall -y vllm-ascend || true
+    pip uninstall -y vllm-ascend-hust || true
     cp -r "$WORKSPACE/vllm-ascend/benchmark" /tmp/aisbench-backup || true
     rm -rf "$WORKSPACE/vllm-ascend"
 

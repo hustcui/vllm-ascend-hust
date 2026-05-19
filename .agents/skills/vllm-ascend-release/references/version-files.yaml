@@ -14,16 +14,16 @@ files:
   - path: README.md
     description: Main README with getting started instructions
     updates:
-      - pattern: "pip install vllm-ascend==X.X.X"
-        replacement: "pip install vllm-ascend=={version_num}"
+      - pattern: "pip install vllm-ascend-hust==X.X.X"
+        replacement: "pip install vllm-ascend-hust=={version_num}"
       - pattern: "vllm-ascend:vX.X.X"
         replacement: "vllm-ascend:{version}"
 
   - path: README.zh.md
     description: Chinese README
     updates:
-      - pattern: "pip install vllm-ascend==X.X.X"
-        replacement: "pip install vllm-ascend=={version_num}"
+      - pattern: "pip install vllm-ascend-hust==X.X.X"
+        replacement: "pip install vllm-ascend-hust=={version_num}"
       - pattern: "vllm-ascend:vX.X.X"
         replacement: "vllm-ascend:{version}"
 

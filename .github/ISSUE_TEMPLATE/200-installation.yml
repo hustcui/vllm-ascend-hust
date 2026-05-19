@@ -29,12 +29,12 @@ body:
     required: true
 - type: textarea
   attributes:
-    label: How you are installing vllm and vllm-ascend
+    label: How you are installing vllm and vllm-ascend-hust
     description: |
       Paste the full command you are trying to execute.
     value: |
       ```sh
-      pip install -vvv vllm vllm-ascend
+      pip install -vvv vllm vllm-ascend-hust
       ```
 - type: markdown
   attributes:

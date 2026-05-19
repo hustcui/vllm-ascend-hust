@@ -55,7 +55,7 @@ def generate_github_announcement(version: str, highlights: list[str]) -> str:
             "",
             "Install via pip:",
             "```bash",
-            f"pip install vllm-ascend=={version.lstrip('v')}",
+            f"pip install vllm-ascend-hust=={version.lstrip('v')}",
             "```",
             "",
             "Or use Docker:",
@@ -93,7 +93,7 @@ def generate_short_announcement(version: str, highlights: list[str]) -> str:
     lines.extend(
         [
             "",
-            f"📦 pip install vllm-ascend=={version.lstrip('v')}",
+            f"📦 pip install vllm-ascend-hust=={version.lstrip('v')}",
             "📖 https://docs.vllm.ai/projects/ascend",
             "",
             "#vLLM #Ascend #NPU #LLM #AI",
@@ -124,7 +124,7 @@ def generate_chinese_announcement(version: str, highlights: list[str]) -> str:
             "",
             "通过 pip 安装：",
             "```bash",
-            f"pip install vllm-ascend=={version.lstrip('v')}",
+            f"pip install vllm-ascend-hust=={version.lstrip('v')}",
             "```",
             "",
             "或使用 Docker：",

@@ -94,6 +94,23 @@ When a new fork release is prepared, keep these channels aligned:
 3. Keep installation examples using `vllm-ascend-hust` for package installs and `vllm_ascend` only for Python imports.
 4. Keep references to `quay.io/ascend/vllm-ascend:<tag>` only where the upstream official image name is the actual artifact users must pull.
 
+## Git Tag Rules
+
+The fork keeps git tags in two namespaces:
+
+| Tag family | Example | Meaning |
+|---|---|---|
+| Upstream anchor | `upstream/v0.18.0` | The upstream release/rc commit the fork line is based on |
+| Fork release | `v0.18.0.post1` | The first fork-specific release built on that upstream line |
+
+Development builds between fork releases resolve to versions like
+`0.18.0.post1.devM+gSHA`. The generated runtime metadata also records
+`__upstream_version__`, `__upstream_commit__`, and `__commit_id__`.
+
+If the worktree is dirty, the version may gain a `.dirty` suffix. That dirty
+state is not taggable by itself: create the release tags only after the
+versioning and documentation changes are committed.
+
 ## Sanity Check
 
 After installation, verify both the package and the plugin entry point:

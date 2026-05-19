@@ -44,8 +44,8 @@ def expand_glob_pattern(repo_root: Path, pattern: str) -> list[Path]:
 
 def build_regex_pattern(pattern_template: str) -> str:
     """
-    Convert a template pattern like 'pip install vllm-ascend==X.X.X'
-    to a regex pattern like 'pip install vllm-ascend==[\\d.]+(?:rc\\d+)?'
+    Convert a template pattern like 'pip install vllm-ascend-hust==X.X.X'
+    to a regex pattern like 'pip install vllm-ascend-hust==[\\d.]+(?:rc\\d+)?'
     """
     # Escape special regex characters except our placeholder
     escaped = re.escape(pattern_template)

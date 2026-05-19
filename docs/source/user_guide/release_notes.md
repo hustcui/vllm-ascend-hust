@@ -1433,7 +1433,7 @@ This is the 1st release candidate of v0.9.2 for vLLM Ascend. Please follow the [
 - The GatherV3 error has been fixed with aclgraph mode. [#1416](https://github.com/vllm-project/vllm-ascend/pull/1416)
 - W8A8 quantization works on Atlas 300I series now. [#1560](https://github.com/vllm-project/vllm-ascend/pull/1560)
 - Fix the accuracy problem with deploy models with parallel parameters. [#1678](https://github.com/vllm-project/vllm-ascend/pull/1678)
-- The pre-built wheel package now requires lower version of glibc. Users can use it by `pip install vllm-ascend` directly. [#1582](https://github.com/vllm-project/vllm-ascend/pull/1582)
+- The pre-built wheel package now requires lower version of glibc. Users can use it by `pip install vllm-ascend-hust` directly. [#1582](https://github.com/vllm-project/vllm-ascend/pull/1582)
 
 ### Others
 

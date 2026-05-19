@@ -15,6 +15,21 @@
 # This file is a part of the vllm-ascend project.
 #
 
+try:
+    from ._version import (  # noqa: F401
+        __commit_id__,
+        __upstream_commit__,
+        __upstream_version__,
+        __version__,
+        __version_tuple__,
+    )
+except Exception:
+    __version__ = "dev"
+    __version_tuple__ = (0, 0, __version__)
+    __upstream_version__ = None
+    __upstream_commit__ = None
+    __commit_id__ = None
+
 
 def register():
     """Register the NPU platform."""

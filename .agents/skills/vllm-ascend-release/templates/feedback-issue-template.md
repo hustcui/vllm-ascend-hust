@@ -17,7 +17,7 @@ You can test the release candidate by:
 
 2. **Using pip**:
    ```bash
-   pip install vllm-ascend==${VERSION}
+   pip install vllm-ascend-hust==${VERSION}
    ```
 
 3. **Building from source**:

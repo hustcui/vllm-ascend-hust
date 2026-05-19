@@ -8483,10 +8483,10 @@ msgstr ""
 #: ../../source/user_guide/release_notes.md:1436
 msgid ""
 "The pre-built wheel package now requires lower version of glibc. Users "
-"can use it by `pip install vllm-ascend` directly. "
+"can use it by `pip install vllm-ascend-hust` directly. "
 "[#1582](https://github.com/vllm-project/vllm-ascend/pull/1582)"
 msgstr ""
-"预编译的 wheel 包现在要求更低版本的 glibc。用户可以直接通过 `pip install vllm-ascend` "
+"预编译的 wheel 包现在要求更低版本的 glibc。用户可以直接通过 `pip install vllm-ascend-hust` "
 "使用它。[#1582](https://github.com/vllm-project/vllm-ascend/pull/1582)"
 
 #: ../../source/user_guide/release_notes.md:1440

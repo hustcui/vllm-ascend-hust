@@ -3,7 +3,7 @@
 .vscode/
 
 # egg-info
-vllm_ascend.egg-info/
+vllm_ascend_hust.egg-info/
 
 # DS Store
 .DS_Store

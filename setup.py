@@ -18,6 +18,7 @@
 #
 
 import importlib.util
+import json
 import logging
 import os
 import subprocess
@@ -25,11 +26,13 @@ import sys
 from pathlib import Path
 from sysconfig import get_paths
 
+from packaging.version import InvalidVersion, Version
 from setuptools import Command, Extension, find_packages, setup
 from setuptools.command.build_ext import build_ext
 from setuptools.command.build_py import build_py
 from setuptools.command.develop import develop
 from setuptools.command.install import install
+from setuptools_scm import ScmVersion, get_version
 
 
 def load_module_from_path(module_name, path):
@@ -41,7 +44,166 @@ def load_module_from_path(module_name, path):
 
 
 ROOT_DIR = str(Path(__file__).resolve().parent)
+UPSTREAM_METADATA_FILE = os.path.join(ROOT_DIR, "upstream_version.json")
+DISTRIBUTION_NAME = "vllm-ascend-hust"
 logger = logging.getLogger(__name__)
+
+
+def load_upstream_metadata() -> dict[str, str]:
+    with open(UPSTREAM_METADATA_FILE, encoding="utf-8") as file:
+        metadata = json.load(file)
+
+    required_fields = ("release_version", "upstream_version", "upstream_commit")
+    missing_fields = [field for field in required_fields if not metadata.get(field)]
+    if missing_fields:
+        missing_list = ", ".join(missing_fields)
+        raise RuntimeError(
+            f"Missing required fields in {UPSTREAM_METADATA_FILE}: {missing_list}"
+        )
+
+    return metadata
+
+
+def _git_output(*args: str) -> str:
+    return subprocess.check_output(["git", "-C", ROOT_DIR, *args], text=True).strip()
+
+
+def _git_maybe_output(*args: str) -> str | None:
+    try:
+        return _git_output(*args)
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return None
+
+
+def _list_reachable_release_tags(release_version: str) -> list[tuple[Version, str, str]]:
+    tag_pattern = f"v{release_version}.post*"
+    tags_output = _git_maybe_output("tag", "--merged", "HEAD", "--list", tag_pattern)
+    if not tags_output:
+        return []
+
+    release_tags: list[tuple[Version, str, str]] = []
+    for tag_name in tags_output.splitlines():
+        try:
+            parsed_version = Version(tag_name.removeprefix("v"))
+        except InvalidVersion:
+            continue
+
+        commit_id = _git_output("rev-list", "-n", "1", tag_name)
+        release_tags.append((parsed_version, tag_name, commit_id))
+
+    release_tags.sort(key=lambda item: item[0])
+    return release_tags
+
+
+def _count_commits_since(commit_id: str) -> int:
+    count = _git_maybe_output("rev-list", "--count", f"{commit_id}..HEAD")
+    if count is not None:
+        return int(count)
+
+    fallback_count = _git_maybe_output("rev-list", "--count", "HEAD")
+    if fallback_count is None:
+        raise RuntimeError(f"Unable to count commits from {commit_id} to HEAD")
+
+    logger.warning(
+        "Upstream commit %s is not reachable from HEAD; falling back to total "
+        "repository commit count for development distance.",
+        commit_id,
+    )
+    return int(fallback_count)
+
+
+def parse_vllm_ascend_scm_version(root: str, *, config) -> ScmVersion:
+    del root
+    metadata = load_upstream_metadata()
+    head_commit = _git_output("rev-parse", "HEAD")
+    short_commit = _git_output("rev-parse", "--short", "HEAD")
+    branch_name = _git_maybe_output("symbolic-ref", "--quiet", "--short", "HEAD")
+    dirty = bool(_git_maybe_output("status", "--porcelain", "--untracked-files=no"))
+
+    release_tags = _list_reachable_release_tags(metadata["release_version"])
+    if release_tags:
+        tag_version, _, tag_commit = release_tags[-1]
+        distance = _count_commits_since(tag_commit)
+        return ScmVersion(
+            tag=config.version_cls(str(tag_version)),
+            config=config,
+            distance=distance,
+            node=f"g{short_commit}",
+            dirty=dirty,
+            branch=branch_name,
+        )
+
+    distance = _count_commits_since(metadata["upstream_commit"])
+    if head_commit == metadata["upstream_commit"]:
+        distance = 0
+
+    return ScmVersion(
+        tag=config.version_cls(metadata["release_version"]),
+        config=config,
+        distance=distance,
+        node=f"g{short_commit}",
+        dirty=dirty,
+        branch=branch_name,
+    )
+
+
+def vllm_ascend_version_scheme(version: ScmVersion) -> str:
+    metadata = load_upstream_metadata()
+    release_version = metadata["release_version"]
+    tag_version = Version(str(version.tag))
+
+    if version.exact:
+        return str(tag_version)
+
+    next_post = 1 if tag_version.post is None else tag_version.post + 1
+    return f"{release_version}.post{next_post}.dev{version.distance}"
+
+
+def vllm_ascend_local_scheme(version: ScmVersion) -> str:
+    if version.exact and not version.dirty:
+        return ""
+    if version.node is None:
+        return "+unknown"
+    return version.format_choice("+{node}", "+{node}.dirty")
+
+
+def vllm_ascend_version_template() -> str:
+    metadata = load_upstream_metadata()
+    return f'''# file generated by vcs-versioning
+# don't change, don't track in version control
+from __future__ import annotations
+
+__all__ = [
+    "__version__",
+    "__version_tuple__",
+    "version",
+    "version_tuple",
+    "__upstream_version__",
+    "upstream_version",
+    "__upstream_commit__",
+    "upstream_commit",
+    "__commit_id__",
+    "commit_id",
+]
+
+version: str
+__version__: str
+__version_tuple__: tuple[int | str, ...]
+version_tuple: tuple[int | str, ...]
+upstream_version: str
+__upstream_version__: str
+upstream_commit: str
+__upstream_commit__: str
+commit_id: str | None
+__commit_id__: str | None
+
+__version__ = version = {{version!r}}
+__version_tuple__ = version_tuple = {{version_tuple!r}}
+
+__upstream_version__ = upstream_version = {metadata["upstream_version"]!r}
+__upstream_commit__ = upstream_commit = {metadata["upstream_commit"]!r}
+__commit_id__ = commit_id = {{scm_version.short_node!r}}
+'''
 
 
 def resolve_version() -> str:
@@ -49,9 +211,16 @@ def resolve_version() -> str:
     version_file_rel = os.path.relpath(version_file, ROOT_DIR)
 
     try:
-        from setuptools_scm import get_version
-
-        return get_version(root=ROOT_DIR, relative_to=__file__, write_to=version_file_rel)
+        return get_version(
+            root=ROOT_DIR,
+            relative_to=__file__,
+            write_to=version_file_rel,
+            write_to_template=vllm_ascend_version_template(),
+            version_scheme=vllm_ascend_version_scheme,
+            local_scheme=vllm_ascend_local_scheme,
+            parse=parse_vllm_ascend_scm_version,
+            dist_name=DISTRIBUTION_NAME,
+        )
     except (ImportError, LookupError):
         namespace = {}
         if version_file.exists():
@@ -493,7 +662,6 @@ class custom_install(install):
         install.run(self)
 
 
-ROOT_DIR = os.path.dirname(__file__)
 VERSION = resolve_version()
 
 ext_modules = []
@@ -547,7 +715,7 @@ cmdclass = {
 }
 
 setup(
-    name="vllm_ascend",
+    name=DISTRIBUTION_NAME,
     # Follow:
     # https://packaging.python.org/en/latest/specifications/version-specifiers
     version=VERSION,

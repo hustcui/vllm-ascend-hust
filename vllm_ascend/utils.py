@@ -406,23 +406,45 @@ def adapt_patch(is_global_patch: bool = False):
         from vllm_ascend.patch import worker  # noqa: F401
 
 
+def _normalize_vllm_compat_version(version_str: str) -> str:
+    version = Version(version_str)
+    normalized = ".".join(str(part) for part in version.release)
+    if version.pre is not None:
+        normalized += f"{version.pre[0]}{version.pre[1]}"
+    return normalized
+
+
 @functools.cache
-def vllm_version_is(target_vllm_version: str):
+def get_vllm_upstream_version() -> str:
     if envs_ascend.VLLM_VERSION is not None:
-        vllm_version = envs_ascend.VLLM_VERSION
+        version_str = envs_ascend.VLLM_VERSION
     else:
         import vllm
 
-        vllm_version = vllm.__version__
+        version_str = getattr(vllm, "__upstream_version__", None) or vllm.__version__
+
     try:
-        return Version(vllm_version) == Version(target_vllm_version)
-    except InvalidVersion:
+        return _normalize_vllm_compat_version(version_str)
+    except InvalidVersion as exc:
         raise ValueError(
-            f"Invalid vllm version {vllm_version} found. A dev version of vllm "
-            "is installed probably. Set the environment variable VLLM_VERSION "
-            "to control it by hand. And please make sure the value follows the "
-            "format of x.y.z."
-        )
+            f"Invalid vllm version {version_str} found. Set the environment "
+            "variable VLLM_VERSION to the upstream-compatible version by hand, "
+            "for example x.y.z or x.y.zrcN."
+        ) from exc
+
+
+@functools.cache
+def vllm_version_is(target_vllm_version: str):
+    try:
+        current_version = get_vllm_upstream_version()
+        target_version = _normalize_vllm_compat_version(target_vllm_version)
+    except InvalidVersion as exc:
+        raise ValueError(
+            f"Invalid target vllm version {target_vllm_version}. "
+            "Please use x.y.z or x.y.zrcN."
+        ) from exc
+
+    return current_version == target_version
 
 
 def get_max_hidden_layers(hf_config) -> int:

@@ -212,6 +212,8 @@ class TestUtils(TestBase):
             self.assertFalse(utils.enable_dsa_cp_with_o_proj_tp())
 
     def test_vllm_version_is(self):
+        utils.get_vllm_upstream_version.cache_clear()
+        utils.vllm_version_is.cache_clear()
         with mock.patch.dict(os.environ, {"VLLM_VERSION": "1.0.0"}):
             with mock.patch("vllm.__version__", "1.0.0"):
                 self.assertTrue(utils.vllm_version_is.__wrapped__("1.0.0"))
@@ -219,13 +221,20 @@ class TestUtils(TestBase):
             with mock.patch("vllm.__version__", "2.0.0"):
                 self.assertTrue(utils.vllm_version_is.__wrapped__("1.0.0"))
                 self.assertFalse(utils.vllm_version_is.__wrapped__("2.0.0"))
-        with mock.patch("vllm.__version__", "1.0.0"):
+        utils.get_vllm_upstream_version.cache_clear()
+        with mock.patch("vllm.__upstream_version__", "1.0.0", create=True), mock.patch(
+            "vllm.__version__", "1.0.0.post2.dev3+g123456789"
+        ):
             self.assertTrue(utils.vllm_version_is.__wrapped__("1.0.0"))
             self.assertFalse(utils.vllm_version_is.__wrapped__("2.0.0"))
-        with mock.patch("vllm.__version__", "2.0.0"):
-            self.assertTrue(utils.vllm_version_is.__wrapped__("2.0.0"))
+        utils.get_vllm_upstream_version.cache_clear()
+        with mock.patch("vllm.__upstream_version__", "2.0.0rc1", create=True), mock.patch(
+            "vllm.__version__", "2.0.0rc1.post1.dev7+g123456789"
+        ):
+            self.assertTrue(utils.vllm_version_is.__wrapped__("2.0.0rc1"))
             self.assertFalse(utils.vllm_version_is.__wrapped__("1.0.0"))
         # Test caching takes effect
+        utils.get_vllm_upstream_version.cache_clear()
         utils.vllm_version_is.cache_clear()
         utils.vllm_version_is("1.0.0")
         misses = utils.vllm_version_is.cache_info().misses

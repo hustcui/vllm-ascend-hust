@@ -86,7 +86,7 @@ jobs:
       - name: Uninstall vllm and remove code (if pr test)
         if: ${{ github.event_name == 'pull_request' }}
         run: |
-          pip uninstall -y vllm-ascend || true
+          pip uninstall -y vllm-ascend-hust || true
           rm -rf  /vllm-workspace/vllm-ascend
 
       - name: Checkout vllm-project/vllm-ascend repo
@@ -149,7 +149,7 @@ jobs:
             pip show torch | grep "Version:" | awk '{print "GHA_TORCH_VERSION="$2}'
             pip show torch_npu | grep "Version:" | awk '{print "GHA_TORCH_NPU_VERSION="$2}'
             pip show vllm | grep "Version:" | awk '{print "GHA_VLLM_VERSION="$2}' | sed 's/+.*//'
-            pip show vllm-ascend | grep "Version:" | awk '{print "GHA_VLLM_ASCEND_VERSION="$2}' | sed 's/+.*//'
+            pip show vllm-ascend-hust | grep "Version:" | awk '{print "GHA_VLLM_ASCEND_VERSION="$2}' | sed 's/+.*//'
           } >> "$GITHUB_ENV"
 
       - name: Compute effective model list
