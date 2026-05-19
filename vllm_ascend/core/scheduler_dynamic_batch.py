@@ -24,12 +24,23 @@ from vllm.logger import logger
 from vllm.multimodal import MULTIMODAL_REGISTRY, MultiModalRegistry
 from vllm.v1.core.kv_cache_manager import KVCacheBlocks
 from vllm.v1.core.sched.output import NewRequestData, SchedulerOutput
-from vllm.v1.core.sched.request_queue import SchedulingPolicy, create_request_queue
+from vllm.v1.core.sched.request_queue import create_request_queue
 from vllm.v1.core.sched.scheduler import Scheduler
 from vllm.v1.engine import EngineCoreEventType
 from vllm.v1.kv_cache_interface import KVCacheConfig
 from vllm.v1.request import Request, RequestStatus
 from vllm.v1.structured_output import StructuredOutputManager
+
+from vllm_ascend.core.victim_selector import (
+    UnifiedVictimSelector,
+    infer_kv_utilization_from_scheduler,
+)
+
+WAITING_FOR_STRUCTURED_OUTPUT_STATUS = getattr(
+    RequestStatus,
+    "WAITING_FOR_STRUCTURED_OUTPUT_GRAMMAR",
+    getattr(RequestStatus, "WAITING_FOR_FSM", None),
+)
 
 
 class BudgetRefiner:
@@ -134,19 +145,20 @@ class SchedulerDynamicBatch(Scheduler):
         log_stats: bool = False,
     ) -> None:
         super().__init__(
-            vllm_config,
-            kv_cache_config,
-            structured_output_manager,
-            block_size,
-            mm_registry,
-            include_finished_set,
-            log_stats,
+            vllm_config=vllm_config,
+            kv_cache_config=kv_cache_config,
+            structured_output_manager=structured_output_manager,
+            block_size=block_size,
+            mm_registry=mm_registry,
+            include_finished_set=include_finished_set,
+            log_stats=log_stats,
         )
         self.running: list[Request] = []
         self.budget_refiner = BudgetRefiner(
             default_budget=self.scheduler_config.max_num_batched_tokens,
             slo_limit=self.scheduler_config.SLO_limits_for_dynamic_batch,
         )
+        self.victim_selector = UnifiedVictimSelector.from_vllm_config(vllm_config)
 
     def schedule(self) -> SchedulerOutput:
         # NOTE: This scheduling algorithm is developed based on the "super.schedule()"
@@ -235,16 +247,19 @@ class SchedulerDynamicBatch(Scheduler):
                 if new_blocks is None:
                     # The request cannot be scheduled.
                     # Preempt the lowest-priority request.
-                    if self.policy == SchedulingPolicy.PRIORITY:
-                        preempted_req = max(
-                            self.running,
-                            key=lambda r: (r.priority, r.arrival_time),
-                        )
-                        self.running.remove(preempted_req)
-                        if preempted_req in scheduled_running_reqs:
-                            scheduled_running_reqs.remove(preempted_req)
+                    preempted_req = self.victim_selector.pick_victim(
+                        self.running,
+                        self.policy,
+                        kv_utilization=infer_kv_utilization_from_scheduler(self),
+                        now_s=scheduled_timestamp,
+                    )
+                    if preempted_req is self.running[-1]:
+                        self.running.pop()
                     else:
-                        preempted_req = self.running.pop()
+                        self.running.remove(preempted_req)
+
+                    if preempted_req in scheduled_running_reqs:
+                        scheduled_running_reqs.remove(preempted_req)
 
                     self.kv_cache_manager.free(preempted_req)
                     self.encoder_cache_manager.free(preempted_req)
@@ -325,7 +340,10 @@ class SchedulerDynamicBatch(Scheduler):
 
                 # Skip request if the structured output request is still waiting
                 # for FSM compilation.
-                if request.status == RequestStatus.WAITING_FOR_STRUCTURED_OUTPUT_GRAMMAR:
+                if (
+                    WAITING_FOR_STRUCTURED_OUTPUT_STATUS is not None
+                    and request.status == WAITING_FOR_STRUCTURED_OUTPUT_STATUS
+                ):
                     structured_output_req = request.structured_output_request
                     if structured_output_req and structured_output_req.grammar:
                         request.status = RequestStatus.WAITING

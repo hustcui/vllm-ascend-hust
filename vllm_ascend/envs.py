@@ -105,6 +105,22 @@ env_variables: dict[str, Callable[[], Any]] = {
     # Platform validation: only PD-mixed mode (`kv_role='kv_both'` or no kv_transfer_config).
     # Not supported in PD-disaggregated mode (`kv_producer` / `kv_consumer` only).
     "VLLM_ASCEND_BALANCE_SCHEDULING": lambda: bool(int(os.getenv("VLLM_ASCEND_BALANCE_SCHEDULING", "0"))),
+    # Whether to enable utility-based victim selection in scheduler preemption.
+    "VLLM_ASCEND_ENABLE_UTILITY_VICTIM_SELECTION": lambda: bool(
+        int(os.getenv("VLLM_ASCEND_ENABLE_UTILITY_VICTIM_SELECTION", "0"))
+    ),
+    # Emergency kill switch for utility-based victim selection.
+    "VLLM_ASCEND_UTILITY_KILL_SWITCH": lambda: bool(int(os.getenv("VLLM_ASCEND_UTILITY_KILL_SWITCH", "0"))),
+    # Completion factor weight in utility delta calculation.
+    "VLLM_ASCEND_UTILITY_COMPLETION_WEIGHT": lambda: float(
+        os.getenv("VLLM_ASCEND_UTILITY_COMPLETION_WEIGHT", "0.5")
+    ),
+    # Preemption-count factor weight in utility delta calculation.
+    "VLLM_ASCEND_UTILITY_PREEMPT_WEIGHT": lambda: float(os.getenv("VLLM_ASCEND_UTILITY_PREEMPT_WEIGHT", "0.3")),
+    # Minimum KV utilization ratio required to enable utility ranking.
+    "VLLM_ASCEND_UTILITY_KV_GATE": lambda: float(os.getenv("VLLM_ASCEND_UTILITY_KV_GATE", "0.0")),
+    # Cooldown window (seconds) between two utility-based victim selections.
+    "VLLM_ASCEND_UTILITY_COOLDOWN_S": lambda: float(os.getenv("VLLM_ASCEND_UTILITY_COOLDOWN_S", "0.0")),
     # use fused op transpose_kv_cache_by_block, default is True
     "VLLM_ASCEND_FUSION_OP_TRANSPOSE_KV_CACHE_BY_BLOCK": lambda: bool(
         int(os.getenv("VLLM_ASCEND_FUSION_OP_TRANSPOSE_KV_CACHE_BY_BLOCK", "1"))

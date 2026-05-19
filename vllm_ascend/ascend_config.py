@@ -79,6 +79,46 @@ class AscendConfig:
                 "cannot be enabled at the same time. Please disable one of them."
             )
 
+        self.enable_utility_victim_selection = bool(
+            additional_config.get(
+                "enable_utility_victim_selection",
+                ascend_envs.VLLM_ASCEND_ENABLE_UTILITY_VICTIM_SELECTION,
+            )
+        )
+        self.utility_kill_switch = bool(
+            additional_config.get("utility_kill_switch", ascend_envs.VLLM_ASCEND_UTILITY_KILL_SWITCH)
+        )
+        self.utility_completion_weight = float(
+            additional_config.get(
+                "utility_completion_weight",
+                ascend_envs.VLLM_ASCEND_UTILITY_COMPLETION_WEIGHT,
+            )
+        )
+        self.utility_preempt_weight = float(
+            additional_config.get("utility_preempt_weight", ascend_envs.VLLM_ASCEND_UTILITY_PREEMPT_WEIGHT)
+        )
+        self.utility_kv_gate = float(
+            additional_config.get("utility_kv_gate", ascend_envs.VLLM_ASCEND_UTILITY_KV_GATE)
+        )
+        self.utility_cooldown_s = float(
+            additional_config.get("utility_cooldown_s", ascend_envs.VLLM_ASCEND_UTILITY_COOLDOWN_S)
+        )
+        self.utility_epsilon = float(additional_config.get("utility_epsilon", 1e-6))
+        self.utility_default_max_tokens = int(additional_config.get("utility_default_max_tokens", 1024))
+
+        if self.utility_completion_weight < 0:
+            raise ValueError("utility_completion_weight must be non-negative")
+        if self.utility_preempt_weight < 0:
+            raise ValueError("utility_preempt_weight must be non-negative")
+        if self.utility_kv_gate < 0 or self.utility_kv_gate > 1:
+            raise ValueError("utility_kv_gate must be in [0, 1]")
+        if self.utility_cooldown_s < 0:
+            raise ValueError("utility_cooldown_s must be non-negative")
+        if self.utility_epsilon <= 0:
+            raise ValueError("utility_epsilon must be positive")
+        if self.utility_default_max_tokens <= 0:
+            raise ValueError("utility_default_max_tokens must be positive")
+
         # Dump / PrecisionDebugger configuration
         self.dump_config_path = additional_config.get("dump_config_path", None)
         self.layer_sharding = additional_config.get("layer_sharding", None)

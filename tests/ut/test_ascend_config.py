@@ -39,6 +39,12 @@ class TestAscendConfig(TestBase):
         ascend_config = init_ascend_config(test_vllm_config)
         self.assertFalse(ascend_config.multistream_overlap_shared_expert)
         self.assertFalse(ascend_config.enable_kv_nz)
+        self.assertFalse(ascend_config.enable_utility_victim_selection)
+        self.assertFalse(ascend_config.utility_kill_switch)
+        self.assertEqual(ascend_config.utility_completion_weight, 0.5)
+        self.assertEqual(ascend_config.utility_preempt_weight, 0.3)
+        self.assertEqual(ascend_config.utility_kv_gate, 0.0)
+        self.assertEqual(ascend_config.utility_cooldown_s, 0.0)
 
         ascend_compilation_config = ascend_config.ascend_compilation_config
         self.assertTrue(ascend_compilation_config.fuse_norm_quant)
@@ -61,10 +67,22 @@ class TestAscendConfig(TestBase):
             "eplb_config": {"num_redundant_experts": 2},
             "refresh": True,
             "enable_kv_nz": False,
+            "enable_utility_victim_selection": True,
+            "utility_kill_switch": True,
+            "utility_completion_weight": 0.7,
+            "utility_preempt_weight": 0.2,
+            "utility_kv_gate": 0.95,
+            "utility_cooldown_s": 1.5,
         }
         ascend_config = init_ascend_config(test_vllm_config)
         self.assertEqual(ascend_config.eplb_config.num_redundant_experts, 2)
         self.assertTrue(ascend_config.multistream_overlap_shared_expert)
+        self.assertTrue(ascend_config.enable_utility_victim_selection)
+        self.assertTrue(ascend_config.utility_kill_switch)
+        self.assertEqual(ascend_config.utility_completion_weight, 0.7)
+        self.assertEqual(ascend_config.utility_preempt_weight, 0.2)
+        self.assertEqual(ascend_config.utility_kv_gate, 0.95)
+        self.assertEqual(ascend_config.utility_cooldown_s, 1.5)
 
         ascend_compilation_config = ascend_config.ascend_compilation_config
         self.assertFalse(ascend_compilation_config.fuse_norm_quant)
@@ -108,3 +126,35 @@ class TestAscendConfig(TestBase):
         clear_ascend_config()
         with self.assertRaises(RuntimeError):
             get_ascend_config()
+
+    @_clean_up_ascend_config
+    @patch("vllm_ascend.platform.NPUPlatform._fix_incompatible_config")
+    def test_utility_weight_validation(self, mock_fix_incompatible_config):
+        test_vllm_config = VllmConfig()
+        test_vllm_config.additional_config = {
+            "utility_completion_weight": -0.1,
+            "refresh": True,
+        }
+        with self.assertRaises(ValueError):
+            init_ascend_config(test_vllm_config)
+
+        test_vllm_config.additional_config = {
+            "utility_preempt_weight": -0.1,
+            "refresh": True,
+        }
+        with self.assertRaises(ValueError):
+            init_ascend_config(test_vllm_config)
+
+        test_vllm_config.additional_config = {
+            "utility_kv_gate": 1.2,
+            "refresh": True,
+        }
+        with self.assertRaises(ValueError):
+            init_ascend_config(test_vllm_config)
+
+        test_vllm_config.additional_config = {
+            "utility_cooldown_s": -1,
+            "refresh": True,
+        }
+        with self.assertRaises(ValueError):
+            init_ascend_config(test_vllm_config)

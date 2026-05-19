@@ -33,7 +33,6 @@ from vllm.v1.core.sched.async_scheduler import AsyncScheduler
 from vllm.v1.core.sched.interface import PauseState
 from vllm.v1.core.sched.output import NewRequestData, SchedulerOutput
 from vllm.v1.core.sched.request_queue import (
-    SchedulingPolicy,
     create_request_queue,
 )
 from vllm.v1.core.sched.scheduler import Scheduler
@@ -45,6 +44,11 @@ from vllm.v1.request import Request, RequestStatus, StreamingUpdate
 from vllm.v1.sample.rejection_sampler import PLACEHOLDER_TOKEN_ID
 from vllm.v1.spec_decode.metrics import SpecDecodingStats
 from vllm.v1.utils import ConstantList, record_function_or_nullcontext
+
+from vllm_ascend.core.victim_selector import (
+    UnifiedVictimSelector,
+    infer_kv_utilization_from_scheduler,
+)
 
 
 # `spec_manager_map` in single_type_kv_cache_manager is a module-level dict
@@ -123,6 +127,19 @@ class RecomputeScheduler(Scheduler):
         self.is_hybrid_model = (
             "qwen3_next" in self.vllm_config.model_config.hf_text_config.model_type
             or "qwen3_5" in self.vllm_config.model_config.hf_text_config.model_type
+        )
+        self.victim_selector = UnifiedVictimSelector.from_vllm_config(self.vllm_config)
+
+    def _is_kv_consumer_recompute_path(self) -> bool:
+        transfer_config = self.vllm_config.kv_transfer_config
+        return transfer_config is not None and not transfer_config.is_kv_producer
+
+    def _pick_preempt_victim(self, now_s: float | None = None) -> Request:
+        return self.victim_selector.pick_victim(
+            self.running,
+            self.policy,
+            kv_utilization=infer_kv_utilization_from_scheduler(self),
+            now_s=now_s,
         )
 
     def add_request(self, request: Request) -> None:
@@ -333,8 +350,7 @@ class RecomputeScheduler(Scheduler):
                     # Preempt the lowest-priority request.
                     # NOTE: We add the preempted_req to recomputed_reqs in kv_consumer to
                     # drop the request to PD proxy.
-                    transfer_config = self.vllm_config.kv_transfer_config
-                    if transfer_config is not None and not transfer_config.is_kv_producer:
+                    if self._is_kv_consumer_recompute_path():
                         recomputed_req = self.running.pop()
                         self.kv_cache_manager.free(recomputed_req)
                         recomputed_reqs.append(
@@ -345,29 +361,27 @@ class RecomputeScheduler(Scheduler):
                         if recomputed_req == request:
                             break
                     else:
-                        if self.policy == SchedulingPolicy.PRIORITY:
-                            preempted_req = max(
-                                self.running,
-                                key=lambda r: (r.priority, r.arrival_time),
-                            )
-                            self.running.remove(preempted_req)
-                            if preempted_req in scheduled_running_reqs:
-                                preempted_req_id = preempted_req.request_id
-                                scheduled_running_reqs.remove(preempted_req)
-                                token_budget += num_scheduled_tokens.pop(preempted_req_id)
-                                req_to_new_blocks.pop(preempted_req_id)
-                                scheduled_spec_decode_tokens.pop(preempted_req_id, None)
-                                preempted_encoder_inputs = scheduled_encoder_inputs.pop(preempted_req_id, None)
-                                if preempted_encoder_inputs:
-                                    # Restore encoder compute budget if the preempted
-                                    # request had encoder inputs scheduled in this step.
-                                    num_embeds_to_restore = sum(
-                                        preempted_req.get_num_encoder_embeds(i) for i in preempted_encoder_inputs
-                                    )
-                                    encoder_compute_budget += num_embeds_to_restore
-                                req_index -= 1
+                        preempted_req = self._pick_preempt_victim(now_s=scheduled_timestamp)
+                        if preempted_req is self.running[-1]:
+                            self.running.pop()
                         else:
-                            preempted_req = self.running.pop()
+                            self.running.remove(preempted_req)
+
+                        if preempted_req in scheduled_running_reqs:
+                            preempted_req_id = preempted_req.request_id
+                            scheduled_running_reqs.remove(preempted_req)
+                            token_budget += num_scheduled_tokens.pop(preempted_req_id)
+                            req_to_new_blocks.pop(preempted_req_id)
+                            scheduled_spec_decode_tokens.pop(preempted_req_id, None)
+                            preempted_encoder_inputs = scheduled_encoder_inputs.pop(preempted_req_id, None)
+                            if preempted_encoder_inputs:
+                                # Restore encoder compute budget if the preempted
+                                # request had encoder inputs scheduled in this step.
+                                num_embeds_to_restore = sum(
+                                    preempted_req.get_num_encoder_embeds(i) for i in preempted_encoder_inputs
+                                )
+                                encoder_compute_budget += num_embeds_to_restore
+                            req_index -= 1
 
                         self._preempt_request(preempted_req, scheduled_timestamp)
                         preempted_reqs.append(preempted_req)

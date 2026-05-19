@@ -7,7 +7,6 @@
 - tests/ut/model_loader/netloader/test_netloader_elastic.py
 - tests/ut/kv_connector/test_remote_prefill_lifecycle.py
 - tests/ut/kv_connector/test_remote_decode_lifecycle.py
-- tests/ut/core/test_scheduler_dynamic_batch.py
 - tests/ut/kv_connector/test_mooncake_connector.py
 - tests/ut/worker/test_worker_v1.py
 - tests/ut/kv_connector/test_mooncake_layerwise_connector.py

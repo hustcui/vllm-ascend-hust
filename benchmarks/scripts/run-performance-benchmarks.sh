@@ -76,7 +76,13 @@ get_cur_npu_id() {
 
 kill_npu_processes() {
   ps -aux
-  lsof -t -i:8000 | xargs -r kill -9
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -t -i:8000 | xargs -r kill -9
+  elif command -v fuser >/dev/null 2>&1; then
+    fuser -k 8000/tcp || true
+  else
+    echo "Warning: neither lsof nor fuser is available; skip port-based cleanup."
+  fi
   pgrep python3 | xargs -r kill -9
   # vLLM now names the process with VLLM prefix after https://github.com/vllm-project/vllm/pull/21445
   pgrep VLLM | xargs -r kill -9
@@ -84,6 +90,63 @@ kill_npu_processes() {
   sleep 4
   rm -rf ~/.config/vllm
 
+}
+
+install_dependency() {
+  local package_name=$1
+  if command -v apt-get >/dev/null 2>&1; then
+    apt-get update && apt-get install -y "$package_name"
+    return
+  fi
+
+  if command -v dnf >/dev/null 2>&1; then
+    dnf install -y "$package_name"
+    return
+  fi
+
+  if command -v yum >/dev/null 2>&1; then
+    yum install -y "$package_name"
+    return
+  fi
+
+  echo "Warning: no supported package manager found to install $package_name."
+}
+
+ensure_dependency() {
+  local command_name=$1
+  local package_name=$2
+  local required=${3:-true}
+
+  if command -v "$command_name" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  install_dependency "$package_name"
+  if command -v "$command_name" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  if [[ "$required" == "true" ]]; then
+    echo "Error: required dependency '$command_name' is unavailable."
+    exit 1
+  fi
+
+  echo "Warning: optional dependency '$command_name' is unavailable."
+  return 0
+}
+
+get_host_ip() {
+  if command -v hostname >/dev/null 2>&1; then
+    hostname -I 2>/dev/null | awk '{print $1}'
+    return
+  fi
+
+  if command -v ip >/dev/null 2>&1; then
+    ip -4 addr show scope global 2>/dev/null | awk '/inet / {print $2}' | cut -d/ -f1 | head -n 1
+    return
+  fi
+
+  echo ""
 }
 
 update_json_field() {
@@ -285,13 +348,19 @@ main() {
   check_npus
   
   # dependencies
-  (which wget && which curl) || (apt-get update && apt-get install -y wget curl)
-  (which jq) || (apt-get update && apt-get -y install jq)
-  (which lsof) || (apt-get update && apt-get install -y lsof)
+  ensure_dependency wget wget true
+  ensure_dependency curl curl true
+  ensure_dependency jq jq true
+  ensure_dependency lsof lsof false
 
   # get the current IP address, required by benchmark_serving.py
   # shellcheck disable=SC2155
-  export VLLM_HOST_IP=$(hostname -I | awk '{print $1}')
+  host_ip=$(get_host_ip)
+  if [[ -z "$host_ip" ]]; then
+    host_ip="127.0.0.1"
+    echo "Warning: failed to detect host IP, fallback to ${host_ip}."
+  fi
+  export VLLM_HOST_IP="$host_ip"
   # turn of the reporting of the status of each request, to clean up the terminal output
   export VLLM_LOG_LEVEL="WARNING"
   
