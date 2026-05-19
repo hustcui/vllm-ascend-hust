@@ -36,6 +36,7 @@ class EplbUpdator:
         self.eplb_process = eplb_process
         self.shared_dict = self.eplb_process.shared_dict
         self.comm_group = get_dynamic_eplb_group()
+        self._moe_load_cpu_buffer: torch.Tensor | None = None
 
     def set_adaptor(self, adaptor: VllmEplbAdaptor):
         self.adaptor = adaptor
@@ -132,15 +133,33 @@ class EplbUpdator:
 
     def compute_and_set_moe_load(self):
         local_load = self.adaptor.get_rank_expert_workload().unsqueeze(1)
-        moe_load = self.comm_group.all_gather(local_load, dim=1).cpu()
+        gathered_load = self.comm_group.all_gather(local_load, dim=1)
 
         if self.multi_stage:
-            moe_load = moe_load.permute(2, 0, 1, 3)
+            gathered_load = gathered_load.permute(2, 0, 1, 3)
 
+        moe_load = self._copy_moe_load_to_host(gathered_load)
         self.shared_dict["moe_load"] = moe_load
         logger.debug("[ModelRunner] Updated shared_dict['moe_load'] shape=%s", moe_load.shape)
 
         return moe_load
+
+    def _copy_moe_load_to_host(self, moe_load: torch.Tensor) -> torch.Tensor:
+        cpu_buffer = self._moe_load_cpu_buffer
+        if (
+            cpu_buffer is None
+            or cpu_buffer.shape != moe_load.shape
+            or cpu_buffer.dtype != moe_load.dtype
+        ):
+            cpu_buffer = torch.empty(
+                moe_load.shape,
+                dtype=moe_load.dtype,
+                device="cpu",
+            )
+            self._moe_load_cpu_buffer = cpu_buffer
+
+        cpu_buffer.copy_(moe_load)
+        return cpu_buffer
 
     def warm_up_eplb(self):
         self.shared_dict["expert_maps"] = self.adaptor.get_global_expert_map()

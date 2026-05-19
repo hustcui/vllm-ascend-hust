@@ -73,6 +73,27 @@ class TestEplbUpdatorComputeAndSetMoeLoad(unittest.TestCase):
         self.assertTrue("moe_load" in self.updator.shared_dict)
         self.assertEqual(moe_load.device.type, "cpu")
 
+    def test_compute_and_set_moe_load_reuses_cpu_buffer(self):
+        self.updator.multi_stage = False
+        self.adaptor.get_rank_expert_workload.return_value = torch.ones(
+            58, 100, 8, device=self.device
+        )
+        first_moe_load = self.updator.compute_and_set_moe_load()
+
+        self.adaptor.get_rank_expert_workload.return_value = torch.full(
+            (58, 100, 8),
+            2,
+            device=self.device,
+        )
+        second_moe_load = self.updator.compute_and_set_moe_load()
+
+        self.assertEqual(first_moe_load.data_ptr(), second_moe_load.data_ptr())
+        self.assertEqual(
+            self.updator.shared_dict["moe_load"].data_ptr(),
+            second_moe_load.data_ptr(),
+        )
+        self.assertTrue(torch.equal(second_moe_load, torch.full_like(second_moe_load, 2)))
+
 
 if __name__ == "__main__":
     unittest.main()
