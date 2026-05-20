@@ -31,6 +31,78 @@ PR 正文
 - 将 dynamic-batch 相关 UT 纳入 CI 必跑集合（移除 ignore/blacklist）。
 
 ## 实验与验证数据
+### A. same-spec 基准实验（在 vllm-hust-benchmark 执行）
+实验目标：固定同一规格（same-spec）比较 current 与 baseline，验证 100 样本下的稳定结论。
+
+实验规格文件：
+- vllm-hust-benchmark/.benchmarks/spec-random-online-100-temp0-conc2.json
+
+关键参数：
+- num_prompts=100
+- max_concurrency=2
+- request_rate=1
+- temperature=0
+- input_len=1024
+- output_len=256
+
+执行方法（先 current，后 baseline）：
+1. 运行 current（vllm-hust + vllm-ascend-hust）
+```bash
+cd /home/cyb/vllm-hust-benchmark
+TS=$(date -u +%Y%m%dT%H%M%SZ)
+echo "$TS" > /tmp/bench_compare_ts_100
+RESULT_DIR="/home/cyb/vllm-hust-benchmark/.benchmarks/compare-unoptimized-temp0-conc2-100-${TS}/current" \
+RUN_ID="compare-current-temp0-conc2-100-${TS}" \
+VLLM_HUST_WORKSPACE_ROOT=/home/cyb \
+CURRENT_ENV_PREFIX=/root/miniconda3/envs/vllm-hust-dev \
+CURRENT_RUNTIME_PYTHON=/root/miniconda3/envs/vllm-hust-dev/bin/python \
+CURRENT_VLLM_HUST_REPO=/home/cyb/vllm-hust \
+CURRENT_VLLM_ASCEND_HUST_REPO=/home/cyb/vllm-ascend-hust \
+CURRENT_MODEL_PATH=/data/shared-models/Qwen2.5-14B-Instruct \
+CURRENT_SERVER_PORT=18101 CURRENT_CLIENT_PORT=18101 \
+bash scripts/run-current-ascend-same-spec.sh \
+  /home/cyb/vllm-hust-benchmark/.benchmarks/spec-random-online-100-temp0-conc2.json
+```
+2. 运行 baseline（reference-repos/vllm + reference-repos/vllm-ascend）
+```bash
+cd /home/cyb/vllm-hust-benchmark
+TS=$(cat /tmp/bench_compare_ts_100)
+RESULT_DIR="/home/cyb/vllm-hust-benchmark/.benchmarks/compare-unoptimized-temp0-conc2-100-${TS}/baseline" \
+RUN_ID="compare-baseline-temp0-conc2-100-${TS}" \
+VLLM_BATCH_INVARIANT=1 \
+VLLM_HUST_WORKSPACE_ROOT=/home/cyb \
+CURRENT_ENV_PREFIX=/root/miniconda3/envs/vllm-hust-dev \
+CURRENT_RUNTIME_PYTHON=/root/miniconda3/envs/vllm-hust-dev/bin/python \
+CURRENT_RUNTIME_PYTHONPATH=/tmp/vllm_cli_sitecustomize \
+CURRENT_VLLM_HUST_REPO=/home/cyb/reference-repos/vllm \
+CURRENT_VLLM_ASCEND_HUST_REPO=/home/cyb/reference-repos/vllm-ascend \
+CURRENT_ENGINE=vllm CURRENT_PLUGIN_ENGINE=vllm-ascend \
+CURRENT_GITHUB_REPOSITORY=vllm-project/vllm \
+CURRENT_PLUGIN_GITHUB_REPOSITORY=vllm-project/vllm-ascend \
+CURRENT_MODEL_PATH=/data/shared-models/Qwen2.5-14B-Instruct \
+CURRENT_SERVER_PORT=18102 CURRENT_CLIENT_PORT=18102 \
+bash scripts/run-current-ascend-same-spec.sh \
+  /home/cyb/vllm-hust-benchmark/.benchmarks/spec-random-online-100-temp0-conc2.json
+```
+
+结果目录：
+- current: vllm-hust-benchmark/.benchmarks/compare-unoptimized-temp0-conc2-100-20260519T100943Z/current/raw_benchmark_result.json
+- baseline: vllm-hust-benchmark/.benchmarks/compare-unoptimized-temp0-conc2-100-20260519T100943Z/baseline/raw_benchmark_result.json
+
+正确性核验：
+- two-side resolved_spec_hash 一致。
+- two-side resolved_same_spec.json 均为 num_prompts=100、max_concurrency=2。
+
+100 样本稳定对比（核心指标）：
+- 成功率：current 100/100，baseline 100/100。
+- Request throughput：0.0665 vs 0.0280 req/s，current 2.378x（+137.82%）。
+- Output throughput：17.02 vs 7.16 tok/s，current 2.378x（+137.82%）。
+- Mean TTFT：345.61 vs 749.46 ms，current 2.169x faster（-53.89%）。
+- P99 TTFT：395.94 vs 2230.26 ms，current 5.633x faster（-82.25%）。
+- Mean TPOT：116.43 vs 277.43 ms，current 2.383x faster（-58.03%）。
+- P99 TPOT：126.78 vs 438.44 ms，current 3.458x faster（-71.08%）。
+
+### B. 代码质量与门禁验证（在 vllm-ascend-hust 执行）
 | 项目 | 命令 | 数据结果 |
 |---|---|---|
 | 静态检查 | /root/miniconda3/envs/vllm-hust-dev/bin/python -m ruff check (14 个目标文件) | 通过，0 个违规 |
@@ -38,9 +110,8 @@ PR 正文
 | 性能脚本门禁 | bash -n benchmarks/scripts/run-performance-benchmarks.sh | 语法检查通过，退出码 0 |
 
 补充说明：
-- 本次分支未新增 benchmarks/ 或 results/ 下的可跟踪结果文件。
-- 本次交付重点是“策略接入 + 配置开关 + CI 与 UT 验证闭环”。
-- 若需要完整吞吐/延迟数值表（如 TTFT/TPOT/SLO），建议单独发起一轮固定矩阵基准并在独立结果 PR 发布。
+- same-spec 基准数据产物来自 vllm-hust-benchmark 的本地跑数目录（.benchmarks）。
+- 本 PR 的代码改动位于 vllm-ascend-hust；benchmark 结果用于支撑改动效果与稳定性说明。
 
 ## 风险与回滚
 - 风险：高 KV 压力下可能出现驱逐抖动。
