@@ -49,6 +49,3 @@ PR 正文
 
 ## 关联 Issue
 Closes #30
-
-## 附：验证证据文件
-docs/pr_drafts/issue-30-validation-evidence.md
