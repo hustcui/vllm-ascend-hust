@@ -1,9 +1,14 @@
 import unittest
+from multiprocessing import Manager, Process
 from unittest.mock import MagicMock, patch
 
 import torch
 
 from vllm_ascend.eplb.eplb_updator import EplbUpdator
+
+
+def read_moe_load_from_shared_dict(shared_dict, result_queue):
+    result_queue.put(shared_dict["moe_load"])
 
 
 class TestEplbUpdatorComputeAndSetMoeLoad(unittest.TestCase):
@@ -87,12 +92,56 @@ class TestEplbUpdatorComputeAndSetMoeLoad(unittest.TestCase):
         )
         second_moe_load = self.updator.compute_and_set_moe_load()
 
-        self.assertEqual(first_moe_load.data_ptr(), second_moe_load.data_ptr())
         self.assertEqual(
             self.updator.shared_dict["moe_load"].data_ptr(),
             second_moe_load.data_ptr(),
         )
         self.assertTrue(torch.equal(second_moe_load, torch.full_like(second_moe_load, 2)))
+
+    def test_compute_and_set_moe_load_visible_through_manager_dict(self):
+        self.updator.multi_stage = False
+
+        with Manager() as manager:
+            self.updator.shared_dict = manager.dict()
+
+            self.adaptor.get_rank_expert_workload.return_value = torch.ones(
+                2,
+                3,
+                1,
+                device=self.device,
+            )
+            first_moe_load = self.updator.compute_and_set_moe_load()
+            first_visible = self._read_moe_load_from_process(manager)
+
+            self.adaptor.get_rank_expert_workload.return_value = torch.full(
+                (2, 3, 1),
+                2,
+                device=self.device,
+            )
+            second_moe_load = self.updator.compute_and_set_moe_load()
+            second_visible = self._read_moe_load_from_process(manager)
+
+        self.assertEqual(first_visible.shape, (2, self.world_size, 3, 1))
+        self.assertEqual(second_visible.shape, first_visible.shape)
+        self.assertTrue(torch.equal(first_visible, torch.ones_like(first_visible)))
+        self.assertTrue(torch.equal(second_visible, torch.full_like(second_visible, 2)))
+
+    def _read_moe_load_from_process(self, manager):
+        result_queue = manager.Queue()
+        process = Process(
+            target=read_moe_load_from_shared_dict,
+            args=(self.updator.shared_dict, result_queue),
+        )
+        process.start()
+        process.join(timeout=10)
+
+        if process.is_alive():
+            process.terminate()
+            process.join()
+            self.fail("Timed out reading moe_load from Manager dict")
+
+        self.assertEqual(process.exitcode, 0)
+        return result_queue.get(timeout=10)
 
 
 if __name__ == "__main__":
