@@ -35,6 +35,41 @@ if [[ -n "${HUST_ATB_SET_ENV:-}" && -f "${HUST_ATB_SET_ENV}" ]]; then
   set -u
 fi
 
+normalize_visible_devices() {
+  local raw_value="${1:-}"
+  local device
+  local -a devices=()
+
+  IFS=',' read -r -a raw_devices <<< "${raw_value}"
+  for device in "${raw_devices[@]}"; do
+    device="${device//[[:space:]]/}"
+    if [[ -n "${device}" ]]; then
+      devices+=("${device}")
+    fi
+  done
+
+  if [[ "${#devices[@]}" -eq 0 ]]; then
+    return 1
+  fi
+
+  local normalized_devices
+  normalized_devices="$(IFS=','; echo "${devices[*]}")"
+  printf '%s\n' "${normalized_devices}"
+}
+
+resolved_visible_devices="$(normalize_visible_devices "${ASCEND_VISIBLE_DEVICES:-}" 2>/dev/null || true)"
+resolved_rt_visible_devices="$(normalize_visible_devices "${ASCEND_RT_VISIBLE_DEVICES:-}" 2>/dev/null || true)"
+
+if [[ -z "${resolved_rt_visible_devices}" && -n "${resolved_visible_devices}" ]]; then
+  export ASCEND_RT_VISIBLE_DEVICES="${resolved_visible_devices}"
+  echo "[INFO] Derived ASCEND_RT_VISIBLE_DEVICES from ASCEND_VISIBLE_DEVICES: ${ASCEND_RT_VISIBLE_DEVICES}"
+elif [[ -n "${resolved_rt_visible_devices}" ]]; then
+  export ASCEND_RT_VISIBLE_DEVICES="${resolved_rt_visible_devices}"
+elif [[ -n "${ASCEND_RT_VISIBLE_DEVICES+x}" ]]; then
+  unset ASCEND_RT_VISIBLE_DEVICES
+  echo "[WARN] Ignoring empty ASCEND_RT_VISIBLE_DEVICES from parent environment"
+fi
+
 if [[ "${HUST_ASCEND_HAS_STREAM_ATTR:-0}" != "1" ]]; then
   echo "[WARN] Current Ascend runtime does not export aclrtSetStreamAttribute"
   echo "[WARN] npugraph_ex requires a newer CANN runtime. vllm-ascend currently recommends CANN 8.5.1."
