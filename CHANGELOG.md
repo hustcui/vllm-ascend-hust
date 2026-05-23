@@ -4,6 +4,13 @@
 
 ### Changed
 
+- Normalized `ASCEND_RT_VISIBLE_DEVICES` in
+  `scripts/use_single_ascend_env.sh`: empty or whitespace-only parent values
+  are now discarded, non-empty device lists are compacted, and the runtime
+  filter falls back to `ASCEND_VISIBLE_DEVICES` when only the generic device
+  selection is set. This keeps local shells and trusted benchmark wrappers from
+  inheriting an invalid empty runtime device mask.
+
 - Added explicit fork version metadata and git tag conventions for the current
   maintained line: upstream anchors now use `upstream/v...`, fork release tags
   use `v...postN`, and generated builds export `__upstream_version__`,
