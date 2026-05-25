@@ -1,0 +1,116 @@
+#
+# Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+#
+name: PR Smart UT
+
+on:
+  pull_request:
+    branches:
+      - 'main'
+      - '*-dev'
+      - 'releases/v*'
+    paths:
+      - '.github/workflows/pr_smart_ut.yaml'
+      - '.github/workflows/_optional_smart_e2e.yaml'
+      - '.github/workflows/scripts/determine_smart_e2e_scope.py'
+      - '.github/workflows/scripts/runner_label.json'
+      - '.github/workflows/scripts/ut_blacklist.yaml'
+      - '.github/workflows/scripts/ut_config.yaml'
+      - 'packages.txt'
+      - 'pyproject.toml'
+      - 'requirements-dev.txt'
+      - 'requirements.txt'
+      - 'setup.py'
+      - 'tests/ut/**'
+      - 'vllm_ascend/**'
+
+defaults:
+  run:
+    shell: bash -el {0}
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  scope:
+    name: Determine smart UT scope
+    runs-on: ubuntu-latest
+    outputs:
+      has_tests: ${{ steps.scope.outputs.has_tests }}
+      test_groups: ${{ steps.scope.outputs.test_groups }}
+      matched_modules: ${{ steps.scope.outputs.matched_modules }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Determine smart UT test scope
+        id: scope
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git fetch origin "${{ github.base_ref }}"
+          python3 -m pip install pyyaml
+          python3 .github/workflows/scripts/determine_smart_e2e_scope.py \
+            --diff-base "origin/${{ github.base_ref }}"
+
+      - name: Post scope summary
+        if: ${{ steps.scope.outputs.has_tests == 'true' }}
+        env:
+          TEST_GROUPS: ${{ steps.scope.outputs.test_groups }}
+          MATCHED_MODULES: ${{ steps.scope.outputs.matched_modules }}
+        run: |
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          import os
+
+          groups = json.loads(os.environ["TEST_GROUPS"])
+          modules = os.environ["MATCHED_MODULES"]
+
+          lines = ["## Smart UT Test Scope", ""]
+          lines.append(f"**Matched modules:** {modules}")
+          lines.append("")
+
+          for group in groups:
+              npu_type = group["npu_type"]
+              num_npus = group["num_npus"]
+              runner = group["runner"]
+              tests = group["tests"].split()
+              header = f"### {npu_type.upper()} x{num_npus} ({len(tests)} tests) -> `{runner}`"
+              if npu_type == "cpu":
+                  header = f"### CPU ({len(tests)} tests) -> `{runner}`"
+              lines.append(header)
+              lines.append("")
+              lines.append("| # | Test target |")
+              lines.append("|---|-------------|")
+              for index, target in enumerate(tests, 1):
+                  lines.append(f"| {index} | `{target}` |")
+              lines.append("")
+
+          print("\n".join(lines))
+          PY
+
+      - name: Post no-test summary
+        if: ${{ steps.scope.outputs.has_tests != 'true' }}
+        run: |
+          {
+            echo "## Smart UT Test Scope"
+            echo
+            echo "No Smart UT targets matched this PR."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  smart-ut:
+    name: smart unit test
+    needs: [scope]
+    if: ${{ needs.scope.outputs.has_tests == 'true' }}
+    uses: ./.github/workflows/_optional_smart_e2e.yaml
+    with:
+      vllm: d886c26d4d4fef7d079696beb4ece1cfb4b008a8
+      test_groups: ${{ needs.scope.outputs.test_groups }}

@@ -2,6 +2,17 @@
 
 This document provides a guide on how to manage and extend the E2E test suite for `vllm-ascend`. It covers how to add new test cases and understand the automatic partitioning mechanism.
 
+## PR CI Flow
+
+Pull requests to `main`, `*-dev`, or `releases/v*` use several workflows:
+
+* `PR Create` (`bot_pr_create.yaml`) runs when a PR is opened. It updates the PR description with the tracked vLLM version, applies labels from `.github/labeler.yml`, and posts a reminder comment.
+* `PR Smart UT` (`pr_smart_ut.yaml`) runs on PR updates that touch source code, unit tests, or Smart UT CI configuration. It calls `determine_smart_e2e_scope.py` to map changed files to the relevant unit test targets, then runs those targets through `_optional_smart_e2e.yaml`.
+* `E2E-Full` (`pr_test_full.yaml`) is label-gated. Full E2E runs only after the PR has both `ready` and `ready-for-test` labels. A PR with the `ready` label can also run selected E2E tests through a `/e2e ...` comment.
+* `E2E-Light` (`pr_test_light.yaml`) is currently present but temporarily disabled in its jobs. Keep it separate from the Smart UT flow unless the stabilization decision is revisited.
+
+Smart UT routing is configured in `.github/workflows/scripts/ut_config.yaml`. When a new module gets unit tests, add its source and test directories there so PRs touching that module receive scoped unit test feedback.
+
 ## 1. Adding a New Test Case
 
 All E2E test cases are defined and managed in the `.github/workflows/scripts/config.yaml` file.
