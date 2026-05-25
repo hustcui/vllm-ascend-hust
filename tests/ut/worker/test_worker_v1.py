@@ -89,7 +89,7 @@ class TestNPUWorker(TestBase):
         mock_register_atb_extensions.assert_called_once()
         mock_register_ascend_customop.assert_called_once()
         mock_init_ascend_config.assert_called_once_with(self.vllm_config_mock)
-        mock_check_ascend_device_type.assert_called_once()
+        mock_check_ascend_device_type.assert_not_called()
 
         # Verify cache_dtype setting
         self.assertEqual(worker.cache_dtype, torch.float16)
@@ -141,6 +141,7 @@ class TestNPUWorker(TestBase):
 
         # Verify init_cached_hf_modules is called (trust_remote_code=True)
         mock_init_cached_hf_modules.assert_not_called()
+        mock_check_ascend_device_type.assert_not_called()
 
     @patch("vllm_ascend.utils.adapt_patch")
     @patch("vllm_ascend.ops")
@@ -185,6 +186,7 @@ class TestNPUWorker(TestBase):
 
         # Verify cache_dtype is set to custom value
         self.assertEqual(worker.cache_dtype, torch.float32)
+        mock_check_ascend_device_type.assert_not_called()
 
     def test_initialize_cache(self):
         """Test initialize_cache method"""
@@ -253,6 +255,7 @@ class TestNPUWorker(TestBase):
             patch("vllm_ascend.worker.worker.MemorySnapshot") as mock_memory_snapshot,
             patch("vllm_ascend.worker.worker.get_ascend_config", return_value=MagicMock(enable_cpu_binding=False)),
             patch("vllm_ascend.worker.worker.gc.collect"),
+            patch("vllm_ascend.worker.worker.check_ascend_device_type") as mock_check_ascend_device_type,
         ):
             mock_memory_snapshot.return_value = MagicMock(free_memory=1000, total_memory=2000)
 
@@ -277,6 +280,7 @@ class TestNPUWorker(TestBase):
             self.assertEqual(str(result), "npu:1")
             self.assertIs(worker.init_snapshot, mock_memory_snapshot.return_value)
             self.assertEqual(worker.requested_memory, 1000.0)
+            mock_check_ascend_device_type.assert_called_once()
 
     def test_init_device_uses_auto_selected_device(self):
         """Test _init_device honors auto-selected Ascend device."""
@@ -292,6 +296,7 @@ class TestNPUWorker(TestBase):
             patch("vllm_ascend.worker.worker.MemorySnapshot") as mock_memory_snapshot,
             patch("vllm_ascend.worker.worker.get_ascend_config", return_value=MagicMock(enable_cpu_binding=False)),
             patch("vllm_ascend.worker.worker.gc.collect"),
+            patch("vllm_ascend.worker.worker.check_ascend_device_type") as mock_check_ascend_device_type,
         ):
             mock_memory_snapshot.return_value = MagicMock(free_memory=1000, total_memory=2000)
 
@@ -309,6 +314,7 @@ class TestNPUWorker(TestBase):
         mock_auto_select.assert_called_once_with(worker.local_rank, worker.parallel_config)
         self.assertEqual(str(mock_set_device.call_args.args[0]), "npu:5")
         self.assertEqual(str(result), "npu:5")
+        mock_check_ascend_device_type.assert_called_once()
 
     def test_init_device_falls_back_when_auto_selected_device_fails(self):
         """Test _init_device falls back to local_rank when the selected device fails."""
@@ -324,6 +330,7 @@ class TestNPUWorker(TestBase):
             patch("vllm_ascend.worker.worker.MemorySnapshot") as mock_memory_snapshot,
             patch("vllm_ascend.worker.worker.get_ascend_config", return_value=MagicMock(enable_cpu_binding=False)),
             patch("vllm_ascend.worker.worker.gc.collect"),
+            patch("vllm_ascend.worker.worker.check_ascend_device_type") as mock_check_ascend_device_type,
             patch("vllm_ascend.worker.worker.logger") as mock_logger,
         ):
             mock_memory_snapshot.return_value = MagicMock(free_memory=1000, total_memory=2000)
@@ -344,6 +351,7 @@ class TestNPUWorker(TestBase):
         self.assertEqual(str(mock_set_device.call_args_list[1].args[0]), "npu:0")
         mock_logger.warning.assert_called_once()
         self.assertEqual(str(result), "npu:0")
+        mock_check_ascend_device_type.assert_called_once()
 
     def test_profile_start_stop(self):
         """Test profile method start and stop"""
