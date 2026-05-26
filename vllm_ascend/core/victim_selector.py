@@ -246,8 +246,9 @@ class UnifiedVictimSelector:
             req_map[request_id] = request
             candidates.append(self._score_request(request, request_id))
 
-        # Lower utility should be preempted first; tie-break by arrival/request id.
-        candidates.sort(key=lambda c: (c.utility, c.arrival_time, c.request_id))
+        # BidKV semantics: higher utility should be preempted first.
+        # Keep deterministic tie-breakers by arrival/request id.
+        candidates.sort(key=lambda c: (-c.utility, c.arrival_time, c.request_id))
         return candidates, req_map
 
     def _score_request(self, request: Request, request_id: str) -> UtilityCandidateScore:

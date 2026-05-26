@@ -48,7 +48,7 @@ class TestUnifiedVictimSelector:
         victim = selector.pick_victim(running, SchedulingPolicy.PRIORITY)
         assert victim.request_id == "r2"
 
-    def test_utility_mode_prefers_lower_u(self):
+    def test_utility_mode_prefers_higher_u(self):
         selector = UnifiedVictimSelector.from_vllm_config(
             SimpleNamespace(
                 additional_config={
@@ -66,7 +66,7 @@ class TestUnifiedVictimSelector:
         ]
 
         victim = selector.pick_victim(running, SchedulingPolicy.FCFS)
-        assert victim.request_id == "r2"
+        assert victim.request_id == "r1"
 
     def test_utility_mode_handles_missing_max_tokens(self):
         selector = UnifiedVictimSelector.from_vllm_config(
@@ -124,7 +124,7 @@ class TestUnifiedVictimSelector:
         ]
 
         victim = selector.pick_victim(running, SchedulingPolicy.FCFS, kv_utilization=0.9)
-        assert victim.request_id == "r2"
+        assert victim.request_id == "r1"
 
     def test_cooldown_falls_back_to_default_within_window(self):
         selector = UnifiedVictimSelector.from_vllm_config(
@@ -138,13 +138,13 @@ class TestUnifiedVictimSelector:
         running = [
             _make_request("r1", num_computed_tokens=200, output_tokens=10, num_preemptions=0),
             _make_request("r2", num_computed_tokens=120, output_tokens=100, num_preemptions=2),
-            _make_request("r3", num_computed_tokens=250, output_tokens=5, num_preemptions=0),
+            _make_request("r3", num_computed_tokens=90, output_tokens=5, num_preemptions=0),
         ]
 
         first = selector.pick_victim(running, SchedulingPolicy.FCFS, kv_utilization=1.0, now_s=100.0)
         second = selector.pick_victim(running, SchedulingPolicy.FCFS, kv_utilization=1.0, now_s=105.0)
 
-        assert first.request_id == "r2"
+        assert first.request_id == "r1"
         assert second.request_id == "r3"
 
     def test_export_metrics_tracks_hits_and_tokens(self):
@@ -170,9 +170,9 @@ class TestUnifiedVictimSelector:
         assert metrics["utility_strategy_hits"] == 1
         assert metrics["default_strategy_hits"] == 1
         assert metrics["strategy_hit_rate"] == 0.5
-        assert metrics["total_tokens_freed"] == 240
+        assert metrics["total_tokens_freed"] == 340
         assert metrics["kv_pressure_events"] == 1
-        assert metrics["consecutive_preempt_ratio"] == 1.0
+        assert metrics["consecutive_preempt_ratio"] == 0.0
         assert metrics["preemptions_per_request_p95"] >= 1.0
         assert len(metrics["preempted_req_ids"]) == 2
 
@@ -215,15 +215,15 @@ class TestUnifiedVictimSelector:
         ]
 
         victim = selector.pick_victim(running, SchedulingPolicy.FCFS, kv_utilization=1.0, now_s=42.0)
-        assert victim.request_id == "r3"
+        assert victim.request_id == "r1"
 
         snapshots = selector.get_recent_snapshots(limit=1)
         assert len(snapshots) == 1
         snapshot = snapshots[0]
         assert snapshot["used_utility"] is True
-        assert snapshot["selected_victim_id"] == "r3"
+        assert snapshot["selected_victim_id"] == "r1"
         assert snapshot["running_size"] == 3
         assert len(snapshot["candidates"]) == 2
-        assert snapshot["candidates"][0]["request_id"] == "r3"
+        assert snapshot["candidates"][0]["request_id"] == "r1"
         assert "evict_score" in snapshot["candidates"][0]
         assert snapshot["candidates"][0]["selected"] is True

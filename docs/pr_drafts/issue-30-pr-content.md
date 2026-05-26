@@ -1,3 +1,80 @@
+Issue 30 草稿（与 BidKV 原始语义对齐）
+
+### 背景
+当前分配失败后的 victim 选择逻辑在多套调度器中重复实现，后续策略演进需要多点改动，容易出现行为漂移和回归风险。
+
+本 Issue 合并两项工作：
+1. 先统一四套调度器的 preempt 选人入口。
+2. 在统一入口上落地轻量 BidKV 公式，先做稳定、可回滚、可对比的版本。
+
+### 目标
+1. 将选谁被 preempt 收敛到统一 selector 接口（例如 selector.pick_victim）。
+2. 四套调度器只替换选人步骤，保持原有 preempt 执行链不变。
+3. 在 selector 内实现轻量公式：U = r / (delta + epsilon)。
+4. 采用请求级近似：r 使用 num_computed_tokens。
+5. delta 首版采用：delta = 1 + 0.5 x completion + 0.3 x num_preemptions。
+6. 开关开启时按 BidKV 语义进行 utility 降序选择（高 U 优先）；开关关闭时行为与现网一致。
+
+### 改动范围
+1. vllm_ascend/core/recompute_scheduler.py
+2. vllm_ascend/core/scheduler_dynamic_batch.py
+3. vllm_ascend/core/scheduler_profiling_chunk.py
+4. vllm_ascend/patch/platform/patch_balance_schedule.py
+5. vllm_ascend/envs.py
+6. vllm_ascend/ascend_config.py
+7. vllm_ascend/platform.py
+
+### 编码任务
+1. 新增统一 victim selector 接口，定义输入、输出、回退行为。
+2. 在四套调度器中接入 selector，仅替换选人逻辑，不改后续 preempt 执行链。
+3. 保留 recompute_scheduler 的 kv_consumer 特殊路径，不被通用流程覆盖。
+4. 实现轻量 utility 排序与稳定 tie-break 规则，保证同一快照排序稳定。
+5. 处理边界输入：空 running、max_tokens 缺失、短输出、异常字段。
+6. 增加 kill switch 与参数化权重，支持快速回退。
+
+### 建议开关
+1. enable_utility_victim_selection
+2. utility_kill_switch
+3. utility_completion_weight
+4. utility_preempt_weight
+5. utility_kv_gate
+6. utility_cooldown_s
+
+### CI 任务
+1. 扩展并稳定以下 UT：
+  - tests/ut/core/test_scheduler_dynamic_batch.py
+  - tests/ut/core/test_profiling_chunk.py
+2. 新增 recompute_scheduler 定向 UT，覆盖：
+  - PRIORITY 分支
+  - 非 PRIORITY 分支
+  - kv_consumer 特殊路径
+3. 新增 selector 级别 UT，覆盖：
+  - 排序稳定性
+  - 边界输入安全
+  - 开关关闭一致性
+4. 将上述 UT 纳入 CI 必跑集合，避免只靠手工回归。
+
+### 性能验证启动
+1. 先跑基线版本（统一 selector，但保持原策略）并归档结果。
+2. 再跑轻量公式版本（开启 utility 选人）并与基线对比。
+3. 使用固定口径运行性能脚本：
+  - benchmarks/scripts/run-performance-benchmarks.sh
+4. 固定实验条件：请求率、并发、KV 容量、随机种子。
+5. 每组至少 3 次重复，输出均值和方差。
+6. 必看指标：TTFT、SLO、Throughput、ITL、preempt 总量、单请求连续被驱逐比例。
+
+### 验收标准
+1. 四套调度器都走同一 selector 入口。
+2. 开关关闭时与当前行为一致。
+3. 开关开启后轻量公式稳定运行，无边界崩溃。
+4. CI 全绿，新增用例稳定通过。
+5. 性能结果可复现，收益和代价可解释。
+
+### 风险与回滚
+1. 风险：策略开启后可能出现过度驱逐或抖动。
+2. 对策：默认关闭，保留 kill switch，支持一键回退到原策略。
+3. 发布建议：先灰度再全量，按压力场景逐步放开。
+
 PR 标题
 feat(core): 统一 preempt victim selector 并引入 utility 控制
 
