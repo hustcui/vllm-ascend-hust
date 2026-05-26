@@ -41,10 +41,35 @@ SERVICE_PROFILING_SYMBOLS_YAML = """
   handler: ms_service_profiler.patcher.vllm.handlers.v1.batch_handlers:schedule
   name: batchFrameworkProcessing
 
-- symbol: vllm_ascend.core.scheduler:AscendScheduler.schedule
+- symbol: vllm_ascend.core.recompute_scheduler:RecomputeScheduler.schedule
   min_version: "0.9.1"
   handler: ms_service_profiler.patcher.vllm.handlers.v1.batch_handlers:schedule
   name: batchFrameworkProcessing
+
+- symbol: vllm_ascend.core.scheduler_dynamic_batch:SchedulerDynamicBatch.schedule
+  min_version: "0.9.1"
+  handler: ms_service_profiler.patcher.vllm.handlers.v1.batch_handlers:schedule
+  name: batchFrameworkProcessing
+
+- symbol: vllm_ascend.core.scheduler_profiling_chunk:ProfilingChunkScheduler.schedule
+  min_version: "0.9.1"
+  handler: ms_service_profiler.patcher.vllm.handlers.v1.batch_handlers:schedule
+  name: batchFrameworkProcessing
+
+- symbol: vllm_ascend.patch.platform.patch_balance_schedule:BalanceScheduler.schedule
+  min_version: "0.9.1"
+  handler: ms_service_profiler.patcher.vllm.handlers.v1.batch_handlers:schedule
+  name: batchFrameworkProcessing
+
+- symbol: vllm_ascend.core.victim_selector:UnifiedVictimSelector.pick_victim
+  min_version: "0.9.1"
+  name: utilityVictimPick
+  domain: Schedule
+
+- symbol: vllm_ascend.core.victim_selector:UnifiedVictimSelector.emit_observability_log
+  min_version: "0.9.1"
+  name: utilityVictimObservability
+  domain: Schedule
 
 - symbol: vllm.v1.core.sched.scheduler:Scheduler.add_request
   min_version: "0.9.1"

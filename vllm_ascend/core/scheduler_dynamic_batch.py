@@ -588,5 +588,8 @@ class SchedulerDynamicBatch(Scheduler):
             batch = KVEventBatch(ts=time.time(), events=events)
             self.kv_event_publisher.publish(batch)
 
+        if preempted_reqs:
+            self.victim_selector.emit_observability_log(logger, self.__class__.__name__)
+
         self._update_after_schedule(scheduler_output)
         return scheduler_output

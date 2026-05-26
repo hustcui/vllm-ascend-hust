@@ -121,6 +121,18 @@ env_variables: dict[str, Callable[[], Any]] = {
     "VLLM_ASCEND_UTILITY_KV_GATE": lambda: float(os.getenv("VLLM_ASCEND_UTILITY_KV_GATE", "0.0")),
     # Cooldown window (seconds) between two utility-based victim selections.
     "VLLM_ASCEND_UTILITY_COOLDOWN_S": lambda: float(os.getenv("VLLM_ASCEND_UTILITY_COOLDOWN_S", "0.0")),
+    # Minimum running queue size required before enabling utility-based victim selection.
+    "VLLM_ASCEND_UTILITY_MIN_RUNNING": lambda: int(os.getenv("VLLM_ASCEND_UTILITY_MIN_RUNNING", "1")),
+    # Whether to capture shared-snapshot counterfactual records for utility decisions.
+    "VLLM_ASCEND_UTILITY_SNAPSHOT_ENABLED": lambda: bool(
+        int(os.getenv("VLLM_ASCEND_UTILITY_SNAPSHOT_ENABLED", "0"))
+    ),
+    # Number of top-ranked candidates to keep in each utility decision snapshot.
+    "VLLM_ASCEND_UTILITY_SNAPSHOT_TOP_K": lambda: int(os.getenv("VLLM_ASCEND_UTILITY_SNAPSHOT_TOP_K", "3")),
+    # Number of recent utility decision snapshots retained in memory.
+    "VLLM_ASCEND_UTILITY_SNAPSHOT_HISTORY_SIZE": lambda: int(
+        os.getenv("VLLM_ASCEND_UTILITY_SNAPSHOT_HISTORY_SIZE", "32")
+    ),
     # use fused op transpose_kv_cache_by_block, default is True
     "VLLM_ASCEND_FUSION_OP_TRANSPOSE_KV_CACHE_BY_BLOCK": lambda: bool(
         int(os.getenv("VLLM_ASCEND_FUSION_OP_TRANSPOSE_KV_CACHE_BY_BLOCK", "1"))

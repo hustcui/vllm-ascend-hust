@@ -738,6 +738,9 @@ class ProfilingChunkScheduler(Scheduler):
             ec_meta = self.ec_connector.build_connector_meta(scheduler_output)
             scheduler_output.ec_connector_metadata = ec_meta
 
+        if preempted_reqs:
+            self.victim_selector.emit_observability_log(logger, self.__class__.__name__)
+
         with record_function_or_nullcontext("schedule: update_after_schedule"):
             self._update_after_schedule(scheduler_output)
         return scheduler_output

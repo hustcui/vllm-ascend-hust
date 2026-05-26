@@ -297,36 +297,24 @@ class NPUPlatform(Platform):
                 vars(ascend_fusion_config) if not isinstance(ascend_fusion_config, dict) else ascend_fusion_config
             )
 
-        vllm_config.additional_config.setdefault(
-            "enable_utility_victim_selection",
-            ascend_config.enable_utility_victim_selection,
-        )
-        vllm_config.additional_config.setdefault("utility_kill_switch", ascend_config.utility_kill_switch)
-        vllm_config.additional_config.setdefault(
-            "utility_completion_weight",
-            ascend_config.utility_completion_weight,
-        )
-        vllm_config.additional_config.setdefault(
-            "utility_preempt_weight",
-            ascend_config.utility_preempt_weight,
-        )
-        vllm_config.additional_config.setdefault("utility_kv_gate", ascend_config.utility_kv_gate)
-        vllm_config.additional_config.setdefault("utility_cooldown_s", ascend_config.utility_cooldown_s)
-        vllm_config.additional_config.setdefault("utility_epsilon", ascend_config.utility_epsilon)
-        vllm_config.additional_config.setdefault(
-            "utility_default_max_tokens",
-            ascend_config.utility_default_max_tokens,
-        )
+        utility_selector_config = ascend_config.get_utility_selector_config_dict()
+        for key, value in utility_selector_config.items():
+            vllm_config.additional_config.setdefault(key, value)
 
-        if ascend_config.enable_utility_victim_selection:
+        if utility_selector_config["enable_utility_victim_selection"]:
             logger.info(
                 "Utility victim selection enabled: kill_switch=%s, completion_weight=%.3f, "
-                "preempt_weight=%.3f, kv_gate=%.3f, cooldown_s=%.3f",
-                ascend_config.utility_kill_switch,
-                ascend_config.utility_completion_weight,
-                ascend_config.utility_preempt_weight,
-                ascend_config.utility_kv_gate,
-                ascend_config.utility_cooldown_s,
+                "preempt_weight=%.3f, kv_gate=%.3f, cooldown_s=%.3f, min_running=%d, "
+                "snapshot_enabled=%s, snapshot_top_k=%d, snapshot_history_size=%d",
+                utility_selector_config["utility_kill_switch"],
+                utility_selector_config["utility_completion_weight"],
+                utility_selector_config["utility_preempt_weight"],
+                utility_selector_config["utility_kv_gate"],
+                utility_selector_config["utility_cooldown_s"],
+                utility_selector_config["utility_min_running"],
+                utility_selector_config["utility_snapshot_enabled"],
+                utility_selector_config["utility_snapshot_top_k"],
+                utility_selector_config["utility_snapshot_history_size"],
             )
 
         if model_config is None:
