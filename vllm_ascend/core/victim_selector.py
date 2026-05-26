@@ -285,9 +285,8 @@ class UnifiedVictimSelector:
             + self.config.utility_completion_weight * completion
             + self.config.utility_preempt_weight * preemptions
         )
-        evict_score = reward / max(delta + self.config.utility_epsilon, self.config.utility_epsilon)
-        # Utility is a retention value: higher utility means the request should be kept.
-        utility = 1.0 / max(evict_score + self.config.utility_epsilon, self.config.utility_epsilon)
+        utility = reward / max(delta + self.config.utility_epsilon, self.config.utility_epsilon)
+        evict_score = utility
         return utility, evict_score
 
     def _compute_completion(self, request: Request) -> float:
