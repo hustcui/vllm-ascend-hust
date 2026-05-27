@@ -455,6 +455,7 @@ def test_init_device_falls_back_to_local_rank_when_auto_selected_device_fails():
         patch.object(NPUWorker, "_init_worker_distributed_environment"), \
         patch("vllm_ascend.worker.worker.get_ascend_config", return_value=SimpleNamespace(enable_cpu_binding=False)), \
         patch("vllm_ascend.worker.worker.logger") as mock_logger, \
+        patch("vllm_ascend.worker.worker.check_ascend_device_type") as mock_check_ascend_device_type, \
         patch("vllm_ascend.worker.worker.torch.npu.is_available", return_value=True), \
         patch("vllm_ascend.worker.worker.torch.npu.device_count", return_value=1), \
         patch("vllm.triton_utils.HAS_TRITON", False):
@@ -463,3 +464,4 @@ def test_init_device_falls_back_to_local_rank_when_auto_selected_device_fails():
     assert device == "npu:0"
     assert mock_set_device.call_args_list == [(("npu:7",),), (("npu:0",),)]
     mock_logger.warning.assert_called_once()
+    mock_check_ascend_device_type.assert_called_once()

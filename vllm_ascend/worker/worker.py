@@ -327,9 +327,8 @@ class NPUWorker(WorkerBase):
         if get_ascend_device_type() != AscendDeviceType.A5:
             _register_atb_extensions()
         register_ascend_customop(vllm_config)
-        # init ascend config and soc version
+        # init ascend config
         init_ascend_config(vllm_config)
-        check_ascend_device_type()
 
         super().__init__(
             vllm_config=vllm_config,
@@ -490,6 +489,8 @@ class NPUWorker(WorkerBase):
             )
             device = torch.device(f"npu:{self.local_rank}")
             torch.npu.set_device(device)
+
+        check_ascend_device_type()
 
         # Import _inductor for graph mode execution with triton
         # This lazy import avoids torch_npu re-initialization in patch
