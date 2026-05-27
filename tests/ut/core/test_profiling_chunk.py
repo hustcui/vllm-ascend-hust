@@ -240,7 +240,7 @@ class TestProfilingChunkScheduler(TestBase):
     @patch("vllm_ascend.ascend_config.get_ascend_config")
     @patch("vllm.config.ModelConfig.__post_init__", MagicMock())
     @patch("vllm.config.VllmConfig.__post_init__", MagicMock())
-    def create_scheduler(self, mock_get_ascend_config):
+    def create_scheduler(self, mock_get_ascend_config, additional_config=None):
         profiling_cfg = MagicMock()
         profiling_cfg.enabled = True
         profiling_cfg.smooth_factor = 0.8
@@ -287,6 +287,7 @@ class TestProfilingChunkScheduler(TestBase):
             model_config=model_config,
             cache_config=cache_config,
         )
+        vllm_config.additional_config = additional_config or {}
         vllm_config.parallel_config.pipeline_parallel_size = 2
         from unittest.mock import PropertyMock
 
@@ -324,6 +325,10 @@ class TestProfilingChunkScheduler(TestBase):
         scheduler = self.create_scheduler()
         self.assertIsNotNone(scheduler.profiling_chunk_manager)
         self.assertFalse(scheduler._profiling_initialized)
+
+    def test_scheduler_init_with_utility_selector_enabled(self):
+        scheduler = self.create_scheduler(additional_config={"enable_utility_victim_selection": True})
+        self.assertTrue(scheduler.victim_selector.config.enable_utility_victim_selection)
 
     def test_run_profiling_chunk_init_success(self):
         scheduler = self.create_scheduler()

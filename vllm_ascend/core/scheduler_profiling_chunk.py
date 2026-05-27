@@ -32,7 +32,7 @@ from vllm.v1.core.sched.output import (
     NewRequestData,
     SchedulerOutput,
 )
-from vllm.v1.core.sched.request_queue import SchedulingPolicy, create_request_queue
+from vllm.v1.core.sched.request_queue import create_request_queue
 from vllm.v1.core.sched.scheduler import Scheduler
 from vllm.v1.engine import EngineCoreEventType
 from vllm.v1.kv_cache_interface import KVCacheConfig
@@ -41,6 +41,10 @@ from vllm.v1.structured_output import StructuredOutputManager
 from vllm.v1.utils import record_function_or_nullcontext
 
 from vllm_ascend.core.profiling_chunk_predictor import ProfilingChunkManager
+from vllm_ascend.core.victim_selector import (
+    UnifiedVictimSelector,
+    infer_kv_utilization_from_scheduler,
+)
 
 
 class ProfilingChunkScheduler(Scheduler):
@@ -86,6 +90,7 @@ class ProfilingChunkScheduler(Scheduler):
             min_chunk=profiling_cfg.min_chunk,
         )
         self._profiling_initialized = False
+        self.victim_selector = UnifiedVictimSelector.from_vllm_config(vllm_config)
 
         logger.info(
             "[ProfilingChunk] Scheduler initialized. base_chunk=%d, page_size=%d, smooth_factor=%.2f, min_chunk=%d",
@@ -343,27 +348,30 @@ class ProfilingChunkScheduler(Scheduler):
                     if new_blocks is not None:
                         break
 
-                    if self.policy == SchedulingPolicy.PRIORITY:
-                        preempted_req = max(
-                            self.running,
-                            key=lambda r: (r.priority, r.arrival_time),
-                        )
-                        self.running.remove(preempted_req)
-                        if preempted_req in scheduled_running_reqs:
-                            preempted_req_id = preempted_req.request_id
-                            scheduled_running_reqs.remove(preempted_req)
-                            token_budget += num_scheduled_tokens.pop(preempted_req_id)
-                            req_to_new_blocks.pop(preempted_req_id)
-                            scheduled_spec_decode_tokens.pop(preempted_req_id, None)
-                            preempted_encoder_inputs = scheduled_encoder_inputs.pop(preempted_req_id, None)
-                            if preempted_encoder_inputs:
-                                num_embeds_to_restore = sum(
-                                    preempted_req.get_num_encoder_embeds(i) for i in preempted_encoder_inputs
-                                )
-                                encoder_compute_budget += num_embeds_to_restore
-                            req_index -= 1
+                    preempted_req = self.victim_selector.pick_victim(
+                        self.running,
+                        self.policy,
+                        kv_utilization=infer_kv_utilization_from_scheduler(self),
+                        now_s=scheduled_timestamp,
+                    )
+                    if preempted_req is self.running[-1]:
+                        self.running.pop()
                     else:
-                        preempted_req = self.running.pop()
+                        self.running.remove(preempted_req)
+
+                    if preempted_req in scheduled_running_reqs:
+                        preempted_req_id = preempted_req.request_id
+                        scheduled_running_reqs.remove(preempted_req)
+                        token_budget += num_scheduled_tokens.pop(preempted_req_id)
+                        req_to_new_blocks.pop(preempted_req_id)
+                        scheduled_spec_decode_tokens.pop(preempted_req_id, None)
+                        preempted_encoder_inputs = scheduled_encoder_inputs.pop(preempted_req_id, None)
+                        if preempted_encoder_inputs:
+                            num_embeds_to_restore = sum(
+                                preempted_req.get_num_encoder_embeds(i) for i in preempted_encoder_inputs
+                            )
+                            encoder_compute_budget += num_embeds_to_restore
+                        req_index -= 1
 
                     self._preempt_request(preempted_req, scheduled_timestamp)
                     preempted_reqs.append(preempted_req)
@@ -491,8 +499,9 @@ class ProfilingChunkScheduler(Scheduler):
 
                     num_computed_tokens = num_new_local_computed_tokens + num_external_computed_tokens
 
-                    if request.prefill_stats is not None:
-                        request.prefill_stats.set(
+                    prefill_stats = getattr(request, "prefill_stats", None)
+                    if prefill_stats is not None:
+                        prefill_stats.set(
                             num_prompt_tokens=request.num_prompt_tokens,
                             num_local_cached_tokens=num_new_local_computed_tokens,
                             num_external_cached_tokens=num_external_computed_tokens,
@@ -728,6 +737,9 @@ class ProfilingChunkScheduler(Scheduler):
         if self.ec_connector is not None:
             ec_meta = self.ec_connector.build_connector_meta(scheduler_output)
             scheduler_output.ec_connector_metadata = ec_meta
+
+        if preempted_reqs:
+            self.victim_selector.emit_observability_log(logger, self.__class__.__name__)
 
         with record_function_or_nullcontext("schedule: update_after_schedule"):
             self._update_after_schedule(scheduler_output)

@@ -212,7 +212,7 @@ class NPUPlatform(Platform):
             from vllm_ascend.compilation.passes.sequence_parallelism import get_sp_min_token_num
 
             pass_config.sp_min_token_num = get_sp_min_token_num(vllm_config)
-            logger.info(f"set sp_min_token_num to {pass_config.sp_min_token_num}")
+            logger.info("set sp_min_token_num to %s", pass_config.sp_min_token_num)
 
         default_max_cg_capture_size = cls._get_default_max_cudagraph_capture_size(vllm_config)
         if default_max_cg_capture_size is not None:
@@ -297,6 +297,26 @@ class NPUPlatform(Platform):
                 vars(ascend_fusion_config) if not isinstance(ascend_fusion_config, dict) else ascend_fusion_config
             )
 
+        utility_selector_config = ascend_config.get_utility_selector_config_dict()
+        for key, value in utility_selector_config.items():
+            vllm_config.additional_config.setdefault(key, value)
+
+        if utility_selector_config["enable_utility_victim_selection"]:
+            logger.info(
+                "Utility victim selection enabled: kill_switch=%s, completion_weight=%.3f, "
+                "preempt_weight=%.3f, kv_gate=%.3f, cooldown_s=%.3f, min_running=%d, "
+                "snapshot_enabled=%s, snapshot_top_k=%d, snapshot_history_size=%d",
+                utility_selector_config["utility_kill_switch"],
+                utility_selector_config["utility_completion_weight"],
+                utility_selector_config["utility_preempt_weight"],
+                utility_selector_config["utility_kv_gate"],
+                utility_selector_config["utility_cooldown_s"],
+                utility_selector_config["utility_min_running"],
+                utility_selector_config["utility_snapshot_enabled"],
+                utility_selector_config["utility_snapshot_top_k"],
+                utility_selector_config["utility_snapshot_history_size"],
+            )
+
         if model_config is None:
             logger.warning("Model config is missing. This may indicate that we are running a test case")
             enforce_eager = False
@@ -319,7 +339,8 @@ class NPUPlatform(Platform):
                 )
             elif os.environ.get("VLLM_ASCEND_ALLOW_UNSAFE_QWEN2_ACLGRAPH", "0") != "1":
                 logger.warning(
-                    "Disabling NPU graph compilation for %s because native rotary fallback was disabled and the default "
+                    "Disabling NPU graph compilation for %s because native rotary fallback was disabled "
+                    "and the default "
                     "ACL graph path can produce incorrect outputs. Set VLLM_ASCEND_USE_NATIVE_QWEN2_ROPE=1 to use the "
                     "default safe fix, or VLLM_ASCEND_ALLOW_UNSAFE_QWEN2_ACLGRAPH=1 to restore the previous behavior.",
                     architecture,

@@ -15,7 +15,7 @@ from vllm.utils.system_utils import decorate_logs, set_process_title
 from vllm.v1.core.kv_cache_manager import KVCacheBlocks
 from vllm.v1.core.sched.interface import PauseState
 from vllm.v1.core.sched.output import NewRequestData, SchedulerOutput
-from vllm.v1.core.sched.request_queue import SchedulingPolicy, create_request_queue
+from vllm.v1.core.sched.request_queue import create_request_queue
 from vllm.v1.core.sched.scheduler import Scheduler
 from vllm.v1.engine import EngineCoreEventType, EngineCoreOutputs
 from vllm.v1.engine.core import DPEngineCoreProc, EngineCoreProc
@@ -23,6 +23,17 @@ from vllm.v1.kv_cache_interface import KVCacheConfig
 from vllm.v1.request import Request, RequestStatus
 from vllm.v1.structured_output import StructuredOutputManager
 from vllm.v1.utils import record_function_or_nullcontext
+
+from vllm_ascend.core.victim_selector import (
+    UnifiedVictimSelector,
+    infer_kv_utilization_from_scheduler,
+)
+
+WAITING_FOR_STRUCTURED_OUTPUT_STATUS = getattr(
+    RequestStatus,
+    "WAITING_FOR_STRUCTURED_OUTPUT_GRAMMAR",
+    getattr(RequestStatus, "WAITING_FOR_FSM", None),
+)
 
 
 class BalanceScheduler(Scheduler):
@@ -37,19 +48,20 @@ class BalanceScheduler(Scheduler):
         log_stats: bool = False,
     ) -> None:
         super().__init__(
-            vllm_config,
-            kv_cache_config,
-            structured_output_manager,
-            block_size,
-            mm_registry,
-            include_finished_set,
-            log_stats,
+            vllm_config=vllm_config,
+            kv_cache_config=kv_cache_config,
+            structured_output_manager=structured_output_manager,
+            block_size=block_size,
+            mm_registry=mm_registry,
+            include_finished_set=include_finished_set,
+            log_stats=log_stats,
         )
         # Balance scheduling.
         self.balance_queue = [
             torch.tensor([0], dtype=torch.int, device="cpu")
             for _ in range(self.vllm_config.parallel_config.data_parallel_size)
         ]
+        self.victim_selector = UnifiedVictimSelector.from_vllm_config(vllm_config)
 
     def balance_gather(self, dp_group):
         running_tensor = torch.tensor([len(self.running)], dtype=torch.int, device="cpu")
@@ -176,29 +188,32 @@ class BalanceScheduler(Scheduler):
 
                     # The request cannot be scheduled.
                     # Preempt the lowest-priority request.
-                    if self.policy == SchedulingPolicy.PRIORITY:
-                        preempted_req = max(
-                            self.running,
-                            key=lambda r: (r.priority, r.arrival_time),
-                        )
-                        self.running.remove(preempted_req)
-                        if preempted_req in scheduled_running_reqs:
-                            preempted_req_id = preempted_req.request_id
-                            scheduled_running_reqs.remove(preempted_req)
-                            token_budget += num_scheduled_tokens.pop(preempted_req_id)
-                            req_to_new_blocks.pop(preempted_req_id)
-                            scheduled_spec_decode_tokens.pop(preempted_req_id, None)
-                            preempted_encoder_inputs = scheduled_encoder_inputs.pop(preempted_req_id, None)
-                            if preempted_encoder_inputs:
-                                # Restore encoder compute budget if the preempted
-                                # request had encoder inputs scheduled in this step.
-                                num_embeds_to_restore = sum(
-                                    preempted_req.get_num_encoder_embeds(i) for i in preempted_encoder_inputs
-                                )
-                                encoder_compute_budget += num_embeds_to_restore
-                            req_index -= 1
+                    preempted_req = self.victim_selector.pick_victim(
+                        self.running,
+                        self.policy,
+                        kv_utilization=infer_kv_utilization_from_scheduler(self),
+                        now_s=scheduled_timestamp,
+                    )
+                    if preempted_req is self.running[-1]:
+                        self.running.pop()
                     else:
-                        preempted_req = self.running.pop()
+                        self.running.remove(preempted_req)
+
+                    if preempted_req in scheduled_running_reqs:
+                        preempted_req_id = preempted_req.request_id
+                        scheduled_running_reqs.remove(preempted_req)
+                        token_budget += num_scheduled_tokens.pop(preempted_req_id)
+                        req_to_new_blocks.pop(preempted_req_id)
+                        scheduled_spec_decode_tokens.pop(preempted_req_id, None)
+                        preempted_encoder_inputs = scheduled_encoder_inputs.pop(preempted_req_id, None)
+                        if preempted_encoder_inputs:
+                            # Restore encoder compute budget if the preempted
+                            # request had encoder inputs scheduled in this step.
+                            num_embeds_to_restore = sum(
+                                preempted_req.get_num_encoder_embeds(i) for i in preempted_encoder_inputs
+                            )
+                            encoder_compute_budget += num_embeds_to_restore
+                        req_index -= 1
 
                     self._preempt_request(preempted_req, scheduled_timestamp)
                     preempted_reqs.append(preempted_req)
@@ -293,7 +308,10 @@ class BalanceScheduler(Scheduler):
 
                 # Skip request if the structured output request is still waiting
                 # for FSM compilation.
-                if request.status == RequestStatus.WAITING_FOR_STRUCTURED_OUTPUT_GRAMMAR:
+                if (
+                    WAITING_FOR_STRUCTURED_OUTPUT_STATUS is not None
+                    and request.status == WAITING_FOR_STRUCTURED_OUTPUT_STATUS
+                ):
                     structured_output_req = request.structured_output_request
                     if structured_output_req and structured_output_req.grammar:
                         request.status = RequestStatus.WAITING
@@ -598,6 +616,9 @@ class BalanceScheduler(Scheduler):
         if self.ec_connector is not None:
             ec_meta: ECConnectorMetadata = self.ec_connector.build_connector_meta(scheduler_output)
             scheduler_output.ec_connector_metadata = ec_meta
+
+        if preempted_reqs:
+            self.victim_selector.emit_observability_log(logger, self.__class__.__name__)
 
         with record_function_or_nullcontext("schedule: update_after_schedule"):
             self._update_after_schedule(scheduler_output)

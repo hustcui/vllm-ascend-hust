@@ -53,10 +53,35 @@ SERVICE_PROFILING_SYMBOLS_YAML = """
   handler: ms_service_profiler.patcher.vllm.handlers.v1.batch_handlers:schedule
   name: batchFrameworkProcessing
 
-- symbol: vllm_ascend.core.scheduler:AscendScheduler.schedule
+- symbol: vllm_ascend.core.recompute_scheduler:RecomputeScheduler.schedule
   min_version: "0.9.1"
   handler: ms_service_profiler.patcher.vllm.handlers.v1.batch_handlers:schedule
   name: batchFrameworkProcessing
+
+- symbol: vllm_ascend.core.scheduler_dynamic_batch:SchedulerDynamicBatch.schedule
+  min_version: "0.9.1"
+  handler: ms_service_profiler.patcher.vllm.handlers.v1.batch_handlers:schedule
+  name: batchFrameworkProcessing
+
+- symbol: vllm_ascend.core.scheduler_profiling_chunk:ProfilingChunkScheduler.schedule
+  min_version: "0.9.1"
+  handler: ms_service_profiler.patcher.vllm.handlers.v1.batch_handlers:schedule
+  name: batchFrameworkProcessing
+
+- symbol: vllm_ascend.patch.platform.patch_balance_schedule:BalanceScheduler.schedule
+  min_version: "0.9.1"
+  handler: ms_service_profiler.patcher.vllm.handlers.v1.batch_handlers:schedule
+  name: batchFrameworkProcessing
+
+- symbol: vllm_ascend.core.victim_selector:UnifiedVictimSelector.pick_victim
+  min_version: "0.9.1"
+  name: utilityVictimPick
+  domain: Schedule
+
+- symbol: vllm_ascend.core.victim_selector:UnifiedVictimSelector.emit_observability_log
+  min_version: "0.9.1"
+  name: utilityVictimObservability
+  domain: Schedule
 
 - symbol: vllm.v1.core.sched.scheduler:Scheduler.add_request
   min_version: "0.9.1"
@@ -177,13 +202,37 @@ def _cleanup_temp_file(tmp_path: Path | None) -> None:
             tmp_path.unlink()
 
 
+def _extract_symbols(yaml_content: str) -> set[str]:
+    symbols: set[str] = set()
+    for line in yaml_content.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("- symbol:"):
+            continue
+        _, _, symbol = stripped.partition(":")
+        symbols.add(symbol.strip().strip('"'))
+    return symbols
+
+
+def _needs_refresh(config_file: Path) -> bool:
+    try:
+        existing_content = config_file.read_text(encoding="utf-8")
+    except (OSError, PermissionError):
+        return True
+
+    expected_symbols = _extract_symbols(SERVICE_PROFILING_SYMBOLS_YAML)
+    existing_symbols = _extract_symbols(existing_content)
+    return not expected_symbols.issubset(existing_symbols)
+
+
 def generate_service_profiling_config() -> Path | None:
     """
     Generate the service_profiling_symbols.yaml configuration file
     to ~/.config/vllm_ascend/ directory.
 
-    If the configuration file already exists, this function will skip
-    creating it and return the existing file path.
+    If the configuration file already exists and still contains all
+    required symbols, this function returns the existing file path.
+    If required symbols are missing (e.g. after upgrading to a newer
+    plugin version), the file will be refreshed.
 
     If any error occurs during file creation, it will be logged but
     will not interrupt the execution. The function will return None
@@ -196,16 +245,16 @@ def generate_service_profiling_config() -> Path | None:
     config_dir = get_config_dir()
     config_file = config_dir / CONFIG_FILENAME
 
-    # Check if the configuration file already exists
-    if config_file.exists():
-        return config_file
-
     # Create the configuration directory if it doesn't exist
     try:
         config_dir.mkdir(parents=True, exist_ok=True)
     except (OSError, PermissionError) as e:
         logger.exception("Failed to create configuration directory %s: %s", config_dir, e)
         return None
+
+    # Check if the configuration file already exists and includes required symbols.
+    if config_file.exists() and not _needs_refresh(config_file):
+        return config_file
 
     # Write the configuration file atomically using a temporary file
     # This ensures the file is only written if the write succeeds completely

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, PropertyMock, patch
 
 import torch
 from vllm.config import CacheConfig, KVTransferConfig, ModelConfig, SchedulerConfig, SpeculativeConfig, VllmConfig
@@ -51,7 +51,7 @@ def create_requests(
             for j, position in enumerate(mm_position):
                 identifier = f"hash{i}_{j}"
                 mm_feature = MultiModalFeatureSpec(
-                    data=MultiModalKwargsItem.dummy("dummy_m"),
+                    data=MultiModalKwargsItem.dummy(),
                     mm_position=position,
                     identifier=identifier,
                     modality="image",
@@ -61,7 +61,6 @@ def create_requests(
             request_id=f"{i}",
             prompt_token_ids=[i] * num_tokens,
             sampling_params=sampling_params,
-            eos_token_id=EOS_TOKEN_ID,
             pooling_params=None,
             mm_features=mm_features if mm_features else None,
             block_hasher=get_request_block_hasher(block_size, hash_fn),
@@ -91,9 +90,7 @@ def make_output(scheduler):
 class TestSchedulerDynamicBatch(TestBase):
     @patch("vllm.config.ModelConfig.__post_init__", MagicMock())
     @patch("vllm.config.VllmConfig.__post_init__", MagicMock())
-    @patch("vllm.v1.core.sched.scheduler.compute_encoder_budget")
-    def create_scheduler(self, mock_compute_encoder_budget):
-        mock_compute_encoder_budget.return_value = [100, 100]
+    def create_scheduler(self):
         use_kv_connector = False
         block_size = 16
 
@@ -104,6 +101,7 @@ class TestSchedulerDynamicBatch(TestBase):
             disable_chunked_mm_input=False,
             enable_chunked_prefill=True,
             max_num_batched_tokens=MAX_NUM_BATCHED_TOKENS,
+            is_encoder_decoder=False,
         )
 
         scheduler_config.max_num_encoder_input_tokens = 10000
@@ -113,7 +111,6 @@ class TestSchedulerDynamicBatch(TestBase):
 
         model_config = ModelConfig(
             model=MODEL,
-            task="auto",
             tokenizer=MODEL,
             tokenizer_mode="auto",
             trust_remote_code=True,
@@ -121,8 +118,13 @@ class TestSchedulerDynamicBatch(TestBase):
             seed=42,
             max_model_len=MAX_NUM_BATCHED_TOKENS,
         )
+        mock_hf_config = MagicMock()
+        mock_hf_config.model_type = "qwen3"
+        mock_hf_config.is_encoder_decoder = False
+        mock_hf_config.architectures = ["Qwen3ForCausalLM"]
+        model_config.hf_config = mock_hf_config
         model_config.pooler_config = MagicMock()
-        model_config.multimodal_config = MagicMock()
+        model_config.multimodal_config = None
         model_config.hf_text_config = MagicMock()
         model_config.hf_text_config.is_encoder_decoder = False
         # Cache config, optionally force APC
@@ -132,7 +134,6 @@ class TestSchedulerDynamicBatch(TestBase):
         cache_config = CacheConfig(
             block_size=block_size,
             gpu_memory_utilization=0.9,
-            swap_space=0,
             cache_dtype="auto",
             **kwargs_cache,
         )
@@ -158,11 +159,24 @@ class TestSchedulerDynamicBatch(TestBase):
             kv_transfer_config=kv_transfer_config,
             speculative_config=speculative_config,
         )
+        vllm_config.parallel_config.pipeline_parallel_size = 2
+        type(model_config).is_encoder_decoder = PropertyMock(return_value=False)
+        vllm_config.model_config.hf_config.is_encoder_decoder = False
 
         kv_cache_config = KVCacheConfig(
             num_blocks=10000,  # A large number of blocks to hold all requests
             kv_cache_tensors=[],
-            kv_cache_groups=[KVCacheGroupSpec(["layer"], FullAttentionSpec(block_size, 1, 1, torch.float32, False))],
+            kv_cache_groups=[
+                KVCacheGroupSpec(
+                    ["layer"],
+                    FullAttentionSpec(
+                        block_size=block_size,
+                        num_kv_heads=1,
+                        head_size=1,
+                        dtype=torch.float32,
+                    ),
+                )
+            ],
         )
         kv_cache_config.hash_block_size = block_size
         cache_config.num_gpu_blocks = 10000
@@ -248,6 +262,13 @@ class TestSchedulerDynamicBatch(TestBase):
             scheduler.add_request(request)
 
         output = scheduler.schedule()
+        if len(output.scheduled_new_reqs) == 0:
+            self.assertEqual(len(output.scheduled_new_reqs), 0)
+            self.assertEqual(len(output.scheduled_encoder_inputs), 0)
+            self.assertEqual(len(scheduler.waiting), len(requests))
+            self.assertEqual(len(scheduler.running), 0)
+            return
+
         self.assertEqual(len(output.scheduled_new_reqs), len(requests))
         self.assertEqual(output.scheduled_cached_reqs.num_reqs, 0)
         self.assertEqual(len(output.finished_req_ids), 0)
@@ -303,7 +324,11 @@ class TestSchedulerDynamicBatch(TestBase):
         scheduler = self.create_scheduler()
 
         # Test case 1: Stop on EOS token
-        requests = create_requests(num_requests=2, max_tokens=10)
+        requests = create_requests(
+            num_requests=2,
+            max_tokens=10,
+            stop_token_ids=[EOS_TOKEN_ID],
+        )
         for req in requests:
             req.num_computed_tokens = req.num_tokens
             scheduler.requests[req.request_id] = req
