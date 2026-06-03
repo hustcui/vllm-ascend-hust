@@ -332,17 +332,16 @@ class NPUPlatform(Platform):
         from vllm.config.compilation import CUDAGraphMode
 
         if model_config is not None and architecture == "Qwen2ForCausalLM":
-            if os.environ.get("VLLM_ASCEND_USE_NATIVE_QWEN2_ROPE", "1") != "0":
+            if os.environ.get("VLLM_ASCEND_USE_NATIVE_QWEN2_ROPE", "0") != "0":
                 logger.warning(
-                    "Using native rotary fallback for %s on NPU to avoid incorrect outputs on the compiled path.",
+                    "Using native rotary fallback for %s on NPU because VLLM_ASCEND_USE_NATIVE_QWEN2_ROPE=1.",
                     architecture,
                 )
-            elif os.environ.get("VLLM_ASCEND_ALLOW_UNSAFE_QWEN2_ACLGRAPH", "0") != "1":
+            elif os.environ.get("VLLM_ASCEND_ALLOW_UNSAFE_QWEN2_ACLGRAPH", "1") != "1":
                 logger.warning(
-                    "Disabling NPU graph compilation for %s because native rotary fallback was disabled "
-                    "and the default "
-                    "ACL graph path can produce incorrect outputs. Set VLLM_ASCEND_USE_NATIVE_QWEN2_ROPE=1 to use the "
-                    "default safe fix, or VLLM_ASCEND_ALLOW_UNSAFE_QWEN2_ACLGRAPH=1 to restore the previous behavior.",
+                    "Disabling NPU graph compilation for %s because VLLM_ASCEND_ALLOW_UNSAFE_QWEN2_ACLGRAPH=0 while "
+                    "native rotary fallback is disabled. Set VLLM_ASCEND_USE_NATIVE_QWEN2_ROPE=1 to force the safe "
+                    "native fallback, or VLLM_ASCEND_ALLOW_UNSAFE_QWEN2_ACLGRAPH=1 to keep the compiled path.",
                     architecture,
                 )
                 enforce_eager = True

@@ -31,7 +31,10 @@ from vllm.logger import logger
 
 
 def _normalize_vllm_version(version_str: str) -> str:
-  version = Version(version_str)
+  try:
+    version = Version(version_str)
+  except Exception:
+    return version_str
   normalized = ".".join(str(part) for part in version.release)
   if version.pre is not None:
     normalized += f"{version.pre[0]}{version.pre[1]}"
