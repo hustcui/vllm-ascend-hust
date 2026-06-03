@@ -15,6 +15,7 @@
 
 
 import inspect
+import os
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -134,6 +135,22 @@ def make_yarn_embedding(patch_init_side_effects):
 
 
 class TestAscendEmbeddingForwardOOT:
+    def test_qwen2_native_fallback_disabled_by_default(self, patch_init_side_effects, make_embedding):
+        patch_init_side_effects.return_value.model_config.architectures = ["Qwen2ForCausalLM"]
+
+        with patch.dict(os.environ, {}, clear=True):
+            emb = make_embedding()
+
+        assert emb.force_native_qwen2_rope is False
+
+    def test_qwen2_native_fallback_requires_explicit_opt_in(self, patch_init_side_effects, make_embedding):
+        patch_init_side_effects.return_value.model_config.architectures = ["Qwen2ForCausalLM"]
+
+        with patch.dict(os.environ, {"VLLM_ASCEND_USE_NATIVE_QWEN2_ROPE": "1"}, clear=True):
+            emb = make_embedding()
+
+        assert emb.force_native_qwen2_rope is True
+
     @patch("torch.ops.vllm.npu_rotary_embedding")
     @patch("vllm_ascend.ascend_forward_context.get_forward_context")
     def test_basic_call_delegates_to_npu_op(self, mock_get_forward_context, mock_npu_op, make_embedding):
