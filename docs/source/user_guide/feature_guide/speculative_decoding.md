@@ -152,6 +152,23 @@ Suffix Decoding can achieve better performance for tasks with high repetition, s
         print(f"Prompt: {prompt!r}, Generated text: {generated_text!r}")
     ```
 
+## Known Limitations
+
+### Speculative Decoding Fundamentally Unsupported (Current Build)
+
+Speculative decoding is **not functional** in the current vllm-ascend build. Multiple methods crash at runtime:
+
+- **Draft model speculation:** `AscendDraftModelProposer` does not implement `update_stream` — crashes at runtime.
+- **Ngram-based speculation:** Also crashes on Ascend despite the proposer running on CPU. The verification path interaction with the Ascend backend is broken.
+- **Suffix Decoding:** Expected to have the same verification-path incompatibility.
+
+This is a fundamental incompatibility in the current build. **Do not enable any `speculative_config` unless using an EAGLE-based method** (EAGLE / EAGLE-3 / MTP), which has a separate Ascend-native code path (`AscendEagleProposer`).
+
+> [!WARNING]
+> If you need standard (non-EAGLE) speculative decoding on Ascend, wait for an upstream fix or use the target model without speculation.
+
+*Last verified: 2026-06-05.*
+
 ## Extracting Hidden States
 
 The `extract_hidden_states` method is a special speculative decoding mode that does not perform actual speculation. Instead, it extracts hidden states from specified layers of the target model and saves them to disk. This is primarily used for collecting training data for EAGLE-style draft models.
