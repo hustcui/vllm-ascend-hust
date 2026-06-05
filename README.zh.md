@@ -42,6 +42,14 @@ vLLM 昇腾插件 (`vllm-ascend`) 是一个由社区维护的让vLLM在Ascend NP
 
 使用 vLLM 昇腾插件，可以让类Transformer、混合专家(MOE)、嵌入、多模态等流行的大语言模型在 Ascend NPU 上无缝运行。
 
+## 关于本分支
+
+本仓库由 [vLLM-HUST](https://github.com/vLLM-HUST) 维护，专注于 **vLLM Ascend 后端的算子级优化**。工作内容包括：
+
+- 自定义 Ascend 算子（CANN/TIK）的开发和优化
+- Attention、MoE 等关键算子的性能调优
+- 与华为昇腾硬件特性的深度集成
+
 ## 准备
 
 - 硬件：Atlas 800I A2 Inference系列、Atlas A2 Training系列、Atlas 800I A3 Inference系列、Atlas A3 Training系列、Atlas 300I Duo（实验性支持）

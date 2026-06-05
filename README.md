@@ -48,6 +48,14 @@ It is the recommended approach for supporting the Ascend backend within the vLLM
 
 By using vLLM Ascend plugin, popular open-source models, including Transformer-like, Mixture-of-Experts (MoE), Embedding, Multi-modal LLMs can run seamlessly on the Ascend NPU.
 
+## About This Fork
+
+This repository is maintained by [vLLM-HUST](https://github.com/vLLM-HUST), focusing on **operator-level optimization** for the vLLM Ascend backend. Our work includes:
+
+- Custom Ascend operator development and optimization (CANN/TIK)
+- Performance tuning for attention, MoE, and other critical kernels
+- Deep integration with Huawei Ascend hardware features
+
 ## Prerequisites
 
 - Hardware: Atlas 800I A2 Inference series, Atlas A2 Training series, Atlas 800I A3 Inference series, Atlas A3 Training series, Atlas 300I Duo (Experimental)
