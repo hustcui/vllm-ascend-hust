@@ -58,7 +58,7 @@ dummy_gpt2_config = {
   "vocab_size": 50257,
   "n_positions": 1024,
   "n_ctx": 1024,
-  "n_embd": 64,
+  "n_embd": 128,
   "n_layer": 2,
   "n_head": 2,
   "bos_token_id": 50256,
