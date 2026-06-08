@@ -845,16 +845,20 @@ class NPUModelRunner(GPUModelRunner):
             self.gdn_query_start_loc.copy_to_gpu()
 
 
-        # Compute optimistic seq_lens (assumes all draft tokens from previous
-        # iteration accepted). Store in optimistic_seq_lens_cpu for use by
-        # _build_attention_metadata (max_seq_len) and discard_request_mask.
-        # seq_lens (GPU) will be computed later using the same optimistic values.
+        # Keep the eager non-spec path aligned with upstream: materialize
+        # seq_lens immediately unless async spec decode needs the optimistic path.
         torch.add(
             self.input_batch.num_computed_tokens_cpu_tensor[:num_reqs],
             torch.from_numpy(num_scheduled_tokens),
             out=self.optimistic_seq_lens_cpu[:num_reqs],
         )
         self.optimistic_seq_lens_cpu[num_reqs:].fill_(0)
+        if not self.use_async_spec_decode:
+            self.seq_lens[:num_reqs].copy_(
+                self.optimistic_seq_lens_cpu[:num_reqs],
+                non_blocking=True,
+            )
+            self.seq_lens[num_reqs:].fill_(0)
 
         # Build prev_positions mapping: current pos -> prev pos (-1 if new).
         # Used for gathering from previous iteration's GPU tensors.
@@ -2478,8 +2482,10 @@ class NPUModelRunner(GPUModelRunner):
             # to make sure the backend see a max_seq_len that is larger to the sliding
             # window size when capturing to make sure the correct kernel is selected.
             max_seq_len = self.max_model_len
-        else:
+        elif self.use_async_spec_decode:
             max_seq_len = self.optimistic_seq_lens_cpu.numpy()[:num_reqs].max().item()
+        else:
+            max_seq_len = self.seq_lens[:num_reqs].max().item()
 
 
         kv_cache_groups = self.kv_cache_config.kv_cache_groups
@@ -2549,20 +2555,18 @@ class NPUModelRunner(GPUModelRunner):
             :num_reqs_padded
         ]
         seq_lens_cpu = self.optimistic_seq_lens_cpu[:num_reqs_padded]
+        seq_lens_cpu_metadata = self.optimistic_seq_lens_cpu[:num_reqs_padded]
         if self.use_async_spec_decode:
             # GPU tensors are authoritative in async mode.
             seq_lens_cpu = None
             num_computed_tokens_cpu = None
+            seq_lens_cpu_metadata = self.optimistic_seq_lens_cpu[:num_reqs_padded]
 
         cm_base = AscendCommonAttentionMetadata(
             query_start_loc=self.query_start_loc.gpu[: num_reqs_padded + 1],
             query_start_loc_cpu=self.query_start_loc.cpu[: num_reqs_padded + 1],
             seq_lens=self.seq_lens[:num_reqs_padded],
-            # Always pass optimistic_seq_lens_cpu via _seq_lens_cpu so NPU
-            # attention backends can get CPU seq_lens without GPU->CPU sync.
-            # This is separate from seq_lens_cpu (None in async) which eagle
-            # proposer checks to distinguish async/non-async behavior.
-            _seq_lens_cpu=self.optimistic_seq_lens_cpu[:num_reqs_padded],
+            _seq_lens_cpu=seq_lens_cpu_metadata,
             # TODO
             seq_lens_cpu=seq_lens_cpu,
             # TODO

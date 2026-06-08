@@ -39,8 +39,8 @@ The generated package metadata exports:
 
 For the current maintained fork line:
 
-* Upstream anchor: `upstream/v0.18.0`
-* Current fork release line: `v0.18.0.post1`
+* Upstream anchor: `upstream/v0.19.1rc1`
+* Current fork release line: `v0.19.1.post1`
 
 Git tags apply only to committed objects. If the worktree is dirty, the build
 version may gain a `.dirty` suffix, but that state cannot be represented by a

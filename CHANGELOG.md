@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Known Limitations
+
+- `AscendDraftModelProposer` does not support `update_stream` — generic
+  draft-model-based speculative decoding is not fully implemented in this
+  vllm-ascend version. Use ngram-based or suffix-based speculation (CPU-side,
+  no draft model required) as a workaround.
+
 ### Changed
 
 - Normalized `ASCEND_RT_VISIBLE_DEVICES` in
