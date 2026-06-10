@@ -1277,7 +1277,7 @@ PY
     --benchmark-result-file "$RAW_RESULT_FILE" \
     --constraints-file "$EFFECTIVE_CONSTRAINTS_FILE" \
     --run-id "$RUN_ID" \
-    --engine vllm-ascend-hust \
+    --engine vllm-hust \
     --engine-version "$ENGINE_VERSION" \
     --model-name "$MODEL_NAME" \
     --model-parameters "$MODEL_PARAMETERS" \
