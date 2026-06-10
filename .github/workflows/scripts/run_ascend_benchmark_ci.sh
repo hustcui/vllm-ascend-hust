@@ -101,7 +101,7 @@ server_group_pid=""
 cleanup_ran=0
 
 find_orphaned_engine_pids() {
-  python - <<'PY'
+  "$PYTHON_BIN" - <<'PY'
 import os
 
 
