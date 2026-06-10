@@ -403,7 +403,7 @@ jobs:
         run: |
           mkdir -p "$HOME" "$XDG_CACHE_HOME" "$XDG_CONFIG_HOME"
           source scripts/use_single_ascend_env.sh
-          hust-ascend-manager setup --install-python-stack --non-interactive
+          hust_ascend_manager_run setup --install-python-stack --non-interactive
           export PYTHONPATH="$VLLM_HUST_REPO:$VLLM_HUST_BENCHMARK_REPO/src${PYTHONPATH:+:$PYTHONPATH}"
           hust_run_pip install "torch==2.9.0" "torch-npu==2.9.0"
           hust_run_pip install "numpy<2.0.0" scipy attrs decorator psutil
