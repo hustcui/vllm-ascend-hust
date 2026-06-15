@@ -2,6 +2,7 @@ name: Ascend Benchmark Leaderboard
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, labeled]
   push:
     branches: [main]
   workflow_dispatch:
@@ -34,6 +35,26 @@ on:
         required: false
         type: string
         default: Qwen/Qwen2.5-14B-Instruct
+      model_precision:
+        description: Model weight precision (e.g. FP16, BF16, INT8)
+        required: false
+        type: string
+        default: FP16
+      model_quantization:
+        description: Quantization scheme (e.g. W8A8, W4A4). Leave empty for unquantized models.
+        required: false
+        type: string
+        default: ""
+      dtype:
+        description: vLLM runtime dtype (e.g. float16, bfloat16, auto). Use auto for quantized models.
+        required: false
+        type: string
+        default: float16
+      hardware_chip_model:
+        description: Ascend chip model (e.g. 910B2, 910B3)
+        required: false
+        type: string
+        default: "910B3"
       dataset_path:
         description: Dataset path on the trusted runner for formal workloads such as sharegpt-online
         required: false
@@ -104,8 +125,9 @@ jobs:
       BENCH_DATASET_PATH: ${{ github.event_name == 'workflow_dispatch' && inputs.dataset_path || (github.event_name == 'pull_request' && vars.VLLM_ASCEND_HUST_PR_BENCHMARK_DATASET_PATH) || (github.event_name == 'push' && vars.VLLM_ASCEND_HUST_MAIN_BENCHMARK_DATASET_PATH) || '' }}
       BENCH_CONSTRAINTS_FILE: ${{ github.event_name == 'workflow_dispatch' && inputs.constraints_file || (github.event_name == 'pull_request' && vars.VLLM_ASCEND_HUST_PR_BENCHMARK_CONSTRAINTS_FILE) || (github.event_name == 'push' && vars.VLLM_ASCEND_HUST_MAIN_BENCHMARK_CONSTRAINTS_FILE) || '' }}
       MODEL_PARAMETERS: 14B
-      MODEL_PRECISION: FP16
-      DTYPE: float16
+      MODEL_PRECISION: ${{ github.event_name == 'workflow_dispatch' && inputs.model_precision || 'FP16' }}
+      MODEL_QUANTIZATION: ${{ github.event_name == 'workflow_dispatch' && inputs.model_quantization || '' }}
+      DTYPE: ${{ github.event_name == 'workflow_dispatch' && inputs.dtype || 'float16' }}
       MAX_MODEL_LEN: "1024"
       MAX_NUM_SEQS: "1"
       BENCH_NUM_PROMPTS: ${{ github.event_name == 'workflow_dispatch' && inputs.num_prompts || '200' }}
@@ -116,7 +138,7 @@ jobs:
       BENCH_INPUT_LEN: ''
       BENCH_OUTPUT_LEN: ''
       HARDWARE_VENDOR: Huawei
-      HARDWARE_CHIP_MODEL: 910B3
+      HARDWARE_CHIP_MODEL: ${{ github.event_name == 'workflow_dispatch' && inputs.hardware_chip_model || '910B3' }}
       CHIP_COUNT: "1"
       NODE_COUNT: "1"
       ASCEND_BENCHMARK_USE_SUDO: ${{ vars.VLLM_ASCEND_HUST_BENCHMARK_USE_SUDO || '1' }}
