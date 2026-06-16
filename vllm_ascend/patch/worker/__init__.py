@@ -64,3 +64,7 @@ import vllm_ascend.patch.worker.patch_gqa_c8  # noqa
 _import_optional_patch("vllm_ascend.patch.worker.patch_qwen3vl")
 import vllm_ascend.patch.worker.patch_v2.patch_attn_utils  # noqa
 import vllm_ascend.patch.worker.patch_bailing_moe_linear  # noqa
+
+# Sim-LLM KV reuse — auto-loaded at worker init, gated behind
+# VLLM_ASCEND_SIMLLM_ENABLED=1 (no-op when disabled).
+_import_optional_patch("vllm_ascend.patch.worker.patch_simllm")
