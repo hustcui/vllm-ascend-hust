@@ -30,6 +30,11 @@ on:
         required: false
         type: string
         default: main
+      benchmark_ref:
+        description: vllm-hust-benchmark ref containing benchmark runner/spec/export logic
+        required: false
+        type: string
+        default: ws/quantized-model-leaderboard
       model_name:
         description: Model used for the benchmark run
         required: false
@@ -119,6 +124,7 @@ jobs:
       ASCEND_HUST_TARGET: ${{ github.event_name == 'workflow_dispatch' && inputs.ascend_hust_target || format('{0}@{1}', github.repository, github.ref_name) }}
       VLLM_HUST_CONDA_ENV: vllm-hust-dev
       VLLM_HUST_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.vllm_hust_ref || vars.VLLM_ASCEND_HUST_VLLM_HUST_REF || 'main' }}
+      VLLM_HUST_BENCHMARK_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.benchmark_ref || vars.VLLM_ASCEND_HUST_BENCHMARK_REF || 'main' }}
       MODEL_NAME: ${{ github.event_name == 'workflow_dispatch' && inputs.model_name || 'Qwen/Qwen2.5-14B-Instruct' }}
       SOC_VERSION: ascend910b1
       BENCH_SCENARIO: ${{ github.event_name == 'workflow_dispatch' && inputs.benchmark_scenario || (github.event_name == 'pull_request' && vars.VLLM_ASCEND_HUST_PR_BENCHMARK_SCENARIO) || (github.event_name == 'push' && vars.VLLM_ASCEND_HUST_MAIN_BENCHMARK_SCENARIO) || 'random-online' }}
@@ -292,6 +298,7 @@ jobs:
         uses: actions/checkout@v6.0.1
         with:
           repository: vLLM-HUST/vllm-hust-benchmark
+          ref: ${{ env.VLLM_HUST_BENCHMARK_REF }}
           path: vllm-hust-benchmark
           ssh-key: ${{ secrets.VLLM_ASCEND_HUST_BENCHMARK_SSH_KEY }}
           ssh-strict: ${{ env.BENCHMARK_CHECKOUT_USE_SSH_443 != '1' }}
