@@ -58,6 +58,11 @@ from vllm.forward_context import get_forward_context
 
 from vllm_ascend.simllm.config import SimLLMConfig
 from vllm_ascend.simllm.kv_reuse import KVReuseEngine
+from vllm_ascend.simllm.utils import (
+    cumsum_to_ranges,
+    tensor_to_int_list,
+    tensor_to_int_matrix,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -456,6 +461,8 @@ def _simllm_apply_sandwich_slots(self: Any) -> None:
     else:
         query_start_loc = qsl[: num_reqs + 1]
     seq_lens = self.seq_lens[:num_reqs]
+    query_ranges = cumsum_to_ranges(query_start_loc)
+    seq_len_values = tensor_to_int_list(seq_lens)
 
     disabled = 0
     for layer_name, sm_tensor in slot_mapping_dict.items():
@@ -464,10 +471,10 @@ def _simllm_apply_sandwich_slots(self: Any) -> None:
             continue
 
         for batch_idx in unmatched:
-            s_len = int(seq_lens[batch_idx].item())
+            s_len = seq_len_values[batch_idx]
             if s_len == 0:
                 continue
-            tok_start = int(query_start_loc[batch_idx].item())
+            tok_start, _ = query_ranges[batch_idx]
             tok_end = tok_start + s_len
             sm_tensor[tok_start:tok_end] = -1
         disabled += 1
@@ -652,6 +659,9 @@ def _simllm_identify(self: Any) -> dict[int, Any]:
 def _simllm_inject_kv(self: Any) -> None:
     """Write cached top-layer KV into BlockTable for matched requests.
 
+    Legacy/test-support helper from the earlier pre-population path.  The
+    current primary path injects K/V inside the hijacked ``do_kv_cache_update``.
+
     Injects the same cached top-layer KV into the **top-N layers only**
     (controlled by ``SIMLLM_SANDWICH_TOP``, default 3).  Bottom/middle
     layers compute their own K,V normally from hidden states.  This
@@ -791,17 +801,20 @@ def _simllm_extract_kv(self: Any, hidden_states: Any) -> None:
         hashes = getattr(self, "_simllm_batch_hashes", None)
         seq_lens = self.seq_lens[:num_reqs]
         match_results = getattr(self, "_simllm_match_results", {})
+        seq_len_values = tensor_to_int_list(seq_lens)
+        hash_values = tensor_to_int_list(hashes[:num_reqs]) if hashes is not None else []
+        block_table_rows = tensor_to_int_matrix(blk_table_tensor[:num_reqs])
 
         now = time.monotonic()
         stored = 0
 
         for i in range(num_reqs):
-            s_len = int(seq_lens[i].item())
+            s_len = seq_len_values[i]
             if s_len == 0:
                 continue
 
             num_blk = KVReuseEngine.num_blocks_needed(s_len, block_size)
-            block_ids = blk_table_tensor[i, :num_blk].tolist()
+            block_ids = block_table_rows[i][:num_blk]
             if not block_ids:
                 continue
 
@@ -839,7 +852,7 @@ def _simllm_extract_kv(self: Any, hidden_states: Any) -> None:
                 if embeddings is not None
                 else k_per_req.new_zeros(1, k_per_req.shape[1])
             )
-            hsh = int(hashes[i].item()) if hashes is not None else 0
+            hsh = hash_values[i] if hash_values else 0
 
             from vllm_ascend.simllm.kv_manager import CachedTask
 
@@ -881,6 +894,9 @@ def _simllm_extract_kv(self: Any, hidden_states: Any) -> None:
 
 def _simllm_protect_kv_slots(self: Any) -> None:
     """Set slot_mapping to -1 for tokens already covered by cached KV injection.
+
+    Legacy/test-support helper for the earlier pre-population path.  The
+    current primary path no longer calls this helper.
 
     Prevents ``unified_kv_cache_update`` from overwriting pre-populated
     cached KV positions inside ``self.kv_caches``.  ``flash_attn_varlen_func``
@@ -1030,14 +1046,13 @@ def _per_request_embeddings(
     pooling: str = "mean",
 ) -> Any | None:
     """Compute per-request L2-normalized embeddings from flat hidden states."""
-    num_reqs = query_start_loc.shape[0] - 1
+    ranges = cumsum_to_ranges(query_start_loc)
+    num_reqs = len(ranges)
     if num_reqs == 0:
         return None
     max_len = 0
     slices: list[Any] = []
-    for i in range(num_reqs):
-        start = int(query_start_loc[i].item())
-        end = int(query_start_loc[i + 1].item())
+    for start, end in ranges:
         if end > start:
             sl = hidden_states[start:end]
             slices.append(sl)

@@ -33,6 +33,7 @@ from typing import Any
 import torch
 
 from vllm_ascend.simllm.embedding import extract_embedding
+from vllm_ascend.simllm.utils import cumsum_to_ranges
 
 
 class SimLLMPreprocessor:
@@ -73,14 +74,15 @@ class SimLLMPreprocessor:
         token_embs = embed_layer(input_ids)  # [num_tokens, D]
 
         # Convert flat [num_tokens, D] to list of per-request [S_i, D]
-        num_reqs = query_start_loc.shape[0] - 1
+        ranges = cumsum_to_ranges(query_start_loc)
+        num_reqs = len(ranges)
         req_embs: list[torch.Tensor] = []
-        for i in range(num_reqs):
-            start = int(query_start_loc[i].item())
-            end = int(query_start_loc[i + 1].item())
+        for start, end in ranges:
             if end <= start:
                 # Empty request — produce zero embedding (should not happen in practice).
-                req_embs.append(torch.zeros(1, token_embs.shape[-1], device=token_embs.device))
+                req_embs.append(
+                    torch.zeros(1, token_embs.shape[-1], device=token_embs.device)
+                )
             else:
                 req_embs.append(token_embs[start:end])  # [S_i, D]
 
@@ -89,7 +91,13 @@ class SimLLMPreprocessor:
         if max_len == 0:
             return torch.zeros(num_reqs, token_embs.shape[-1], device=token_embs.device)
 
-        padded = torch.zeros(num_reqs, max_len, token_embs.shape[-1], dtype=token_embs.dtype, device=token_embs.device)
+        padded = torch.zeros(
+            num_reqs,
+            max_len,
+            token_embs.shape[-1],
+            dtype=token_embs.dtype,
+            device=token_embs.device,
+        )
         for i, r in enumerate(req_embs):
             padded[i, : r.shape[0], :] = r
 

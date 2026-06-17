@@ -30,6 +30,7 @@ import torch
 from vllm_ascend.simllm.embedding import extract_embedding
 from vllm_ascend.simllm.kv_manager import CachedTask, KVManager
 from vllm_ascend.simllm.similarity import MatchResult
+from vllm_ascend.simllm.utils import cumsum_to_ranges, tensor_to_int_list
 
 logger = logging.getLogger(__name__)
 
@@ -101,11 +102,11 @@ class SimLLMPostprocessor:
         embeddings = self._per_request_embeddings(hidden_states, query_start_loc)
 
         if seq_lens is None:
-            seq_len_list = (
-                (query_start_loc[1:] - query_start_loc[:-1]).cpu().tolist()
-            )
+            seq_len_list = tensor_to_int_list(query_start_loc[1:] - query_start_loc[:-1])
         else:
-            seq_len_list = seq_lens.cpu().tolist()
+            seq_len_list = tensor_to_int_list(seq_lens)
+        hash_values = tensor_to_int_list(batch_hashes)
+        ranges = cumsum_to_ranges(query_start_loc)
 
         now = time.monotonic()
         for i in range(num_reqs):
@@ -113,13 +114,12 @@ class SimLLMPostprocessor:
                 emb = embeddings[i : i + 1]  # [1, D]
             else:
                 emb = torch.zeros(1, hidden_states.shape[-1], device=hidden_states.device)
-            hsh = int(batch_hashes[i].item())
-            s_len = int(seq_len_list[i])
+            hsh = hash_values[i]
+            s_len = seq_len_list[i]
             # Extract per-request KV slices.
             # top_k: [num_tokens, num_kv_heads, head_size]
             # → permute to [num_kv_heads, L_i, head_size] → add batch → [1, H, L_i, D]
-            start = int(query_start_loc[i].item())
-            end = int(query_start_loc[i + 1].item())
+            start, end = ranges[i]
             task_k = top_k[start:end].permute(1, 0, 2).unsqueeze(0)  # [1, H, L_i, D]
             task_v = top_v[start:end].permute(1, 0, 2).unsqueeze(0)
 
@@ -197,9 +197,7 @@ class SimLLMPostprocessor:
             return None
         max_len = 0
         slices: list[torch.Tensor] = []
-        for i in range(num_reqs):
-            start = int(query_start_loc[i].item())
-            end = int(query_start_loc[i + 1].item())
+        for start, end in cumsum_to_ranges(query_start_loc):
             if end > start:
                 sl = hidden_states[start:end]
                 slices.append(sl)

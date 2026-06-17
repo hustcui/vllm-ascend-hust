@@ -32,6 +32,7 @@ import torch
 
 from vllm_ascend.simllm.kv_manager import CachedTask, KVManager
 from vllm_ascend.simllm.lsh import SimHashHasher, cosine_similarity
+from vllm_ascend.simllm.utils import tensor_to_float_list, tensor_to_int_list
 
 
 @dataclass
@@ -111,12 +112,13 @@ class SimilarityIdentifier:
         """
         batch_size = batch_embeddings.shape[0]
         results: dict[int, MatchResult] = {}
+        hash_values = tensor_to_int_list(batch_hashes)
 
         if batch_size < self.lsh_batch_threshold:
             # -- Small batch: exhaustive cosine per candidate --------------
             for i in range(batch_size):
                 emb = batch_embeddings[i : i + 1]  # [1, D]
-                hsh = int(batch_hashes[i].item())
+                hsh = hash_values[i]
                 candidates = kv_manager.lookup_by_hash(hsh)
 
                 if not candidates:
@@ -128,8 +130,9 @@ class SimilarityIdentifier:
                 )  # [N, D]
                 scores = cosine_similarity(emb, candidate_embs)  # [N]
 
-                best_idx = int(torch.argmax(scores).item())
-                best_score = float(scores[best_idx].item())
+                score_values = tensor_to_float_list(scores)
+                best_idx = max(range(len(score_values)), key=score_values.__getitem__)
+                best_score = score_values[best_idx]
 
                 if best_score >= self.threshold:
                     best_candidate = candidates[best_idx]
@@ -147,7 +150,7 @@ class SimilarityIdentifier:
             # Group batch indices by hash.
             hash_to_indices: dict[int, list[int]] = {}
             for i in range(batch_size):
-                hsh = int(batch_hashes[i].item())
+                hsh = hash_values[i]
                 hash_to_indices.setdefault(hsh, []).append(i)
 
             for hsh, indices in hash_to_indices.items():
