@@ -11,6 +11,15 @@
 
 ### Changed
 
+- Extended the trusted Ascend benchmark workflow dispatch path for quantized
+  model runs: manual runs can now select the paired `vllm-hust`,
+  `vllm-hust-benchmark`, model identity, precision, quantization, dtype, and
+  chip model while preserving the existing FP16/mainline defaults.
+- Propagated workflow-dispatch model, dtype, quantization, and chip metadata
+  into the same-spec benchmark runner and added preflight validation so branch
+  names such as `ws/quantized-model-leaderboard` cannot be accidentally used as
+  Hugging Face model identifiers.
+
 - Normalized `ASCEND_RT_VISIBLE_DEVICES` in
   `scripts/use_single_ascend_env.sh`: empty or whitespace-only parent values
   are now discarded, non-empty device lists are compacted, and the runtime
