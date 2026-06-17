@@ -14,12 +14,11 @@
 # limitations under the License.
 #
 
-"""Scheduler interaction for Sim-LLM batch deferral (Phase 3+).
+"""Diagnostic scheduler-adjacent helpers for Sim-LLM deferral signals.
 
-When the match ratio in a batch exceeds ``deferral_ratio``, unmatched
-tasks are re-queued via the vLLM scheduler so they can be batched with
-more similar tasks in a subsequent scheduling cycle.  Each task can be
-deferred at most ``max_deferrals`` times before being force-processed.
+Phase 3 keeps deferral as future/backlog input only.  This module may track
+which requests would have been candidates, but it must not re-queue, delay, or
+reorder requests.
 """
 
 from __future__ import annotations
@@ -37,11 +36,11 @@ def defer_unmatched_tasks(
     deferral_counts: dict[str, int] | None = None,
     max_deferrals: int = 3,
 ) -> dict[str, int]:
-    """Flag unmatched tasks for re-queue to the scheduler.
+    """Record unmatched tasks that would be future deferral candidates.
 
-    In Phase 3 this will call ``scheduler.add_request()`` to re-submit
-    deferred tasks with incremented deferral counts.  For Phase 2 it is
-    a logging-only stub.
+    This is diagnostic-only in the current implementation.  The ``scheduler``
+    argument is accepted for API compatibility with older tests but is not
+    called.
 
     Parameters
     ----------
@@ -50,7 +49,7 @@ def defer_unmatched_tasks(
     req_ids:
         Request IDs for the batch (ordered).
     scheduler:
-        vLLM ``Scheduler`` instance (available in Phase 3).
+        Accepted for compatibility; unused.
     deferral_counts:
         Per-request deferral count dict; updated in-place if provided.
     max_deferrals:
@@ -58,7 +57,8 @@ def defer_unmatched_tasks(
 
     Returns
     -------
-    Updated *deferral_counts* dict (same object if passed in).
+    Updated *deferral_counts* dict (same object if passed in).  These counts do
+    not affect scheduling in the current phase.
     """
     if deferral_counts is None:
         deferral_counts = {}
@@ -78,13 +78,10 @@ def defer_unmatched_tasks(
         deferral_counts[req_id] = cnt + 1
         deferred += 1
 
-        # Phase 3: scheduler.add_request(deferred_request)
-        # The deferred request is re-created with the same prompt_token_ids
-        # and an incremented deferral_count in its metadata.
-
     if deferred:
         logger.debug(
-            "SimLLM scheduler: flagged %d tasks for deferral.", deferred,
+            "SimLLM scheduler: recorded %d future deferral candidates.",
+            deferred,
         )
 
     return deferral_counts

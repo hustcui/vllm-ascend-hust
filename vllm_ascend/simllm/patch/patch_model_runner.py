@@ -184,7 +184,7 @@ def apply_simllm_patch() -> None:
     ``vllm_ascend/patch/worker/patch_simllm.py``.
     When ``VLLM_ASCEND_SIMLLM_ENABLED=0`` this is a silent no-op.
 
-    Patches both ``execute_model`` (for deferral handling) and
+    Patches both ``execute_model`` (for proactive matching/rewrite) and
     ``_model_forward`` (for KV injection / extraction at the right point
     in the execution pipeline).
     """
@@ -868,7 +868,7 @@ def _simllm_extract_kv(self: Any, hidden_states: Any) -> None:
             _kv_manager.store(task)  # type: ignore[misc]
             stored += 1
 
-        # -- Compute deferral decisions ----------------------------------
+        # -- Compute diagnostic-only deferral decisions -------------------
         from vllm_ascend.simllm.hooks.postprocess import SimLLMPostprocessor
 
         postprocessor = SimLLMPostprocessor(
@@ -981,15 +981,18 @@ def _simllm_protect_kv_slots(self: Any) -> None:
 
 
 def _simllm_handle_deferrals(self: Any) -> None:
-    """Log batch deferral decisions from the just-completed forward.
+    """Log diagnostic deferral decisions from the just-completed forward.
 
-    In Phase 3 this will call ``scheduler.add_request()`` to re-queue
-    deferred unmatched tasks.  For Phase 2 it logs the deferral count.
+    Phase 3 keeps deferral as future/backlog input only.  This helper must not
+    re-queue, delay, drop, or reorder requests.
     """
     deferrals: set[int] = getattr(self, "_simllm_deferrals", set())
     if deferrals:
-        logger.debug("SimLLM: %d tasks flagged for deferral.", len(deferrals))
-        # Phase 3: self.scheduler.add_request(...) for each deferred task
+        logger.debug(
+            "SimLLM: %d tasks flagged for future deferral diagnostics; "
+            "processing continues in the current batch.",
+            len(deferrals),
+        )
 
 
 # ===========================================================================
