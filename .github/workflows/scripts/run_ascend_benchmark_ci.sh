@@ -56,6 +56,25 @@ CHIP_COUNT=${CHIP_COUNT:-1}
 NODE_COUNT=${NODE_COUNT:-1}
 PUBLISH_TO_HF=${PUBLISH_TO_HF:-0}
 HF_REPO_ID=${HF_REPO_ID:-}
+VLLM_HUST_BENCHMARK_REF=${VLLM_HUST_BENCHMARK_REF:-}
+
+validate_benchmark_inputs() {
+  if [[ -n "$VLLM_HUST_BENCHMARK_REF" && "$MODEL_NAME" == "$VLLM_HUST_BENCHMARK_REF" ]]; then
+    echo "Invalid benchmark workflow inputs: model_name equals benchmark_ref ($MODEL_NAME)." >&2
+    echo "Use model_name for the model repository/path (for example: aly16/Qwen2.5-14B-W8A8)." >&2
+    echo "Use benchmark_ref for the vllm-hust-benchmark branch (for example: ws/quantized-model-leaderboard)." >&2
+    exit 2
+  fi
+
+  if [[ "$MODEL_NAME" == ws/quantized-* || "$MODEL_NAME" == ws/*leaderboard* ]]; then
+    echo "Invalid benchmark workflow inputs: model_name looks like a git branch/ref: $MODEL_NAME" >&2
+    echo "Expected model_name to be a Hugging Face model id or local model path." >&2
+    echo "Did you mean to put '$MODEL_NAME' in benchmark_ref instead?" >&2
+    exit 2
+  fi
+}
+
+validate_benchmark_inputs
 
 # shellcheck source=/dev/null
 source "${VLLM_ASCEND_HUST_REPO}/scripts/hust_ascend_manager_helper.sh"
