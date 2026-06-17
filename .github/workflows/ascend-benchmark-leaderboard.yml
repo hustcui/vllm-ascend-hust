@@ -34,7 +34,7 @@ on:
         description: vllm-hust-benchmark ref containing benchmark runner/spec/export logic
         required: false
         type: string
-        default: ws/quantized-model-leaderboard
+        default: main
       model_name:
         description: Model used for the benchmark run
         required: false
