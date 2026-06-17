@@ -14,7 +14,7 @@ import pytest
 import torch
 
 from vllm_ascend.simllm.kv_manager import CachedTask, KVManager
-from vllm_ascend.simllm.similarity import MatchResult, SimilarityIdentifier
+from vllm_ascend.simllm.similarity import SimilarityIdentifier
 
 
 def _make_task(

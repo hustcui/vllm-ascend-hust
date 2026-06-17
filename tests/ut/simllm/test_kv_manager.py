@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import time
 
-import pytest
 import torch
 
 from vllm_ascend.simllm.kv_manager import CachedTask, KVManager

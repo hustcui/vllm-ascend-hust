@@ -14,14 +14,12 @@ from unittest.mock import MagicMock
 import pytest
 import torch
 
-from vllm_ascend.simllm.embedding import extract_embedding
 from vllm_ascend.simllm.hooks.identify import identify_batch
 from vllm_ascend.simllm.hooks.postprocess import SimLLMPostprocessor
 from vllm_ascend.simllm.hooks.preprocess import SimLLMPreprocessor
 from vllm_ascend.simllm.kv_manager import KVManager
 from vllm_ascend.simllm.lsh import SimHashHasher
 from vllm_ascend.simllm.similarity import MatchResult, SimilarityIdentifier
-
 
 # ---------------------------------------------------------------------------
 # Mock helpers

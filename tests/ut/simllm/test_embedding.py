@@ -13,7 +13,6 @@ import torch
 
 from vllm_ascend.simllm.embedding import extract_embedding
 
-
 # ---------------------------------------------------------------------------
 # Model-based semantic tests — verify that real transformer hidden states
 # produce meaningful embeddings (identical text → cos ≈ 1.0, dissimilar

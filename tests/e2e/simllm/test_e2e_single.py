@@ -17,7 +17,6 @@ import os
 
 import pytest
 
-
 DEFAULT_MODEL = "Qwen/Qwen2.5-7B-Instruct"
 
 
