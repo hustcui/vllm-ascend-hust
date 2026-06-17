@@ -177,11 +177,10 @@ _original_ascend_kv_update: Any = None
 _original_flash_kv_update: Any = None
 
 
-def apply_simllm_patch() -> None:
+def apply_simllm_patch(model_runner_cls: Any | None = None) -> None:
     """Apply the Sim-LLM patch to NPUModelRunner.
 
-    Called once per worker at init time by
-    ``vllm_ascend/patch/worker/patch_simllm.py``.
+    Called once per worker after ``NPUModelRunner`` is defined.
     When ``VLLM_ASCEND_SIMLLM_ENABLED=0`` this is a silent no-op.
 
     Patches both ``execute_model`` (for proactive matching/rewrite) and
@@ -194,6 +193,14 @@ def apply_simllm_patch() -> None:
 
     config = SimLLMConfig.from_env()
     if not config.enabled:
+        return
+
+    if model_runner_cls is None:
+        from vllm_ascend.worker.model_runner_v1 import NPUModelRunner
+
+        model_runner_cls = NPUModelRunner
+
+    if getattr(model_runner_cls, "execute_model", None) is _simllm_execute_model:
         return
 
     logger.info("Applying Sim-LLM patch to NPUModelRunner …")
@@ -229,15 +236,13 @@ def apply_simllm_patch() -> None:
     # Patch attention backend's do_kv_cache_update to inject cached KV.
     _patch_do_kv_cache_update()
 
-    from vllm_ascend.worker.model_runner_v1 import NPUModelRunner
-
     # Patch execute_model (lightweight — triggers the full pipeline).
-    _original_execute_model = NPUModelRunner.execute_model
-    NPUModelRunner.execute_model = _simllm_execute_model  # type: ignore[method-assign]
+    _original_execute_model = model_runner_cls.execute_model
+    model_runner_cls.execute_model = _simllm_execute_model  # type: ignore[method-assign]
 
     # Patch _model_forward (heavy lifting — inject/extract KV at the right time).
-    _original_model_forward = NPUModelRunner._model_forward
-    NPUModelRunner._model_forward = _simllm_model_forward  # type: ignore[method-assign]
+    _original_model_forward = model_runner_cls._model_forward
+    model_runner_cls._model_forward = _simllm_model_forward  # type: ignore[method-assign]
 
     logger.info(
         "Sim-LLM patch applied (cache_size=%d, threshold=%.2f, "
