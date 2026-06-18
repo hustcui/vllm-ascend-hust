@@ -53,6 +53,16 @@ class _MockVLLMModel:
         self.model = _MockBackbone(dim)
 
 
+class _MockVLLMCallableModel:
+    def __init__(self, dim: int = 128):
+        self.config = MagicMock()
+        self.config.hidden_size = dim
+        self.embedding = _MockEmbedding(dim)
+
+    def embed_input_ids(self, input_ids: torch.Tensor) -> torch.Tensor:
+        return self.embedding(input_ids)
+
+
 # ---------------------------------------------------------------------------
 # SimLLMPreprocessor
 # ---------------------------------------------------------------------------
@@ -76,6 +86,16 @@ class TestSimLLMPreprocessor:
     def test_vllm_wrapped_model_without_embedding_getter(self):
         preprocessor = SimLLMPreprocessor(pooling="mean")
         model = _MockVLLMModel(96)
+        input_ids = torch.arange(8)
+        query_start_loc = torch.tensor([0, 3, 8])
+        embs = preprocessor.extract_embeddings(model, input_ids, query_start_loc)
+        assert embs.shape == (2, 96)
+        norms = embs.norm(p=2, dim=-1)
+        assert torch.allclose(norms, torch.ones_like(norms), atol=1e-6)
+
+    def test_vllm_callable_embedding_model(self):
+        preprocessor = SimLLMPreprocessor(pooling="mean")
+        model = _MockVLLMCallableModel(96)
         input_ids = torch.arange(8)
         query_start_loc = torch.tensor([0, 3, 8])
         embs = preprocessor.extract_embeddings(model, input_ids, query_start_loc)
