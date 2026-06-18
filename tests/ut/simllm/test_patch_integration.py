@@ -306,6 +306,36 @@ class TestHasherReconciliation:
         assert patch_runner._simhash_hasher.num_bits == 32
 
 
+class TestStorePlan:
+    """Verify KV store only targets requests with prefill hashes."""
+
+    def test_store_plan_maps_prefill_req_ids_to_batch_rows(self):
+        from vllm_ascend.simllm.patch.patch_model_runner import (
+            _simllm_build_store_plan,
+        )
+
+        plan = _simllm_build_store_plan(
+            input_batch_req_ids=["cached-a", "new-a", "decode-b", "new-b"],
+            prefill_req_ids=["new-a", "new-b"],
+            num_hashes=2,
+        )
+
+        assert plan == [(1, 0), (3, 1)]
+
+    def test_store_plan_ignores_missing_or_unhashed_prefill_rows(self):
+        from vllm_ascend.simllm.patch.patch_model_runner import (
+            _simllm_build_store_plan,
+        )
+
+        plan = _simllm_build_store_plan(
+            input_batch_req_ids=["cached-a", "new-a"],
+            prefill_req_ids=["new-a", "new-b"],
+            num_hashes=1,
+        )
+
+        assert plan == [(1, 0)]
+
+
 # ---------------------------------------------------------------------------
 # Slot protection tests (verify injected KV survives the forward pass)
 # ---------------------------------------------------------------------------

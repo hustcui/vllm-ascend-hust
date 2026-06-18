@@ -23,7 +23,6 @@ from typing import Any
 
 import torch
 
-
 _INPUT_EMBEDDING_PATHS = (
     "model.embed_tokens",
     "model.model.embed_tokens",
