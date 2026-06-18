@@ -19,8 +19,17 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from typing import Any
 
 import torch
+
+
+_INPUT_EMBEDDING_PATHS = (
+    "model.embed_tokens",
+    "model.model.embed_tokens",
+    "language_model.model.embed_tokens",
+    "transformer.wte",
+)
 
 
 def tensor_to_int_list(values: torch.Tensor | Sequence[int]) -> list[int]:
@@ -56,3 +65,51 @@ def cumsum_to_ranges(query_start_loc: torch.Tensor | Sequence[int]) -> list[tupl
     """Convert cumulative token offsets into ``(start, end)`` ranges."""
     offsets = tensor_to_int_list(query_start_loc)
     return list(zip(offsets[:-1], offsets[1:]))
+
+
+def _looks_like_embedding_layer(layer: Any) -> bool:
+    if layer is None or not callable(layer):
+        return False
+    weight = getattr(layer, "weight", None)
+    return isinstance(weight, torch.Tensor)
+
+
+def _resolve_attr_path(obj: Any, path: str) -> Any | None:
+    cur = obj
+    for part in path.split("."):
+        try:
+            cur = getattr(cur, part)
+        except AttributeError:
+            return None
+        if cur is None:
+            return None
+    return cur
+
+
+def resolve_input_embedding_layer(model: Any) -> Any:
+    """Resolve the token embedding layer from HF-style or vLLM-wrapped models.
+
+    vLLM model wrappers do not always expose ``get_input_embeddings()`` even
+    when the underlying model has a standard token embedding module.  Sim-LLM
+    uses this only at the control-plane preprocessing boundary, so resolving a
+    small set of common wrapper paths keeps the runtime path model-agnostic.
+    """
+    getter = getattr(model, "get_input_embeddings", None)
+    if callable(getter):
+        try:
+            layer = getter()
+        except (AttributeError, NotImplementedError):
+            layer = None
+        if _looks_like_embedding_layer(layer):
+            return layer
+
+    for path in _INPUT_EMBEDDING_PATHS:
+        layer = _resolve_attr_path(model, path)
+        if _looks_like_embedding_layer(layer):
+            return layer
+
+    tried = ", ".join(("get_input_embeddings()", *_INPUT_EMBEDDING_PATHS))
+    raise AttributeError(
+        "SimLLM could not resolve a token embedding layer from model "
+        f"{type(model).__name__}; tried: {tried}"
+    )

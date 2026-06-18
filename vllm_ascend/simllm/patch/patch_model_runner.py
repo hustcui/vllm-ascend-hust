@@ -60,6 +60,7 @@ from vllm_ascend.simllm.config import SimLLMConfig
 from vllm_ascend.simllm.kv_reuse import KVReuseEngine
 from vllm_ascend.simllm.utils import (
     cumsum_to_ranges,
+    resolve_input_embedding_layer,
     tensor_to_int_list,
     tensor_to_int_matrix,
 )
@@ -1009,7 +1010,8 @@ def _reconcile_hasher_dim(self: Any) -> None:
     """Re-create SimHashHasher if the model embedding dim differs from default."""
     global _simhash_hasher
     try:
-        embed_dim = self.model.get_input_embeddings().weight.shape[1]
+        embed_layer = resolve_input_embedding_layer(self.model)
+        embed_dim = embed_layer.weight.shape[1]
     except Exception:
         return
     if _simhash_hasher._dim != embed_dim:
