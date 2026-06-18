@@ -758,6 +758,13 @@ def _simllm_extract_kv(self: Any, hidden_states: Any) -> None:
     if num_reqs == 0:
         return
 
+    hashes = getattr(self, "_simllm_batch_hashes", None)
+    if hashes is None or getattr(hashes, "shape", (0,))[0] == 0:
+        logger.debug(
+            "SimLLM extract_kv: no prefill hashes for this step, skipping."
+        )
+        return
+
     try:
         kv_caches = getattr(self, "kv_caches", None)
         if not kv_caches:
@@ -804,11 +811,10 @@ def _simllm_extract_kv(self: Any, hidden_states: Any) -> None:
 
         # -- Build CachedTask per request -------------------------------
         req_ids = list(self.input_batch.req_ids[:num_reqs])
-        hashes = getattr(self, "_simllm_batch_hashes", None)
         seq_lens = self.seq_lens[:num_reqs]
         match_results = getattr(self, "_simllm_match_results", {})
         seq_len_values = tensor_to_int_list(seq_lens)
-        hash_values = tensor_to_int_list(hashes[:num_reqs]) if hashes is not None else []
+        hash_values = tensor_to_int_list(hashes[:num_reqs])
         block_table_rows = tensor_to_int_matrix(blk_table_tensor[:num_reqs])
 
         now = time.monotonic()
@@ -842,16 +848,21 @@ def _simllm_extract_kv(self: Any, hidden_states: Any) -> None:
                 )
             else:
                 # Unmatched: average KV across keep_layers (sandwich).
-                ks, vs = [], []
+                k_sum = None
+                v_sum = None
                 for k_cache, v_cache in keep_kv:
-                    ks.append(KVReuseEngine.gather_from_cache(
+                    k_part = KVReuseEngine.gather_from_cache(
                         k_cache, block_ids, s_len, block_size,
-                    ))
-                    vs.append(KVReuseEngine.gather_from_cache(
+                    )
+                    v_part = KVReuseEngine.gather_from_cache(
                         v_cache, block_ids, s_len, block_size,
-                    ))
-                k_per_req = torch.stack(ks).mean(dim=0)
-                v_per_req = torch.stack(vs).mean(dim=0)
+                    )
+                    k_sum = k_part if k_sum is None else k_sum.add_(k_part)
+                    v_sum = v_part if v_sum is None else v_sum.add_(v_part)
+                assert k_sum is not None and v_sum is not None
+                scale = 1.0 / len(keep_kv)
+                k_per_req = k_sum.mul_(scale)
+                v_per_req = v_sum.mul_(scale)
 
             emb = (
                 embeddings[i : i + 1]
@@ -1013,7 +1024,7 @@ def _reconcile_hasher_dim(self: Any) -> None:
         embed_dim = resolve_input_embedding_dim(self.model)
     except Exception:
         return
-    if _simhash_hasher._dim != embed_dim:
+    if _simhash_hasher.dim != embed_dim:
         from vllm_ascend.simllm.lsh import SimHashHasher
         _simhash_hasher = SimHashHasher(
             dim=embed_dim, num_bits=_simllm_config.lsh_num_bits,  # type: ignore[union-attr]

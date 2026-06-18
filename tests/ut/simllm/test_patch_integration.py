@@ -270,6 +270,43 @@ class TestStoreThenMatch:
 
 
 # ---------------------------------------------------------------------------
+# Hasher dimension reconciliation
+# ---------------------------------------------------------------------------
+
+
+class TestHasherReconciliation:
+    """Verify SimHashHasher dimension reconciliation."""
+
+    def test_reconcile_hasher_dim_uses_public_dim(self, monkeypatch):
+        from vllm_ascend.simllm.patch import patch_model_runner as patch_runner
+
+        class _Config:
+            hidden_size = 64
+
+        class _Model:
+            config = _Config()
+
+        runner = MagicMock()
+        runner.model = _Model()
+
+        monkeypatch.setattr(
+            patch_runner,
+            "_simhash_hasher",
+            SimHashHasher(dim=4096, num_bits=32),
+        )
+        monkeypatch.setattr(
+            patch_runner,
+            "_simllm_config",
+            MagicMock(lsh_num_bits=32),
+        )
+
+        patch_runner._reconcile_hasher_dim(runner)
+
+        assert patch_runner._simhash_hasher.dim == 64
+        assert patch_runner._simhash_hasher.num_bits == 32
+
+
+# ---------------------------------------------------------------------------
 # Slot protection tests (verify injected KV survives the forward pass)
 # ---------------------------------------------------------------------------
 
@@ -560,5 +597,7 @@ class TestSandwichStorage:
         """Averaging 2 identical KV tensors should equal the original."""
         t1 = torch.randn(1, 4, 12, 8)
         t2 = t1.clone()
-        avg = torch.stack([t1, t2]).mean(dim=0)
+        avg = t1.clone()
+        avg.add_(t2)
+        avg.mul_(0.5)
         assert torch.allclose(avg, t1, atol=1e-6)
