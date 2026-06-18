@@ -214,3 +214,4 @@ csrc/output/
 
 # claude code skills
 .claude/skills/*
+benchmark_results/
