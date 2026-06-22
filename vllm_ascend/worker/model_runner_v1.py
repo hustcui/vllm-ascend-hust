@@ -4008,3 +4008,8 @@ def update_pass_config(model_runner):
         yield
     finally:
         model_runner.compilation_config.pass_config.enable_sp = original_pass_config_sp
+
+
+from vllm_ascend.patch.worker.patch_simllm import try_apply_simllm_patch  # isort: skip  # noqa: E402
+
+try_apply_simllm_patch()

@@ -17,9 +17,9 @@
 """SimLLMPreprocessor — lightweight task embedding extraction for LSH matching.
 
 Computes per-request embeddings BEFORE the full transformer forward by using
-the model's token-embedding layer (``get_input_embeddings()``).  This is fast
-(no transformer computation) and architecture-independent, at the cost of
-lower semantic fidelity than full hidden states.
+the model's token-embedding layer.  This is fast (no transformer computation)
+and architecture-independent, at the cost of lower semantic fidelity than full
+hidden states.
 
 The real hidden-state embeddings are computed in ``SimLLMPostprocessor`` and
 stored for FUTURE matching — so after the first forward pass, subsequent
@@ -33,7 +33,10 @@ from typing import Any
 import torch
 
 from vllm_ascend.simllm.embedding import extract_embedding
-from vllm_ascend.simllm.utils import cumsum_to_ranges
+from vllm_ascend.simllm.utils import (
+    cumsum_to_ranges,
+    resolve_input_embedding_layer,
+)
 
 
 class SimLLMPreprocessor:
@@ -60,7 +63,7 @@ class SimLLMPreprocessor:
         Parameters
         ----------
         model:
-            The vLLM-wrapped model (must support ``get_input_embeddings()``).
+            The vLLM-wrapped model.
         input_ids:
             Flattened token IDs ``[num_tokens]`` for the current batch.
         query_start_loc:
@@ -70,7 +73,7 @@ class SimLLMPreprocessor:
         -------
         ``[num_reqs, D]`` L2-normalized embeddings, one row per request.
         """
-        embed_layer = model.get_input_embeddings()
+        embed_layer = resolve_input_embedding_layer(model)
         token_embs = embed_layer(input_ids)  # [num_tokens, D]
 
         # Convert flat [num_tokens, D] to list of per-request [S_i, D]

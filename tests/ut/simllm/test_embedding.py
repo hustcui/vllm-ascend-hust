@@ -11,6 +11,7 @@ from __future__ import annotations
 import pytest
 import torch
 
+from huggingface_hub.utils._http import close_session as _hf_close_session
 from vllm_ascend.simllm.embedding import extract_embedding
 
 # ---------------------------------------------------------------------------
@@ -28,6 +29,9 @@ def tinyllm_tokenizer():
     """Load TinyLlama tokenizer once per test module."""
     from transformers import AutoTokenizer
 
+    # Ensure huggingface_hub uses a fresh httpx.Client — pytest-asyncio
+    # strict mode may have closed the shared client between test modules.
+    _hf_close_session()
     return AutoTokenizer.from_pretrained(_MODEL_ID)
 
 
@@ -40,6 +44,9 @@ def tinyllm_model():
     """
     from transformers import AutoModelForCausalLM
 
+    # Ensure huggingface_hub uses a fresh httpx.Client — pytest-asyncio
+    # strict mode may have closed the shared client between test modules.
+    _hf_close_session()
     model = AutoModelForCausalLM.from_pretrained(_MODEL_ID, torch_dtype=torch.float32)
     model.eval()
     return model

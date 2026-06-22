@@ -60,6 +60,7 @@ from vllm_ascend.simllm.config import SimLLMConfig
 from vllm_ascend.simllm.kv_reuse import KVReuseEngine
 from vllm_ascend.simllm.utils import (
     cumsum_to_ranges,
+    resolve_input_embedding_dim,
     tensor_to_int_list,
     tensor_to_int_matrix,
 )
@@ -177,14 +178,13 @@ _original_ascend_kv_update: Any = None
 _original_flash_kv_update: Any = None
 
 
-def apply_simllm_patch() -> None:
+def apply_simllm_patch(model_runner_cls: Any | None = None) -> None:
     """Apply the Sim-LLM patch to NPUModelRunner.
 
-    Called once per worker at init time by
-    ``vllm_ascend/patch/worker/patch_simllm.py``.
+    Called once per worker after ``NPUModelRunner`` is defined.
     When ``VLLM_ASCEND_SIMLLM_ENABLED=0`` this is a silent no-op.
 
-    Patches both ``execute_model`` (for deferral handling) and
+    Patches both ``execute_model`` (for proactive matching/rewrite) and
     ``_model_forward`` (for KV injection / extraction at the right point
     in the execution pipeline).
     """
@@ -194,6 +194,14 @@ def apply_simllm_patch() -> None:
 
     config = SimLLMConfig.from_env()
     if not config.enabled:
+        return
+
+    if model_runner_cls is None:
+        from vllm_ascend.worker.model_runner_v1 import NPUModelRunner
+
+        model_runner_cls = NPUModelRunner
+
+    if getattr(model_runner_cls, "execute_model", None) is _simllm_execute_model:
         return
 
     logger.info("Applying Sim-LLM patch to NPUModelRunner …")
@@ -229,15 +237,13 @@ def apply_simllm_patch() -> None:
     # Patch attention backend's do_kv_cache_update to inject cached KV.
     _patch_do_kv_cache_update()
 
-    from vllm_ascend.worker.model_runner_v1 import NPUModelRunner
-
     # Patch execute_model (lightweight — triggers the full pipeline).
-    _original_execute_model = NPUModelRunner.execute_model
-    NPUModelRunner.execute_model = _simllm_execute_model  # type: ignore[method-assign]
+    _original_execute_model = model_runner_cls.execute_model
+    model_runner_cls.execute_model = _simllm_execute_model  # type: ignore[method-assign]
 
     # Patch _model_forward (heavy lifting — inject/extract KV at the right time).
-    _original_model_forward = NPUModelRunner._model_forward
-    NPUModelRunner._model_forward = _simllm_model_forward  # type: ignore[method-assign]
+    _original_model_forward = model_runner_cls._model_forward
+    model_runner_cls._model_forward = _simllm_model_forward  # type: ignore[method-assign]
 
     logger.info(
         "Sim-LLM patch applied (cache_size=%d, threshold=%.2f, "
@@ -267,6 +273,7 @@ def _simllm_preprocess_from_scheduler(self: Any, scheduler_output: Any) -> None:
     if not new_reqs:
         self._simllm_batch_embeddings = None
         self._simllm_batch_hashes = None
+        self._simllm_batch_req_ids = None
         return
 
     try:
@@ -275,7 +282,9 @@ def _simllm_preprocess_from_scheduler(self: Any, scheduler_output: Any) -> None:
         # Build flat input_ids and query_start_loc from scheduler_output.
         all_ids: list[int] = []
         qsl = [0]
+        req_ids: list[str] = []
         for req in new_reqs:
+            req_ids.append(req.req_id)
             ids = req.prompt_token_ids or []
             all_ids.extend(ids)
             qsl.append(qsl[-1] + len(ids))
@@ -283,6 +292,7 @@ def _simllm_preprocess_from_scheduler(self: Any, scheduler_output: Any) -> None:
         if not all_ids:
             self._simllm_batch_embeddings = None
             self._simllm_batch_hashes = None
+            self._simllm_batch_req_ids = None
             return
 
         input_ids = torch.tensor(all_ids, device=self.device)
@@ -301,6 +311,7 @@ def _simllm_preprocess_from_scheduler(self: Any, scheduler_output: Any) -> None:
 
         self._simllm_batch_embeddings = embeddings
         self._simllm_batch_hashes = hashes
+        self._simllm_batch_req_ids = req_ids
 
     except Exception:
         logger.exception(
@@ -308,6 +319,7 @@ def _simllm_preprocess_from_scheduler(self: Any, scheduler_output: Any) -> None:
         )
         self._simllm_batch_embeddings = None
         self._simllm_batch_hashes = None
+        self._simllm_batch_req_ids = None
 
 
 def _simllm_rewrite_scheduler_output(self: Any, scheduler_output: Any) -> None:
@@ -593,6 +605,7 @@ def _simllm_preprocess(self: Any) -> None:
     if num_reqs == 0:
         self._simllm_batch_embeddings = None
         self._simllm_batch_hashes = None
+        self._simllm_batch_req_ids = None
         return
 
     try:
@@ -604,6 +617,7 @@ def _simllm_preprocess(self: Any) -> None:
         if num_tokens == 0:
             self._simllm_batch_embeddings = None
             self._simllm_batch_hashes = None
+            self._simllm_batch_req_ids = None
             return
 
         input_ids = self.input_batch.input_ids[:num_tokens]
@@ -627,11 +641,13 @@ def _simllm_preprocess(self: Any) -> None:
 
         self._simllm_batch_embeddings = embeddings
         self._simllm_batch_hashes = hashes
+        self._simllm_batch_req_ids = list(self.input_batch.req_ids[:num_reqs])
 
     except Exception:
         logger.exception("SimLLM preprocess failed — falling back to normal forward.")
         self._simllm_batch_embeddings = None
         self._simllm_batch_hashes = None
+        self._simllm_batch_req_ids = None
 
 
 def _simllm_identify(self: Any) -> dict[int, Any]:
@@ -752,6 +768,19 @@ def _simllm_extract_kv(self: Any, hidden_states: Any) -> None:
     if num_reqs == 0:
         return
 
+    hashes = getattr(self, "_simllm_batch_hashes", None)
+    batch_req_ids = getattr(self, "_simllm_batch_req_ids", None)
+    if (
+        hashes is None
+        or getattr(hashes, "shape", (0,))[0] == 0
+        or not batch_req_ids
+    ):
+        logger.debug(
+            "SimLLM extract_kv: no prefill hashes/req_ids for this step, "
+            "skipping."
+        )
+        return
+
     try:
         kv_caches = getattr(self, "kv_caches", None)
         if not kv_caches:
@@ -798,31 +827,40 @@ def _simllm_extract_kv(self: Any, hidden_states: Any) -> None:
 
         # -- Build CachedTask per request -------------------------------
         req_ids = list(self.input_batch.req_ids[:num_reqs])
-        hashes = getattr(self, "_simllm_batch_hashes", None)
         seq_lens = self.seq_lens[:num_reqs]
         match_results = getattr(self, "_simllm_match_results", {})
         seq_len_values = tensor_to_int_list(seq_lens)
-        hash_values = tensor_to_int_list(hashes[:num_reqs]) if hashes is not None else []
+        hash_values = tensor_to_int_list(hashes)
         block_table_rows = tensor_to_int_matrix(blk_table_tensor[:num_reqs])
+        store_plan = _simllm_build_store_plan(
+            req_ids, batch_req_ids, len(hash_values),
+        )
+
+        if not store_plan:
+            logger.debug(
+                "SimLLM extract_kv: no current input_batch rows matched "
+                "prefill req_ids, skipping."
+            )
+            return
 
         now = time.monotonic()
         stored = 0
 
-        for i in range(num_reqs):
-            s_len = seq_len_values[i]
+        for row_idx, hash_idx in store_plan:
+            s_len = seq_len_values[row_idx]
             if s_len == 0:
                 continue
 
             num_blk = KVReuseEngine.num_blocks_needed(s_len, block_size)
-            block_ids = block_table_rows[i][:num_blk]
+            block_ids = block_table_rows[row_idx][:num_blk]
             if not block_ids:
                 continue
 
             # Determine whether this request was matched.
             is_matched = (
-                i in match_results
-                and match_results[i].matched
-                and match_results[i].cached_k is not None
+                row_idx in match_results
+                and match_results[row_idx].matched
+                and match_results[row_idx].cached_k is not None
             )
 
             if is_matched:
@@ -836,28 +874,33 @@ def _simllm_extract_kv(self: Any, hidden_states: Any) -> None:
                 )
             else:
                 # Unmatched: average KV across keep_layers (sandwich).
-                ks, vs = [], []
+                k_sum = None
+                v_sum = None
                 for k_cache, v_cache in keep_kv:
-                    ks.append(KVReuseEngine.gather_from_cache(
+                    k_part = KVReuseEngine.gather_from_cache(
                         k_cache, block_ids, s_len, block_size,
-                    ))
-                    vs.append(KVReuseEngine.gather_from_cache(
+                    )
+                    v_part = KVReuseEngine.gather_from_cache(
                         v_cache, block_ids, s_len, block_size,
-                    ))
-                k_per_req = torch.stack(ks).mean(dim=0)
-                v_per_req = torch.stack(vs).mean(dim=0)
+                    )
+                    k_sum = k_part if k_sum is None else k_sum.add_(k_part)
+                    v_sum = v_part if v_sum is None else v_sum.add_(v_part)
+                assert k_sum is not None and v_sum is not None
+                scale = 1.0 / len(keep_kv)
+                k_per_req = k_sum.mul_(scale)
+                v_per_req = v_sum.mul_(scale)
 
             emb = (
-                embeddings[i : i + 1]
+                embeddings[row_idx : row_idx + 1]
                 if embeddings is not None
                 else k_per_req.new_zeros(1, k_per_req.shape[1])
             )
-            hsh = hash_values[i] if hash_values else 0
+            hsh = hash_values[hash_idx]
 
             from vllm_ascend.simllm.kv_manager import CachedTask
 
             task = CachedTask(
-                task_id=req_ids[i],
+                task_id=req_ids[row_idx],
                 embedding=emb,
                 lsh_hash=hsh,
                 top_k=k_per_req,
@@ -868,7 +911,7 @@ def _simllm_extract_kv(self: Any, hidden_states: Any) -> None:
             _kv_manager.store(task)  # type: ignore[misc]
             stored += 1
 
-        # -- Compute deferral decisions ----------------------------------
+        # -- Compute diagnostic-only deferral decisions -------------------
         from vllm_ascend.simllm.hooks.postprocess import SimLLMPostprocessor
 
         postprocessor = SimLLMPostprocessor(
@@ -981,15 +1024,18 @@ def _simllm_protect_kv_slots(self: Any) -> None:
 
 
 def _simllm_handle_deferrals(self: Any) -> None:
-    """Log batch deferral decisions from the just-completed forward.
+    """Log diagnostic deferral decisions from the just-completed forward.
 
-    In Phase 3 this will call ``scheduler.add_request()`` to re-queue
-    deferred unmatched tasks.  For Phase 2 it logs the deferral count.
+    Phase 3 keeps deferral as future/backlog input only.  This helper must not
+    re-queue, delay, drop, or reorder requests.
     """
     deferrals: set[int] = getattr(self, "_simllm_deferrals", set())
     if deferrals:
-        logger.debug("SimLLM: %d tasks flagged for deferral.", len(deferrals))
-        # Phase 3: self.scheduler.add_request(...) for each deferred task
+        logger.debug(
+            "SimLLM: %d tasks flagged for future deferral diagnostics; "
+            "processing continues in the current batch.",
+            len(deferrals),
+        )
 
 
 # ===========================================================================
@@ -1001,15 +1047,32 @@ def _reconcile_hasher_dim(self: Any) -> None:
     """Re-create SimHashHasher if the model embedding dim differs from default."""
     global _simhash_hasher
     try:
-        embed_dim = self.model.get_input_embeddings().weight.shape[1]
+        embed_dim = resolve_input_embedding_dim(self.model)
     except Exception:
         return
-    if _simhash_hasher._dim != embed_dim:
+    if _simhash_hasher.dim != embed_dim:
         from vllm_ascend.simllm.lsh import SimHashHasher
         _simhash_hasher = SimHashHasher(
             dim=embed_dim, num_bits=_simllm_config.lsh_num_bits,  # type: ignore[union-attr]
         )
         logger.info("SimLLM: re-created SimHashHasher with dim=%d.", embed_dim)
+
+
+def _simllm_build_store_plan(
+    input_batch_req_ids: list[str],
+    prefill_req_ids: list[str],
+    num_hashes: int,
+) -> list[tuple[int, int]]:
+    """Map prefill hash rows to current input_batch row indices."""
+    req_id_to_row = {
+        req_id: idx for idx, req_id in enumerate(input_batch_req_ids)
+    }
+    store_plan: list[tuple[int, int]] = []
+    for hash_idx, req_id in enumerate(prefill_req_ids[:num_hashes]):
+        row_idx = req_id_to_row.get(req_id)
+        if row_idx is not None:
+            store_plan.append((row_idx, hash_idx))
+    return store_plan
 
 
 def _reconcile_kv_reuse_engine(self: Any) -> None:

@@ -22,6 +22,31 @@ with Sim-LLM preprocessing / KV reuse / postprocessing hooks.
 When disabled the patch is a silent no-op.
 """
 
+from __future__ import annotations
+
+import logging
+import sys
+
 from vllm_ascend.simllm.patch.patch_model_runner import apply_simllm_patch
 
-apply_simllm_patch()
+logger = logging.getLogger(__name__)
+
+
+def try_apply_simllm_patch() -> None:
+    """Apply Sim-LLM only after ``NPUModelRunner`` is fully defined.
+
+    ``vllm_ascend.patch.worker`` is imported while ``model_runner_v1`` is still
+    loading.  Applying immediately would import ``NPUModelRunner`` from a
+    partially initialized module and fail with a circular import.  The model
+    runner calls this function again at the end of its module.
+    """
+    module = sys.modules.get("vllm_ascend.worker.model_runner_v1")
+    model_runner_cls = getattr(module, "NPUModelRunner", None)
+    if model_runner_cls is None:
+        logger.debug("SimLLM patch deferred until NPUModelRunner is defined.")
+        return
+
+    apply_simllm_patch(model_runner_cls)
+
+
+try_apply_simllm_patch()
