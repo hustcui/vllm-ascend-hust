@@ -116,12 +116,12 @@ jobs:
       COMPILE_CUSTOM_KERNELS: "1"
       HF_HUB_DISABLE_TELEMETRY: "1"
       HF_ENDPOINT: ${{ vars.HF_ENDPOINT || 'https://hf-mirror.com' }}
-      HF_HOME: ${{ github.workspace }}/../.hf-cache
-      HUGGINGFACE_HUB_CACHE: ${{ github.workspace }}/../.hf-cache/hub
-      TRANSFORMERS_CACHE: ${{ github.workspace }}/../.hf-cache/transformers
+      HF_HOME: ${{ vars.VLLM_ASCEND_HUST_HF_CACHE_ROOT || '/tmp/vllm-ascend-hust-hf-cache' }}
+      HUGGINGFACE_HUB_CACHE: ${{ vars.VLLM_ASCEND_HUST_HF_CACHE_ROOT || '/tmp/vllm-ascend-hust-hf-cache' }}/hub
+      TRANSFORMERS_CACHE: ${{ vars.VLLM_ASCEND_HUST_HF_CACHE_ROOT || '/tmp/vllm-ascend-hust-hf-cache' }}/transformers
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
       HF_REPO_ID: ${{ vars.VLLM_ASCEND_HUST_BENCHMARK_HF_REPO || 'intellistream/vllm-ascend-hust-benchmark-results' }}
-      ASCEND_HUST_TARGET: ${{ github.event_name == 'workflow_dispatch' && inputs.ascend_hust_target || format('{0}@{1}', github.repository, github.ref_name) }}
+      ASCEND_HUST_TARGET: ${{ github.event_name == 'workflow_dispatch' && inputs.ascend_hust_target || format('{0}@{1}', github.repository, github.event_name == 'pull_request' && github.event.pull_request.head.ref || github.ref_name) }}
       VLLM_HUST_CONDA_ENV: vllm-hust-dev
       VLLM_HUST_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.vllm_hust_ref || vars.VLLM_ASCEND_HUST_VLLM_HUST_REF || 'main' }}
       VLLM_HUST_BENCHMARK_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.benchmark_ref || vars.VLLM_ASCEND_HUST_BENCHMARK_REF || 'main' }}
@@ -152,10 +152,15 @@ jobs:
       ASCEND_RT_VISIBLE_DEVICES: ${{ vars.VLLM_ASCEND_HUST_BENCHMARK_VISIBLE_DEVICES || '' }}
       ALLOW_RANDOM_HF_PUBLISH: ${{ vars.VLLM_ASCEND_HUST_ALLOW_RANDOM_HF_PUBLISH || '0' }}
       SAME_SPEC_BENCHMARK_ENABLED: ${{ vars.VLLM_ASCEND_HUST_SAME_SPEC_BENCHMARK_ENABLED || '1' }}
-      SYNC_GITHUB_SNAPSHOTS: ${{ vars.VLLM_ASCEND_HUST_SYNC_BENCHMARK_SNAPSHOTS_TO_GITHUB || '1' }}
+      PERFGATE_MODE: ${{ vars.VLLM_ASCEND_HUST_PERFGATE_MODE || 'report' }}
+      PERFGATE_SPEC_FILE: ${{ vars.VLLM_ASCEND_HUST_PERFGATE_SPEC_FILE || 'docs/official-baselines/perfgate-ascend-qwen25-3b-910b3.json' }}
+      PERFGATE_BASELINE_BRANCH: ${{ vars.VLLM_ASCEND_HUST_PERFGATE_BASELINE_BRANCH || 'benchmark-baselines' }}
+      SAME_SPEC_SPEC_FILE: ${{ vars.VLLM_ASCEND_HUST_SAME_SPEC_SPEC_FILE || '' }}
+      SAME_SPEC_CONSTRAINTS_FILE: ${{ vars.VLLM_ASCEND_HUST_SAME_SPEC_CONSTRAINTS_FILE || '' }}
+      SYNC_GITHUB_SNAPSHOTS: ${{ github.event_name == 'pull_request' && '0' || (vars.VLLM_ASCEND_HUST_SYNC_BENCHMARK_SNAPSHOTS_TO_GITHUB || '1') }}
       GITHUB_SNAPSHOT_TARGET_BRANCH: ${{ vars.VLLM_HUST_BENCHMARK_SNAPSHOT_BRANCH || 'main' }}
       WEBSITE_LEADERBOARD_URL: ${{ vars.VLLM_ASCEND_HUST_LEADERBOARD_URL || vars.VLLM_HUST_LEADERBOARD_URL || '' }}
-      PUBLISH_TO_HF: ${{ (((github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.VLLM_ASCEND_HUST_PUBLISH_BENCHMARK_ON_MAIN == '1') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && vars.VLLM_ASCEND_HUST_PUBLISH_BENCHMARK_ON_PR == '1') || (github.event_name == 'workflow_dispatch' && inputs.publish_to_hf)) && secrets.HF_TOKEN != '') && '1' || '0' }}
+      PUBLISH_TO_HF: ${{ (((github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.VLLM_ASCEND_HUST_PUBLISH_BENCHMARK_ON_MAIN == '1') || (github.event_name == 'workflow_dispatch' && inputs.publish_to_hf)) && secrets.HF_TOKEN != '') && '1' || '0' }}
       HUST_ASCEND_MANAGER_REPO: ${{ github.workspace }}/ascend-runtime-manager
 
     steps:
@@ -166,18 +171,24 @@ jobs:
           benchmark_results_root="${ci_state_root}/benchmarks/ci"
           ci_home="${ci_state_root}/home"
           ci_runtime_root="${ci_state_root}/runtime"
+          ci_tmpdir="/tmp/vllm-ascend-hust-ci-${GITHUB_RUN_ID:-manual}-${GITHUB_RUN_ATTEMPT:-1}/tmp"
 
           {
             echo "CI_STATE_ROOT=${ci_state_root}"
             echo "BENCHMARK_RESULTS_ROOT=${benchmark_results_root}"
             echo "CI_HOME=${ci_home}"
             echo "CI_RUNTIME_ROOT=${ci_runtime_root}"
+            echo "TMPDIR=${ci_tmpdir}"
+            echo "TMP=${ci_tmpdir}"
+            echo "TEMP=${ci_tmpdir}"
           } >> "$GITHUB_ENV"
 
           legacy_paths=(
             "${GITHUB_WORKSPACE}/.benchmarks"
             "${GITHUB_WORKSPACE}/.ci-home"
             "${GITHUB_WORKSPACE}/.ci-runtime"
+            "${GITHUB_WORKSPACE}/.hf-cache"
+            "${GITHUB_WORKSPACE}/../.hf-cache"
             "${GITHUB_WORKSPACE}/vllm-hust"
             "${GITHUB_WORKSPACE}/vllm-hust-benchmark"
             "${GITHUB_WORKSPACE}/ascend-runtime-manager"
@@ -192,11 +203,14 @@ jobs:
           if command -v sudo >/dev/null 2>&1 \
             && [[ -x "$DEFAULT_SYSTEM_ASCEND_BENCHMARK_ROOT_HELPER" ]] \
             && sudo -n "$DEFAULT_SYSTEM_ASCEND_BENCHMARK_ROOT_HELPER" cleanup-paths "${cleanup_paths[@]}"; then
-            mkdir -p "$ci_state_root" "$benchmark_results_root" "$ci_home" "$ci_runtime_root"
+            rm -rf "$ci_tmpdir"
+            mkdir -p "$ci_state_root" "$benchmark_results_root" "$ci_home" "$ci_runtime_root" "$ci_tmpdir"
           else
             rm -rf "${cleanup_paths[@]}"
-            mkdir -p "$ci_state_root" "$benchmark_results_root" "$ci_home" "$ci_runtime_root"
+            rm -rf "$ci_tmpdir"
+            mkdir -p "$ci_state_root" "$benchmark_results_root" "$ci_home" "$ci_runtime_root" "$ci_tmpdir"
           fi
+          chmod 700 "$ci_home" "$ci_runtime_root" "$ci_tmpdir"
 
       - name: Resolve benchmark target
         shell: bash
@@ -240,6 +254,7 @@ jobs:
         if: ${{ github.event_name != 'workflow_dispatch' }}
         uses: actions/checkout@v6.0.1
         with:
+          fetch-depth: 0
           ssh-key: ${{ secrets.VLLM_ASCEND_HUST_BENCHMARK_SSH_KEY }}
           ssh-strict: ${{ env.BENCHMARK_CHECKOUT_USE_SSH_443 != '1' }}
           persist-credentials: true
@@ -268,6 +283,21 @@ jobs:
         shell: bash
         run: |
           git checkout --force "${ASCEND_HUST_REF}"
+
+      - name: Detect PR fork point
+        if: ${{ github.event_name == 'pull_request' }}
+        shell: bash
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          git fetch --deepen=500 origin main || git fetch --unshallow origin main || true
+          git fetch --no-tags origin "$PR_HEAD_SHA" "$PR_BASE_SHA"
+          git checkout --force "$PR_HEAD_SHA"
+          fork_point="$(git merge-base "$PR_HEAD_SHA" "$PR_BASE_SHA")"
+          echo "FORK_POINT=$fork_point" >> "$GITHUB_ENV"
+          echo "Fork point: $fork_point"
 
       - name: Capture benchmark target metadata
         run: |
@@ -303,6 +333,18 @@ jobs:
           ssh-key: ${{ secrets.VLLM_ASCEND_HUST_BENCHMARK_SSH_KEY }}
           ssh-strict: ${{ env.BENCHMARK_CHECKOUT_USE_SSH_443 != '1' }}
           persist-credentials: true
+
+      - name: Resolve same-spec benchmark file
+        shell: bash
+        run: |
+          spec_file="${SAME_SPEC_SPEC_FILE:-}"
+          if [[ -z "$spec_file" ]]; then
+            spec_file="${GITHUB_WORKSPACE}/vllm-hust-benchmark/${PERFGATE_SPEC_FILE}"
+          elif [[ "$spec_file" != /* ]]; then
+            spec_file="${GITHUB_WORKSPACE}/vllm-hust-benchmark/${spec_file}"
+          fi
+          echo "SAME_SPEC_SPEC_FILE=$spec_file" >> "$GITHUB_ENV"
+          echo "Same-spec benchmark file: $spec_file"
 
       - name: Checkout ascend-runtime-manager repo
         uses: actions/checkout@v6.0.1
@@ -418,6 +460,8 @@ jobs:
           mkdir -p "$HF_HOME" "$HUGGINGFACE_HUB_CACHE" "$TRANSFORMERS_CACHE"
           chmod 700 "$HF_HOME"
           echo "HF endpoint: $HF_ENDPOINT"
+          echo "HF_HOME=$HF_HOME"
+          df -h "$HF_HOME" "$GITHUB_WORKSPACE" || true
 
       - name: Acquire Ascend hardware lock
         run: bash .github/workflows/scripts/acquire_ascend_hardware_lock.sh
@@ -430,14 +474,21 @@ jobs:
           XDG_CACHE_HOME: ${{ env.CI_HOME }}/.cache
           XDG_CONFIG_HOME: ${{ env.CI_HOME }}/.config
         run: |
-          mkdir -p "$HOME" "$XDG_CACHE_HOME" "$XDG_CONFIG_HOME"
+          export TMPDIR="${TMPDIR:-/tmp/vllm-ascend-hust-ci-${GITHUB_RUN_ID:-manual}-${GITHUB_RUN_ATTEMPT:-1}/tmp}"
+          export TMP="${TMP:-${TMPDIR}}"
+          export TEMP="${TEMP:-${TMPDIR}}"
+          mkdir -p "$HOME" "$XDG_CACHE_HOME" "$XDG_CONFIG_HOME" "$TMPDIR"
+          chmod 700 "$HOME" "$TMPDIR"
+          df -h "$TMPDIR" "$GITHUB_WORKSPACE" || true
           source scripts/use_single_ascend_env.sh
           hust_ascend_manager_run setup --install-python-stack --non-interactive
           export PYTHONPATH="$VLLM_HUST_REPO:$VLLM_HUST_BENCHMARK_REPO/src${PYTHONPATH:+:$PYTHONPATH}"
+          echo "PYTHONPATH=$PYTHONPATH" >> "$GITHUB_ENV"
           hust_run_pip install "torch==2.9.0" "torch-npu==2.9.0"
           hust_run_pip install "numpy<2.0.0" scipy attrs decorator psutil
           hust_run_pip install -r "$VLLM_HUST_REPO/requirements/common.txt"
           PYTHON_BIN="$(hust_resolve_python_bin)"
+          echo "PYTHON_BIN=$PYTHON_BIN" >> "$GITHUB_ENV"
           "$PYTHON_BIN" - <<'PY'
           import decorator
           import scipy
@@ -454,6 +505,7 @@ jobs:
           print(f"torch_npu={torch_npu.__version__}")
           PY
           bash scripts/install_local_ascend_plugin.sh "$GITHUB_WORKSPACE"
+          hust_run_pip install -e "${VLLM_HUST_BENCHMARK_REPO}[publish]" jsonschema
           hust_run_pip install "huggingface_hub>=0.20" jsonschema
 
       - name: Verify installation
@@ -479,6 +531,13 @@ jobs:
           print(f'vLLM version: {vllm.__version__}')
           print(f'vLLM Ascend Hust version: {plugin_version}')
           PY
+
+      - name: Performance gate - fetch Stage 1 baseline
+        if: ${{ github.event_name == 'pull_request' }}
+        shell: bash
+        env:
+          PERFGATE_ALLOW_BASELINE_FALLBACK: "0"
+        run: bash .github/workflows/scripts/perfgate_fetch_baseline.sh "$FORK_POINT"
 
       - name: Run benchmark CI and optional HF sync
         id: run_benchmark_ci
@@ -516,6 +575,33 @@ jobs:
           fi
 
           exit "$benchmark_exit_code"
+
+      - name: Performance gate - Stage 1 comparison
+        if: ${{ github.event_name == 'pull_request' }}
+        shell: bash
+        run: bash .github/workflows/scripts/perfgate_stage1_compare.sh
+
+      - name: Performance gate - Stage 2 trial rebase and benchmark
+        if: ${{ github.event_name == 'pull_request' && env.PERFGATE_BASELINE_AVAILABLE != '0' && (env.PERFGATE_MODE != 'enforce' || env.PERFGATE_STAGE1_RESULT == 'pass') }}
+        shell: bash
+        env:
+          WORKSPACE_ROOT: ${{ github.workspace }}
+          VLLM_HUST_REPO: ${{ github.workspace }}/vllm-hust
+          VLLM_ASCEND_HUST_REPO: ${{ github.workspace }}
+          VLLM_HUST_BENCHMARK_REPO: ${{ github.workspace }}/vllm-hust-benchmark
+          VLLM_HUST_WEBSITE_REPO: ${{ github.workspace }}/vllm-hust-website
+          CI_STATE_ROOT: ${{ env.CI_STATE_ROOT }}
+          BENCHMARK_RESULTS_ROOT: ${{ env.BENCHMARK_RESULTS_ROOT }}
+          CI_HOME: ${{ env.CI_HOME }}
+          CI_RUNTIME_ROOT: ${{ env.CI_RUNTIME_ROOT }}
+        run: |
+          source scripts/use_single_ascend_env.sh
+          bash .github/workflows/scripts/perfgate_stage2_rebase_and_benchmark.sh
+
+      - name: Performance gate - two-stage comparison
+        if: ${{ github.event_name == 'pull_request' }}
+        shell: bash
+        run: bash .github/workflows/scripts/perfgate_compare.sh
 
       - name: Sync GitHub leaderboard snapshots
         if: ${{ success() && env.SYNC_GITHUB_SNAPSHOTS == '1' }}
@@ -558,6 +644,7 @@ jobs:
           leaderboard_entry = result_root / 'submissions' / run_id / 'run_leaderboard.json'
           summary_path = Path(os.environ['GITHUB_STEP_SUMMARY'])
           comment_path = result_root / 'benchmark_comment.md'
+          perfgate_report = result_root / 'perfgate_report.md'
           runtime_ready_log = result_root / 'runtime-ready.log'
           diagnostics_path = result_root / 'benchmark_diagnostics.md'
           run_url = f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}"
@@ -582,6 +669,8 @@ jobs:
           ascend_hust_sha = os.environ.get('ASCEND_HUST_TARGET_SHA', os.environ.get('GITHUB_SHA', 'unknown'))
           ascend_hust_commit_url = f"{os.environ['GITHUB_SERVER_URL']}/{ascend_hust_repository}/commit/{ascend_hust_sha}"
           benchmark_root_helper = os.environ.get('ASCEND_BENCHMARK_ROOT_HELPER', '').strip() or '/usr/local/bin/run_ascend_benchmark_root_helper.sh'
+          perfgate_mode = os.environ.get('PERFGATE_MODE', 'report')
+          baseline_source = os.environ.get('PERFGATE_BASELINE_SOURCE') or 'unavailable'
 
           lines = [
             '## Ascend Benchmark Summary',
@@ -593,6 +682,8 @@ jobs:
             f'- Benchmark target ref: `{ascend_hust_ref}`',
             f'- Benchmark target commit: [`{ascend_hust_sha[:8]}`]({ascend_hust_commit_url})',
             f'- Publish mode: `{publish_mode}`',
+            f'- Perfgate mode: `{perfgate_mode}`',
+            f'- Baseline source: `{baseline_source}`',
             f'- Workflow run: [view run]({run_url})',
           ]
           comment_lines = [
@@ -605,8 +696,30 @@ jobs:
             f'- Benchmark target ref: `{ascend_hust_ref}`',
             f'- Benchmark target commit: [`{ascend_hust_sha[:8]}`]({ascend_hust_commit_url})',
             f'- Publish mode: `{publish_mode}`',
+            f'- Perfgate mode: `{perfgate_mode}`',
+            f'- Baseline source: `{baseline_source}`',
             f'- Workflow run: [view run]({run_url})',
           ]
+          baseline_notes = []
+          stage1_source = os.environ.get('PERFGATE_BASELINE_SOURCE')
+          stage1_commit = os.environ.get('PERFGATE_BASELINE_COMMIT')
+          if stage1_source or stage1_commit:
+            baseline_notes.append(
+              f"- Stage 1 baseline: `{stage1_commit or 'unknown'}` source `{stage1_source or 'unknown'}`"
+            )
+          stage2_source = os.environ.get('PERFGATE_STAGE2_M2_BASELINE_SOURCE')
+          stage2_commit = os.environ.get('PERFGATE_STAGE2_M2_BASELINE_COMMIT')
+          if stage2_source or stage2_commit:
+            baseline_notes.append(
+              f"- Stage 2 baseline: `{stage2_commit or 'unknown'}` source `{stage2_source or 'unknown'}`"
+            )
+          if baseline_notes:
+            lines.extend(baseline_notes)
+            comment_lines.extend(baseline_notes)
+          if perfgate_report.is_file():
+            perfgate_markdown = perfgate_report.read_text(encoding='utf-8').strip()
+            lines.extend(['', perfgate_markdown])
+            comment_lines.extend(['', perfgate_markdown])
           if benchmark_exit_code == '75':
             contention_note = '- Benchmark execution: `shared-runner resource contention (temporary)`'
             lines.append(contention_note)
@@ -748,3 +861,58 @@ jobs:
               api_call('POST', f'{api_url}/repos/{owner}/{repo}/issues/{issue_number}/comments', {'body': body})
               print('Created benchmark PR comment')
           PY
+
+  store-main-perfgate-baseline:
+    name: Store main perfgate baseline
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    needs: ascend-benchmark
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - name: Checkout target repo
+        uses: actions/checkout@v6.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Checkout benchmark repo
+        shell: bash
+        env:
+          BENCHMARK_REPO_URL: https://github.com/vLLM-HUST/vllm-hust-benchmark.git
+          VLLM_HUST_BENCHMARK_REF: ${{ vars.VLLM_ASCEND_HUST_BENCHMARK_REF || vars.VLLM_HUST_BENCHMARK_REF || 'main' }}
+        run: |
+          set -euo pipefail
+          git clone --depth 1 "$BENCHMARK_REPO_URL" vllm-hust-benchmark
+          if ! git -C vllm-hust-benchmark rev-parse --verify --quiet "$VLLM_HUST_BENCHMARK_REF^{commit}" >/dev/null; then
+            git -C vllm-hust-benchmark fetch --depth 1 origin "$VLLM_HUST_BENCHMARK_REF"
+            git -C vllm-hust-benchmark checkout --force FETCH_HEAD
+          else
+            git -C vllm-hust-benchmark checkout --force "$VLLM_HUST_BENCHMARK_REF"
+          fi
+
+      - name: Download benchmark artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: ascend-benchmark-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .benchmarks/ci
+
+      - name: Store perfgate baseline
+        shell: bash
+        env:
+          PYTHON_BIN: python3
+          PERFGATE_SPEC_FILE: ${{ vars.VLLM_ASCEND_HUST_PERFGATE_SPEC_FILE || 'docs/official-baselines/perfgate-ascend-qwen25-3b-910b3.json' }}
+          PERFGATE_BASELINE_BRANCH: ${{ vars.VLLM_ASCEND_HUST_PERFGATE_BASELINE_BRANCH || 'benchmark-baselines' }}
+        run: |
+          set -euo pipefail
+          target_sha_short="$(printf '%s' "$GITHUB_SHA" | cut -c1-8)"
+          run_id="ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${target_sha_short}"
+          {
+            echo "RUN_ID=$run_id"
+            echo "RESULT_ROOT=${GITHUB_WORKSPACE}/.benchmarks/ci/$run_id"
+            echo "SAME_SPEC_SPEC_FILE=${GITHUB_WORKSPACE}/vllm-hust-benchmark/${PERFGATE_SPEC_FILE}"
+          } >> "$GITHUB_ENV"
+          RUN_ID="$run_id" \
+            RESULT_ROOT="${GITHUB_WORKSPACE}/.benchmarks/ci/$run_id" \
+            SAME_SPEC_SPEC_FILE="${GITHUB_WORKSPACE}/vllm-hust-benchmark/${PERFGATE_SPEC_FILE}" \
+            bash .github/workflows/scripts/perfgate_store_baseline.sh

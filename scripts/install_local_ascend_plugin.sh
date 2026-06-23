@@ -70,9 +70,16 @@ CURRENT_USER_CONFIG_HOME="$({
     "$CURRENT_USER_HOME/.config" \
     "${RUNNER_TEMP:-/tmp}/${CURRENT_USER_NAME:-runner}-config"
 } || true)"
+CURRENT_USER_TMPDIR="$({
+  resolve_writable_dir \
+    "${TMPDIR:-}" \
+    "${RUNNER_TEMP:-/tmp}/${CURRENT_USER_NAME:-runner}-tmp" \
+    "/tmp/${CURRENT_USER_NAME:-runner}-vllm-ascend-tmp" \
+    "${CI_RUNTIME_ROOT:-}/tmp"
+} || true)"
 
-if [[ -z "$CURRENT_USER_CACHE_HOME" || -z "$CURRENT_USER_CONFIG_HOME" ]]; then
-  echo "[ERROR] Could not resolve writable cache/config directories for editable install"
+if [[ -z "$CURRENT_USER_CACHE_HOME" || -z "$CURRENT_USER_CONFIG_HOME" || -z "$CURRENT_USER_TMPDIR" ]]; then
+  echo "[ERROR] Could not resolve writable cache/config/temp directories for editable install"
   exit 1
 fi
 
@@ -92,7 +99,8 @@ else
 fi
 ALLOW_EXISTING_INSTALL_FALLBACK="${ALLOW_EXISTING_INSTALL_FALLBACK:-0}"
 export VLLM_ASCEND_EXPECTED_REPO="${PLUGIN_REPO}"
-mkdir -p "${CURRENT_USER_CACHE_HOME}/pip" "${CURRENT_USER_CONFIG_HOME}"
+mkdir -p "${CURRENT_USER_CACHE_HOME}/pip" "${CURRENT_USER_CONFIG_HOME}" "${CURRENT_USER_TMPDIR}"
+chmod 700 "${CURRENT_USER_TMPDIR}" 2>/dev/null || true
 
 PYTHON_BIN="$(hust_resolve_python_bin 2>/dev/null)" || {
   echo "[ERROR] Could not locate python3/python for plugin installation"
@@ -109,6 +117,9 @@ then
     export XDG_CACHE_HOME="${CURRENT_USER_CACHE_HOME}"
     export XDG_CONFIG_HOME="${CURRENT_USER_CONFIG_HOME}"
     export PIP_CACHE_DIR="${CURRENT_USER_CACHE_HOME}/pip"
+    export TMPDIR="${CURRENT_USER_TMPDIR}"
+    export TMP="${CURRENT_USER_TMPDIR}"
+    export TEMP="${CURRENT_USER_TMPDIR}"
     hust_run_pip install "setuptools-scm>=8"
   ); then
     echo "[ERROR] Failed to install setuptools-scm required for editable metadata generation"
@@ -123,6 +134,9 @@ if ! "${PYTHON_BIN}" -m pybind11 --cmakedir >/dev/null 2>&1; then
     export XDG_CACHE_HOME="${CURRENT_USER_CACHE_HOME}"
     export XDG_CONFIG_HOME="${CURRENT_USER_CONFIG_HOME}"
     export PIP_CACHE_DIR="${CURRENT_USER_CACHE_HOME}/pip"
+    export TMPDIR="${CURRENT_USER_TMPDIR}"
+    export TMP="${CURRENT_USER_TMPDIR}"
+    export TEMP="${CURRENT_USER_TMPDIR}"
     hust_run_pip install "pybind11"
   ); then
     echo "[ERROR] Failed to install pybind11 required for editable build configuration"
@@ -135,6 +149,9 @@ if ! (
   export XDG_CACHE_HOME="${CURRENT_USER_CACHE_HOME}"
   export XDG_CONFIG_HOME="${CURRENT_USER_CONFIG_HOME}"
   export PIP_CACHE_DIR="${CURRENT_USER_CACHE_HOME}/pip"
+  export TMPDIR="${CURRENT_USER_TMPDIR}"
+  export TMP="${CURRENT_USER_TMPDIR}"
+  export TEMP="${CURRENT_USER_TMPDIR}"
   export COMPILE_CUSTOM_KERNELS="${COMPILE_CUSTOM_KERNELS}"
   hust_run_pip install -e "${PLUGIN_REPO}" --no-build-isolation --no-deps
 ); then
