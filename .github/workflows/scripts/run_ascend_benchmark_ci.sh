@@ -55,6 +55,7 @@ HARDWARE_CHIP_MODEL=${HARDWARE_CHIP_MODEL:-910B3}
 CHIP_COUNT=${CHIP_COUNT:-1}
 NODE_COUNT=${NODE_COUNT:-1}
 PUBLISH_TO_HF=${PUBLISH_TO_HF:-0}
+PUBLISH_TO_BENCHMARK_REPO=${PUBLISH_TO_BENCHMARK_REPO:-0}
 HF_REPO_ID=${HF_REPO_ID:-}
 VLLM_HUST_BENCHMARK_REF=${VLLM_HUST_BENCHMARK_REF:-}
 
@@ -221,6 +222,9 @@ SUDO_PRESERVE_ENV_VARS=(
   BENCH_MAX_CONCURRENCY
   BENCH_NUM_PROMPTS
   BENCH_OUTPUT_LEN
+  BENCHMARK_REPO_GH_TOKEN
+  BENCHMARK_REPO_SLUG
+  BENCHMARK_REPO_SSH_KEY
   BENCH_RANDOM_BATCH_SIZE
   BENCH_RANDOM_INPUT_LEN
   BENCH_RANDOM_OUTPUT_LEN
@@ -271,6 +275,7 @@ SUDO_PRESERVE_ENV_VARS=(
   NODE_COUNT
   PATH
   PORT
+  PUBLISH_TO_BENCHMARK_REPO
   PYTHON_BIN
   PYTHONPATH
   RESULT_DIR
@@ -799,6 +804,32 @@ print(f"validated benchmark result: completed={completed}, failed={failed}, tota
 PY
 }
 
+sync_benchmark_publication_to_github() {
+  local publisher_script=${BENCHMARK_PUBLICATION_SYNC_SCRIPT:-$VLLM_ASCEND_HUST_REPO/.github/workflows/scripts/sync_benchmark_snapshots_to_github.sh}
+
+  if [[ "$PUBLISH_TO_BENCHMARK_REPO" != "1" ]]; then
+    return 0
+  fi
+
+  if [[ ! -x "$publisher_script" ]]; then
+    echo "benchmark publication sync script is missing or not executable: $publisher_script" >&2
+    return 2
+  fi
+
+  BENCHMARK_REPO_DIR="$VLLM_HUST_BENCHMARK_REPO" \
+  WEBSITE_REPO_DIR="$VLLM_HUST_WEBSITE_REPO" \
+  CURRENT_SUBMISSION_DIR="$SUBMISSION_DIR" \
+  VLLM_HUST_REPO_DIR="$VLLM_HUST_REPO" \
+  LOCAL_SNAPSHOT_OUTPUT_DIR="$AGGREGATE_OUTPUT_DIR" \
+  PYTHON_BIN="$PYTHON_BIN" \
+  BENCHMARK_REPO_SLUG="${BENCHMARK_REPO_SLUG:-vLLM-HUST/vllm-hust-benchmark}" \
+  BENCHMARK_REPO_GH_TOKEN="${BENCHMARK_REPO_GH_TOKEN:-}" \
+  BENCHMARK_REPO_SSH_KEY="${BENCHMARK_REPO_SSH_KEY:-}" \
+  SNAPSHOT_COMMIT_MESSAGE="chore(data): sync vllm-ascend benchmark publication $RUN_ID" \
+  RUN_ID="$RUN_ID" \
+  "$publisher_script"
+}
+
 allocate_local_port() {
   "${PYTHON_BIN}" - <<'PY'
 import socket
@@ -1083,6 +1114,7 @@ echo "run id: $RUN_ID"
 echo "result root: $RESULT_ROOT"
 echo "benchmark port: $PORT"
 echo "benchmark scenario: $BENCH_SCENARIO"
+echo "publish to benchmark repo: $PUBLISH_TO_BENCHMARK_REPO"
 echo "publish to hf: $PUBLISH_TO_HF"
 echo "same-spec benchmark enabled: $SAME_SPEC_BENCHMARK_ENABLED"
 echo "ascend benchmark use sudo: $ASCEND_BENCHMARK_USE_SUDO"
@@ -1339,7 +1371,9 @@ PY
     --submissions-dir "$SUBMISSIONS_ROOT"
 fi
 
-if [[ "$PUBLISH_TO_HF" == "1" ]]; then
+if [[ "$PUBLISH_TO_BENCHMARK_REPO" == "1" ]]; then
+  sync_benchmark_publication_to_github
+elif [[ "$PUBLISH_TO_HF" == "1" ]]; then
   if [[ -z "$HF_REPO_ID" ]]; then
     echo "HF_REPO_ID must be set when PUBLISH_TO_HF=1" >&2
     exit 2

@@ -67,3 +67,37 @@ def test_stage2_trial_does_not_publish_benchmark_results() -> None:
     assert "SYNC_GITHUB_SNAPSHOTS=0" in stage2_script
     assert "BENCHMARK_RESULTS_ROOT" in stage2_script
     assert "install_local_ascend_plugin.sh" in stage2_script
+
+
+def test_benchmark_repo_publish_is_gated_and_reported() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    runner_script = (SCRIPT_DIR / "run_ascend_benchmark_ci.sh").read_text(
+        encoding="utf-8"
+    )
+    sync_script = (SCRIPT_DIR / "sync_benchmark_snapshots_to_github.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert "PUBLISH_TO_BENCHMARK_REPO:" in workflow
+    assert "BENCHMARK_REPO_GH_TOKEN:" in workflow
+    assert "BENCHMARK_REPO_SSH_KEY:" in workflow
+    assert (
+        "github.event_name != 'issue_comment') && "
+        "secrets.VLLM_HUST_BENCHMARK_GH_TOKEN"
+    ) in workflow
+    assert "L3 Benchmark Repository Publication" in workflow
+
+    assert "PUBLISH_TO_BENCHMARK_REPO=${PUBLISH_TO_BENCHMARK_REPO:-0}" in runner_script
+    assert "PUBLISH_TO_BENCHMARK_REPO" in runner_script[
+        runner_script.index("SUDO_PRESERVE_ENV_VARS=(") :
+    ]
+    assert 'if [[ "$PUBLISH_TO_BENCHMARK_REPO" != "1" ]]; then' in runner_script
+    assert 'if [[ "$PUBLISH_TO_BENCHMARK_REPO" == "1" ]]; then' in runner_script
+    assert 'BENCHMARK_REPO_GH_TOKEN="${BENCHMARK_REPO_GH_TOKEN:-}" \\' in runner_script
+    assert 'BENCHMARK_REPO_SSH_KEY="${BENCHMARK_REPO_SSH_KEY:-}" \\' in runner_script
+
+    assert "L3 benchmark repository publication is enabled" in sync_script
+    assert "no cross-repository write credential is available" in sync_script
+    assert "VLLM_ASCEND_HUST_BENCHMARK_SSH_KEY" in sync_script
+    assert "VLLM_HUST_BENCHMARK_GH_TOKEN" in sync_script
+    assert "Benchmark repo publish target:" in sync_script

@@ -330,7 +330,11 @@ jobs:
       SYNC_GITHUB_SNAPSHOTS: ${{ (github.event_name == 'pull_request' || github.event_name == 'issue_comment') && '0' || (vars.VLLM_ASCEND_HUST_SYNC_BENCHMARK_SNAPSHOTS_TO_GITHUB || '1') }}
       GITHUB_SNAPSHOT_TARGET_BRANCH: ${{ vars.VLLM_HUST_BENCHMARK_SNAPSHOT_BRANCH || 'main' }}
       WEBSITE_LEADERBOARD_URL: ${{ vars.VLLM_ASCEND_HUST_LEADERBOARD_URL || vars.VLLM_HUST_LEADERBOARD_URL || '' }}
+      PUBLISH_TO_BENCHMARK_REPO: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.VLLM_ASCEND_HUST_PUBLISH_BENCHMARK_ON_MAIN == '1') || (github.event_name == 'workflow_dispatch' && inputs.publish_to_hf)) && '1' || '0' }}
       PUBLISH_TO_HF: ${{ (((github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.VLLM_ASCEND_HUST_PUBLISH_BENCHMARK_ON_MAIN == '1') || (github.event_name == 'workflow_dispatch' && inputs.publish_to_hf)) && secrets.HF_TOKEN != '') && '1' || '0' }}
+      BENCHMARK_REPO_SLUG: vLLM-HUST/vllm-hust-benchmark
+      BENCHMARK_REPO_GH_TOKEN: ${{ (github.event_name != 'pull_request' && github.event_name != 'issue_comment') && secrets.VLLM_HUST_BENCHMARK_GH_TOKEN || '' }}
+      BENCHMARK_REPO_SSH_KEY: ${{ (github.event_name != 'pull_request' && github.event_name != 'issue_comment') && secrets.VLLM_ASCEND_HUST_BENCHMARK_SSH_KEY || '' }}
       ISSUE_COMMENT_PR_NUMBER: ${{ github.event_name == 'issue_comment' && needs.issue-comment-command.outputs.pr_number || '' }}
       HUST_ASCEND_MANAGER_REPO: ${{ github.workspace }}/ascend-runtime-manager
 
@@ -790,6 +794,9 @@ jobs:
           BENCHMARK_REPO_DIR: ${{ github.workspace }}/vllm-hust-benchmark
           WEBSITE_REPO_DIR: ${{ github.workspace }}/vllm-hust-website
           SNAPSHOT_TARGET_BRANCH: ${{ env.GITHUB_SNAPSHOT_TARGET_BRANCH }}
+          BENCHMARK_REPO_SLUG: ${{ env.BENCHMARK_REPO_SLUG }}
+          BENCHMARK_REPO_GH_TOKEN: ${{ env.BENCHMARK_REPO_GH_TOKEN }}
+          BENCHMARK_REPO_SSH_KEY: ${{ env.BENCHMARK_REPO_SSH_KEY }}
         run: |
           if [[ "${BENCHMARK_EXIT_CODE:-}" != "0" ]]; then
             echo "Skipping GitHub snapshot sync because BENCHMARK_EXIT_CODE=${BENCHMARK_EXIT_CODE:-unset}."
@@ -831,8 +838,12 @@ jobs:
           run_url = f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}"
           bench_scenario = os.environ.get('BENCH_SCENARIO', 'random-online')
           benchmark_exit_code = os.environ.get('BENCHMARK_EXIT_CODE', '0')
+          benchmark_repo_publish_enabled = os.environ.get('PUBLISH_TO_BENCHMARK_REPO') == '1'
+          hf_publish_enabled = os.environ.get('PUBLISH_TO_HF') == '1'
           publish_modes = []
-          if os.environ.get('PUBLISH_TO_HF') == '1':
+          if benchmark_repo_publish_enabled:
+            publish_modes.append('benchmark-repo-publish')
+          elif hf_publish_enabled:
             publish_modes.append('hf-sync')
           else:
             publish_modes.append('artifact-preview')
@@ -843,6 +854,10 @@ jobs:
           hf_repo = os.environ.get('HF_REPO_ID', 'unknown')
           github_snapshot_status = os.environ.get('GITHUB_SNAPSHOT_SYNC_STATUS')
           github_snapshot_commit = os.environ.get('GITHUB_SNAPSHOT_SYNC_COMMIT')
+          github_snapshot_repo = os.environ.get('GITHUB_SNAPSHOT_SYNC_REPO')
+          github_snapshot_branch = os.environ.get('GITHUB_SNAPSHOT_SYNC_BRANCH')
+          github_snapshot_submission_path = os.environ.get('GITHUB_SNAPSHOT_SYNC_SUBMISSION_PATH')
+          github_snapshot_snapshot_path = os.environ.get('GITHUB_SNAPSHOT_SYNC_SNAPSHOT_PATH')
           leaderboard_url = os.environ.get('WEBSITE_LEADERBOARD_URL', '').strip()
           vllm_hust_ref = os.environ.get('VLLM_HUST_REF', 'main')
           ascend_hust_repository = os.environ.get('ASCEND_HUST_TARGET_REPOSITORY', os.environ.get('GITHUB_REPOSITORY', 'unknown'))
@@ -863,6 +878,8 @@ jobs:
             f'- Benchmark target ref: `{ascend_hust_ref}`',
             f'- Benchmark target commit: [`{ascend_hust_sha[:8]}`]({ascend_hust_commit_url})',
             f'- Publish mode: `{publish_mode}`',
+            f"- Leaderboard publish: `{'enabled' if benchmark_repo_publish_enabled else 'skipped'}`",
+            f"- HF publish: `{'enabled' if hf_publish_enabled else 'skipped'}`",
             f'- Perfgate mode: `{perfgate_mode}`',
             f'- Baseline source: `{baseline_source}`',
             f'- Workflow run: [view run]({run_url})',
@@ -877,6 +894,8 @@ jobs:
             f'- Benchmark target ref: `{ascend_hust_ref}`',
             f'- Benchmark target commit: [`{ascend_hust_sha[:8]}`]({ascend_hust_commit_url})',
             f'- Publish mode: `{publish_mode}`',
+            f"- Leaderboard publish: `{'enabled' if benchmark_repo_publish_enabled else 'skipped'}`",
+            f"- HF publish: `{'enabled' if hf_publish_enabled else 'skipped'}`",
             f'- Perfgate mode: `{perfgate_mode}`',
             f'- Baseline source: `{baseline_source}`',
             f'- Workflow run: [view run]({run_url})',
@@ -955,6 +974,18 @@ jobs:
               snapshot_note += f' (`{github_snapshot_commit[:8]}`)'
             lines.append(snapshot_note)
             comment_lines.append(snapshot_note)
+            if benchmark_repo_publish_enabled:
+              publication_lines = ['', '### L3 Benchmark Repository Publication']
+              if github_snapshot_repo or github_snapshot_branch:
+                publication_lines.append(
+                  f"- Target: `{github_snapshot_repo or 'unknown'}@{github_snapshot_branch or 'unknown'}`"
+                )
+              if github_snapshot_submission_path:
+                publication_lines.append(f"- Submission path: `{github_snapshot_submission_path}`")
+              if github_snapshot_snapshot_path:
+                publication_lines.append(f"- Snapshot path: `{github_snapshot_snapshot_path}`")
+              lines.extend(publication_lines)
+              comment_lines.extend(publication_lines)
           elif os.environ.get('SYNC_GITHUB_SNAPSHOTS') == '1' and benchmark_exit_code == '75':
             snapshot_note = '- GitHub snapshot sync: `skipped` because benchmark did not produce publishable results'
             lines.append(snapshot_note)
