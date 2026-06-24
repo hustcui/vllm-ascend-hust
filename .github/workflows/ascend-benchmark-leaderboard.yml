@@ -284,9 +284,9 @@ jobs:
       COMPILE_CUSTOM_KERNELS: "1"
       HF_HUB_DISABLE_TELEMETRY: "1"
       HF_ENDPOINT: ${{ vars.HF_ENDPOINT || 'https://hf-mirror.com' }}
-      HF_HOME: ${{ vars.VLLM_ASCEND_HUST_HF_CACHE_ROOT || '/tmp/vllm-ascend-hust-hf-cache' }}
-      HUGGINGFACE_HUB_CACHE: ${{ vars.VLLM_ASCEND_HUST_HF_CACHE_ROOT || '/tmp/vllm-ascend-hust-hf-cache' }}/hub
-      TRANSFORMERS_CACHE: ${{ vars.VLLM_ASCEND_HUST_HF_CACHE_ROOT || '/tmp/vllm-ascend-hust-hf-cache' }}/transformers
+      HF_HOME: ${{ github.workspace }}/../.hf-cache
+      HUGGINGFACE_HUB_CACHE: ${{ github.workspace }}/../.hf-cache/hub
+      TRANSFORMERS_CACHE: ${{ github.workspace }}/../.hf-cache/transformers
       HF_TOKEN: ${{ (github.event_name != 'pull_request' && github.event_name != 'issue_comment') && secrets.HF_TOKEN || '' }}
       HF_REPO_ID: ${{ vars.VLLM_ASCEND_HUST_BENCHMARK_HF_REPO || 'intellistream/vllm-ascend-hust-benchmark-results' }}
       ASCEND_HUST_TARGET: ${{ github.event_name == 'workflow_dispatch' && inputs.ascend_hust_target || format('{0}@{1}', github.repository, github.event_name == 'issue_comment' && needs.issue-comment-command.outputs.pr_head_sha || (github.event_name == 'pull_request' && github.event.pull_request.head.ref || github.ref_name)) }}
@@ -327,7 +327,7 @@ jobs:
       PERFGATE_BASELINE_BRANCH: ${{ vars.VLLM_ASCEND_HUST_PERFGATE_BASELINE_BRANCH || 'benchmark-baselines' }}
       SAME_SPEC_SPEC_FILE: ${{ vars.VLLM_ASCEND_HUST_SAME_SPEC_SPEC_FILE || '' }}
       SAME_SPEC_CONSTRAINTS_FILE: ${{ vars.VLLM_ASCEND_HUST_SAME_SPEC_CONSTRAINTS_FILE || '' }}
-      SYNC_GITHUB_SNAPSHOTS: ${{ (github.event_name == 'pull_request' || github.event_name == 'issue_comment') && '0' || (vars.VLLM_ASCEND_HUST_SYNC_BENCHMARK_SNAPSHOTS_TO_GITHUB || '1') }}
+      SYNC_GITHUB_SNAPSHOTS: ${{ (github.event_name == 'pull_request' || github.event_name == 'issue_comment') && '0' || (vars.VLLM_ASCEND_HUST_SYNC_BENCHMARK_SNAPSHOTS_TO_GITHUB || '0') }}
       GITHUB_SNAPSHOT_TARGET_BRANCH: ${{ vars.VLLM_HUST_BENCHMARK_SNAPSHOT_BRANCH || 'main' }}
       WEBSITE_LEADERBOARD_URL: ${{ vars.VLLM_ASCEND_HUST_LEADERBOARD_URL || vars.VLLM_HUST_LEADERBOARD_URL || '' }}
       PUBLISH_TO_BENCHMARK_REPO: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.VLLM_ASCEND_HUST_PUBLISH_BENCHMARK_ON_MAIN == '1') || (github.event_name == 'workflow_dispatch' && inputs.publish_to_hf)) && '1' || '0' }}
@@ -346,24 +346,17 @@ jobs:
           benchmark_results_root="${ci_state_root}/benchmarks/ci"
           ci_home="${ci_state_root}/home"
           ci_runtime_root="${ci_state_root}/runtime"
-          ci_tmpdir="/tmp/vllm-ascend-hust-ci-${GITHUB_RUN_ID:-manual}-${GITHUB_RUN_ATTEMPT:-1}/tmp"
-
           {
             echo "CI_STATE_ROOT=${ci_state_root}"
             echo "BENCHMARK_RESULTS_ROOT=${benchmark_results_root}"
             echo "CI_HOME=${ci_home}"
             echo "CI_RUNTIME_ROOT=${ci_runtime_root}"
-            echo "TMPDIR=${ci_tmpdir}"
-            echo "TMP=${ci_tmpdir}"
-            echo "TEMP=${ci_tmpdir}"
           } >> "$GITHUB_ENV"
 
           legacy_paths=(
             "${GITHUB_WORKSPACE}/.benchmarks"
             "${GITHUB_WORKSPACE}/.ci-home"
             "${GITHUB_WORKSPACE}/.ci-runtime"
-            "${GITHUB_WORKSPACE}/.hf-cache"
-            "${GITHUB_WORKSPACE}/../.hf-cache"
             "${GITHUB_WORKSPACE}/vllm-hust"
             "${GITHUB_WORKSPACE}/vllm-hust-benchmark"
             "${GITHUB_WORKSPACE}/ascend-runtime-manager"
@@ -378,14 +371,12 @@ jobs:
           if command -v sudo >/dev/null 2>&1 \
             && [[ -x "$DEFAULT_SYSTEM_ASCEND_BENCHMARK_ROOT_HELPER" ]] \
             && sudo -n "$DEFAULT_SYSTEM_ASCEND_BENCHMARK_ROOT_HELPER" cleanup-paths "${cleanup_paths[@]}"; then
-            rm -rf "$ci_tmpdir"
-            mkdir -p "$ci_state_root" "$benchmark_results_root" "$ci_home" "$ci_runtime_root" "$ci_tmpdir"
+            mkdir -p "$ci_state_root" "$benchmark_results_root" "$ci_home" "$ci_runtime_root"
           else
             rm -rf "${cleanup_paths[@]}"
-            rm -rf "$ci_tmpdir"
-            mkdir -p "$ci_state_root" "$benchmark_results_root" "$ci_home" "$ci_runtime_root" "$ci_tmpdir"
+            mkdir -p "$ci_state_root" "$benchmark_results_root" "$ci_home" "$ci_runtime_root"
           fi
-          chmod 700 "$ci_home" "$ci_runtime_root" "$ci_tmpdir"
+          chmod 700 "$ci_home" "$ci_runtime_root"
 
       - name: Resolve benchmark target
         shell: bash
@@ -642,7 +633,6 @@ jobs:
           chmod 700 "$HF_HOME"
           echo "HF endpoint: $HF_ENDPOINT"
           echo "HF_HOME=$HF_HOME"
-          df -h "$HF_HOME" "$GITHUB_WORKSPACE" || true
 
       - name: Acquire Ascend hardware lock
         run: bash .github/workflows/scripts/acquire_ascend_hardware_lock.sh
@@ -655,12 +645,8 @@ jobs:
           XDG_CACHE_HOME: ${{ env.CI_HOME }}/.cache
           XDG_CONFIG_HOME: ${{ env.CI_HOME }}/.config
         run: |
-          export TMPDIR="${TMPDIR:-/tmp/vllm-ascend-hust-ci-${GITHUB_RUN_ID:-manual}-${GITHUB_RUN_ATTEMPT:-1}/tmp}"
-          export TMP="${TMP:-${TMPDIR}}"
-          export TEMP="${TEMP:-${TMPDIR}}"
-          mkdir -p "$HOME" "$XDG_CACHE_HOME" "$XDG_CONFIG_HOME" "$TMPDIR"
-          chmod 700 "$HOME" "$TMPDIR"
-          df -h "$TMPDIR" "$GITHUB_WORKSPACE" || true
+          mkdir -p "$HOME" "$XDG_CACHE_HOME" "$XDG_CONFIG_HOME"
+          chmod 700 "$HOME"
           source scripts/use_single_ascend_env.sh
           hust_ascend_manager_run setup --install-python-stack --non-interactive
           export PYTHONPATH="$VLLM_HUST_REPO:$VLLM_HUST_BENCHMARK_REPO/src${PYTHONPATH:+:$PYTHONPATH}"
@@ -843,9 +829,9 @@ jobs:
           publish_modes = []
           if benchmark_repo_publish_enabled:
             publish_modes.append('benchmark-repo-publish')
-          elif hf_publish_enabled:
+          if hf_publish_enabled:
             publish_modes.append('hf-sync')
-          else:
+          if not publish_modes:
             publish_modes.append('artifact-preview')
           if os.environ.get('SYNC_GITHUB_SNAPSHOTS') == '1' and benchmark_exit_code == '0':
             publish_modes.append('github-snapshot')

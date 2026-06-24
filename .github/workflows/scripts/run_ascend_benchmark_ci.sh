@@ -1373,7 +1373,9 @@ fi
 
 if [[ "$PUBLISH_TO_BENCHMARK_REPO" == "1" ]]; then
   sync_benchmark_publication_to_github
-elif [[ "$PUBLISH_TO_HF" == "1" ]]; then
+fi
+
+if [[ "$PUBLISH_TO_HF" == "1" ]]; then
   if [[ -z "$HF_REPO_ID" ]]; then
     echo "HF_REPO_ID must be set when PUBLISH_TO_HF=1" >&2
     exit 2
@@ -1386,7 +1388,7 @@ elif [[ "$PUBLISH_TO_HF" == "1" ]]; then
     --submissions-prefix submissions-auto \
     --commit-message "chore: sync vllm-hust benchmark from vllm-ascend-hust $RUN_ID (${ASCEND_HUST_TARGET_REPOSITORY}@${ASCEND_HUST_TARGET_REF}:${ASCEND_HUST_TARGET_SHA_SHORT})" \
     --execute
-else
+elif [[ "$PUBLISH_TO_BENCHMARK_REPO" != "1" ]]; then
   "${PYTHON_BIN}" -m vllm_hust_benchmark.cli publish-website \
     --source-dir "$SUBMISSIONS_ROOT" \
     --output-dir "$AGGREGATE_OUTPUT_DIR" \

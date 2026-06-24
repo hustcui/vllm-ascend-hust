@@ -81,6 +81,7 @@ def test_benchmark_repo_publish_is_gated_and_reported() -> None:
     assert "PUBLISH_TO_BENCHMARK_REPO:" in workflow
     assert "BENCHMARK_REPO_GH_TOKEN:" in workflow
     assert "BENCHMARK_REPO_SSH_KEY:" in workflow
+    assert "VLLM_ASCEND_HUST_SYNC_BENCHMARK_SNAPSHOTS_TO_GITHUB || '0'" in workflow
     assert (
         "github.event_name != 'issue_comment') && "
         "secrets.VLLM_HUST_BENCHMARK_GH_TOKEN"
@@ -93,6 +94,8 @@ def test_benchmark_repo_publish_is_gated_and_reported() -> None:
     ]
     assert 'if [[ "$PUBLISH_TO_BENCHMARK_REPO" != "1" ]]; then' in runner_script
     assert 'if [[ "$PUBLISH_TO_BENCHMARK_REPO" == "1" ]]; then' in runner_script
+    assert 'elif [[ "$PUBLISH_TO_HF" == "1" ]]; then' not in runner_script
+    assert 'elif [[ "$PUBLISH_TO_BENCHMARK_REPO" != "1" ]]; then' in runner_script
     assert 'BENCHMARK_REPO_GH_TOKEN="${BENCHMARK_REPO_GH_TOKEN:-}" \\' in runner_script
     assert 'BENCHMARK_REPO_SSH_KEY="${BENCHMARK_REPO_SSH_KEY:-}" \\' in runner_script
 
