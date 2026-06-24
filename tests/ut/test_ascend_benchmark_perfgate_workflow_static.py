@@ -27,6 +27,8 @@ def test_perfgate_scripts_are_present() -> None:
         "perfgate_stage2_rebase_and_benchmark.sh",
         "perfgate_compare.sh",
         "perfgate_store_baseline.sh",
+        "parse_ascend_comment_command.py",
+        "resolve_ascend_benchmark_scenario.py",
     ):
         assert (SCRIPT_DIR / script_name).is_file()
 
@@ -47,8 +49,12 @@ def test_ascend_benchmark_workflow_wires_two_stage_perfgate() -> None:
     assert "Performance gate - two-stage comparison" in workflow
     assert "Store main perfgate baseline" in workflow
     assert "perfgate_report.md" in workflow
+    assert "issue_comment:" in workflow
+    assert "Parse Ascend comment command" in workflow
+    assert "resolve_ascend_benchmark_scenario.py" in workflow
+    assert "github.event_name == 'issue_comment'" in workflow
     assert "VLLM_ASCEND_HUST_PUBLISH_BENCHMARK_ON_PR" not in workflow
-    assert "github.event_name == 'pull_request' && '0'" in workflow
+    assert "github.event_name == 'pull_request' || github.event_name == 'issue_comment'" in workflow
 
 
 def test_stage2_trial_does_not_publish_benchmark_results() -> None:
