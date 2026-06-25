@@ -17,7 +17,7 @@ from vllm.distributed.parallel_state import get_pp_group, get_tp_group
 from vllm.logger import logger
 from vllm.model_executor.layers.attention_layer_base import AttentionLayerBase
 from vllm.model_executor.layers.mamba.abstract import MambaBase
-from vllm.utils.torch_utils import STR_DTYPE_TO_TORCH_DTYPE
+from vllm.utils.torch_utils import STR_DTYPE_TO_TORCH_DTYPE, get_kv_cache_torch_dtype
 from vllm.v1.core.sched.output import SchedulerOutput
 from vllm.v1.kv_cache_interface import FullAttentionSpec, KVCacheSpec
 
@@ -412,7 +412,10 @@ def get_kv_cache_spec(vllm_config: VllmConfig) -> dict[str, KVCacheSpec]:
     if vllm_config.cache_config.cache_dtype == "auto":
         kv_cache_dtype = vllm_config.model_config.dtype
     else:
-        kv_cache_dtype = STR_DTYPE_TO_TORCH_DTYPE[vllm_config.cache_config.cache_dtype]
+        kv_cache_dtype = get_kv_cache_torch_dtype(
+            vllm_config.cache_config.cache_dtype,
+            vllm_config.model_config.dtype,
+        )
 
     kv_cache_spec: dict[str, KVCacheSpec] = {}
     attn_layers = get_layers_from_vllm_config(vllm_config, AttentionLayerBase)
