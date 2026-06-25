@@ -115,6 +115,23 @@ then
   fi
 fi
 
+if ! "${PYTHON_BIN}" - <<'PY' >/dev/null 2>&1
+import wheel.bdist_wheel
+PY
+then
+  echo "[INFO] Installing missing build metadata dependency: wheel"
+  if ! (
+    export HOME="${CURRENT_USER_HOME}"
+    export XDG_CACHE_HOME="${CURRENT_USER_CACHE_HOME}"
+    export XDG_CONFIG_HOME="${CURRENT_USER_CONFIG_HOME}"
+    export PIP_CACHE_DIR="${CURRENT_USER_CACHE_HOME}/pip"
+    hust_run_pip install "wheel"
+  ); then
+    echo "[ERROR] Failed to install wheel required for editable metadata generation"
+    exit 1
+  fi
+fi
+
 if ! "${PYTHON_BIN}" -m pybind11 --cmakedir >/dev/null 2>&1; then
   echo "[INFO] Installing missing build dependency: pybind11"
   if ! (

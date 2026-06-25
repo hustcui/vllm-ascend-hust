@@ -19,6 +19,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = REPO_ROOT / ".github/workflows/ascend-benchmark-leaderboard.yml"
 SCRIPT_DIR = REPO_ROOT / ".github/workflows/scripts"
 MANAGER_HELPER = REPO_ROOT / "scripts/hust_ascend_manager_helper.sh"
+INSTALL_PLUGIN_SCRIPT = REPO_ROOT / "scripts/install_local_ascend_plugin.sh"
 
 
 def test_perfgate_scripts_are_present() -> None:
@@ -75,6 +76,16 @@ def test_local_ascend_manager_fallback_bootstraps_pip() -> None:
     assert 'if _hust_ascend_manager_command_needs_pip "$@"; then' in fallback
     assert 'hust_ensure_python_pip "${python_bin}" || return 1' in fallback
     assert '"${python_bin}" -m hust_ascend_manager.cli "$@"' in fallback
+
+
+def test_local_plugin_editable_install_bootstraps_build_metadata_deps() -> None:
+    install_script = INSTALL_PLUGIN_SCRIPT.read_text(encoding="utf-8")
+
+    assert "import setuptools_scm" in install_script
+    assert "import wheel.bdist_wheel" in install_script
+    assert 'hust_run_pip install "setuptools-scm>=8"' in install_script
+    assert 'hust_run_pip install "wheel"' in install_script
+    assert 'hust_run_pip install -e "${PLUGIN_REPO}" --no-build-isolation --no-deps' in install_script
 
 
 def test_stage2_trial_does_not_publish_benchmark_results() -> None:
