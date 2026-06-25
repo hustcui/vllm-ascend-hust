@@ -62,6 +62,8 @@ def test_ascend_benchmark_workflow_wires_two_stage_perfgate() -> None:
         "falling back to explicit pip installs"
     ) in workflow
     assert "vars.VLLM_ASCEND_HUST_BENCHMARK_USE_SUDO || 'auto'" in workflow
+    assert "CURRENT_VLLM_CACHE_ROOT: ${{ github.workspace }}/../.hf-cache/vllm" in workflow
+    assert "VLLM_ASCEND_HUST_SAME_SPEC_READY_TIMEOUT_SECONDS || '1800'" in workflow
 
 
 def test_local_ascend_manager_fallback_bootstraps_pip() -> None:
@@ -99,6 +101,20 @@ def test_benchmark_runner_auto_disables_sudo_when_unavailable() -> None:
     assert "Ascend benchmark sudo mode: disabled via auto detection" in runner_script
     assert "command not found" in runner_script[
         runner_script.index("runtime_ready_log_indicates_sudo_auth_failure") :
+    ]
+
+
+def test_same_spec_benchmark_uses_persistent_cache_and_configurable_timeout() -> None:
+    runner_script = (SCRIPT_DIR / "run_ascend_benchmark_ci.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert "SAME_SPEC_READY_TIMEOUT_SECONDS=" in runner_script
+    assert "CURRENT_VLLM_CACHE_ROOT=" in runner_script
+    assert 'CURRENT_VLLM_CACHE_ROOT="$CURRENT_VLLM_CACHE_ROOT"' in runner_script
+    assert 'READY_TIMEOUT_SECONDS="$SAME_SPEC_READY_TIMEOUT_SECONDS"' in runner_script
+    assert "SAME_SPEC_READY_TIMEOUT_SECONDS" in runner_script[
+        runner_script.index("SUDO_PRESERVE_ENV_VARS=(") :
     ]
 
 

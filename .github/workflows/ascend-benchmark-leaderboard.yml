@@ -287,6 +287,8 @@ jobs:
       HF_HOME: ${{ github.workspace }}/../.hf-cache
       HUGGINGFACE_HUB_CACHE: ${{ github.workspace }}/../.hf-cache/hub
       TRANSFORMERS_CACHE: ${{ github.workspace }}/../.hf-cache/transformers
+      CURRENT_VLLM_CACHE_ROOT: ${{ github.workspace }}/../.hf-cache/vllm
+      SAME_SPEC_READY_TIMEOUT_SECONDS: ${{ vars.VLLM_ASCEND_HUST_SAME_SPEC_READY_TIMEOUT_SECONDS || '1800' }}
       HF_TOKEN: ${{ (github.event_name != 'pull_request' && github.event_name != 'issue_comment') && secrets.HF_TOKEN || '' }}
       HF_REPO_ID: ${{ vars.VLLM_ASCEND_HUST_BENCHMARK_HF_REPO || 'intellistream/vllm-ascend-hust-benchmark-results' }}
       ASCEND_HUST_TARGET: ${{ github.event_name == 'workflow_dispatch' && inputs.ascend_hust_target || format('{0}@{1}', github.repository, github.event_name == 'issue_comment' && needs.issue-comment-command.outputs.pr_head_sha || (github.event_name == 'pull_request' && github.event.pull_request.head.ref || github.ref_name)) }}
@@ -629,10 +631,11 @@ jobs:
 
       - name: Prepare Hugging Face cache directories
         run: |
-          mkdir -p "$HF_HOME" "$HUGGINGFACE_HUB_CACHE" "$TRANSFORMERS_CACHE"
+          mkdir -p "$HF_HOME" "$HUGGINGFACE_HUB_CACHE" "$TRANSFORMERS_CACHE" "$CURRENT_VLLM_CACHE_ROOT"
           chmod 700 "$HF_HOME"
           echo "HF endpoint: $HF_ENDPOINT"
           echo "HF_HOME=$HF_HOME"
+          echo "CURRENT_VLLM_CACHE_ROOT=$CURRENT_VLLM_CACHE_ROOT"
 
       - name: Acquire Ascend hardware lock
         run: bash .github/workflows/scripts/acquire_ascend_hardware_lock.sh
