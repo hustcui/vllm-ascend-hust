@@ -4,6 +4,7 @@ _HUST_MANAGER_HELPER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 _HUST_MANAGER_REPO_ROOT="$(cd "${_HUST_MANAGER_HELPER_DIR}/.." && pwd)"
 _HUST_MANAGER_WORKSPACE_ROOT="$(cd "${_HUST_MANAGER_REPO_ROOT}/.." && pwd)"
 _HUST_DEFAULT_HF_ENDPOINT="${HUST_DEFAULT_HF_ENDPOINT:-https://hf-mirror.com}"
+_HUST_DEFAULT_GET_PIP_URL="${HUST_GET_PIP_URL:-https://bootstrap.pypa.io/get-pip.py}"
 
 _resolve_hust_ascend_manager_conda_python() {
   local env_prefix="${VLLM_HUST_CONDA_PREFIX:-}"
@@ -99,15 +100,77 @@ hust_resolve_python_bin() {
   _resolve_hust_ascend_manager_python "$@"
 }
 
+hust_ensure_python_pip() {
+  local python_bin="$1"
+  local get_pip_script
+
+  if "${python_bin}" -m pip --version >/dev/null 2>&1; then
+    return 0
+  fi
+
+  if "${python_bin}" -m ensurepip --upgrade >/dev/null 2>&1; then
+    "${python_bin}" -m pip --version >/dev/null 2>&1
+    return $?
+  fi
+
+  get_pip_script="$(mktemp "${TMPDIR:-/tmp}/hust-get-pip.XXXXXX.py")" || {
+    echo "[ERROR] Could not create a temporary get-pip.py path" >&2
+    return 1
+  }
+
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL "${_HUST_DEFAULT_GET_PIP_URL}" -o "${get_pip_script}" || {
+      rm -f "${get_pip_script}"
+      echo "[ERROR] Could not download get-pip.py from ${_HUST_DEFAULT_GET_PIP_URL}" >&2
+      return 1
+    }
+  elif command -v wget >/dev/null 2>&1; then
+    wget -q -O "${get_pip_script}" "${_HUST_DEFAULT_GET_PIP_URL}" || {
+      rm -f "${get_pip_script}"
+      echo "[ERROR] Could not download get-pip.py from ${_HUST_DEFAULT_GET_PIP_URL}" >&2
+      return 1
+    }
+  else
+    rm -f "${get_pip_script}"
+    echo "[ERROR] Could not locate curl or wget to download get-pip.py" >&2
+    return 1
+  fi
+
+  "${python_bin}" "${get_pip_script}" --user >/dev/null 2>&1 || {
+    rm -f "${get_pip_script}"
+    echo "[ERROR] get-pip.py failed for Python interpreter: ${python_bin}" >&2
+    return 1
+  }
+  rm -f "${get_pip_script}"
+
+  if "${python_bin}" -m pip --version >/dev/null 2>&1; then
+    return 0
+  fi
+
+  echo "[ERROR] Python interpreter cannot run pip and ensurepip is unavailable: ${python_bin}" >&2
+  echo "[ERROR] Install pip for this interpreter or point VLLM_HUST_PYTHON_BIN to a Python with pip." >&2
+  return 1
+}
+
+_hust_ascend_manager_command_needs_pip() {
+  local arg
+  for arg in "$@"; do
+    case "${arg}" in
+      --install-python-stack|--install-plugin)
+        return 0
+        ;;
+    esac
+  done
+  return 1
+}
+
 hust_run_pip() {
   local python_bin
   python_bin="$(_resolve_hust_ascend_manager_python 2>/dev/null)" || python_bin=""
 
   if [[ -n "${python_bin}" ]]; then
-    if ! "${python_bin}" -m pip --version >/dev/null 2>&1; then
-      if ! "${python_bin}" -m ensurepip --upgrade >/dev/null 2>&1; then
-        python_bin=""
-      fi
+    if ! hust_ensure_python_pip "${python_bin}" >/dev/null 2>&1; then
+      python_bin=""
     fi
   fi
 
@@ -131,12 +194,7 @@ hust_run_pip() {
     return 1
   }
 
-  if ! "${python_bin}" -m pip --version >/dev/null 2>&1; then
-    if ! "${python_bin}" -m ensurepip --upgrade >/dev/null 2>&1; then
-      echo "[ERROR] Could not locate pip or bootstrap it with ensurepip" >&2
-      return 1
-    fi
-  fi
+  hust_ensure_python_pip "${python_bin}" || return 1
 
   "${python_bin}" -m pip "$@"
 }
@@ -197,6 +255,10 @@ hust_ascend_manager_run() {
   if [[ "${_HUST_ASCEND_MANAGER_FALLBACK_WARNED:-0}" != "1" ]]; then
     echo "[WARN] hust-ascend-manager not found in PATH; using local workspace fallback at ${manager_src}" >&2
     _HUST_ASCEND_MANAGER_FALLBACK_WARNED=1
+  fi
+
+  if _hust_ascend_manager_command_needs_pip "$@"; then
+    hust_ensure_python_pip "${python_bin}" || return 1
   fi
 
   PYTHONPATH="${manager_src}${PYTHONPATH:+:${PYTHONPATH}}" \

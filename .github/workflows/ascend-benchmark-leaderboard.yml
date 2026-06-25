@@ -648,7 +648,9 @@ jobs:
           mkdir -p "$HOME" "$XDG_CACHE_HOME" "$XDG_CONFIG_HOME"
           chmod 700 "$HOME"
           source scripts/use_single_ascend_env.sh
-          hust_ascend_manager_run setup --install-python-stack --non-interactive
+          if ! hust_ascend_manager_run setup --install-python-stack --non-interactive; then
+            echo "[WARN] hust-ascend-manager Python stack reconciliation failed; falling back to explicit pip installs"
+          fi
           export PYTHONPATH="$VLLM_HUST_REPO:$VLLM_HUST_BENCHMARK_REPO/src${PYTHONPATH:+:$PYTHONPATH}"
           echo "PYTHONPATH=$PYTHONPATH" >> "$GITHUB_ENV"
           hust_run_pip install "torch==2.9.0" "torch-npu==2.9.0"

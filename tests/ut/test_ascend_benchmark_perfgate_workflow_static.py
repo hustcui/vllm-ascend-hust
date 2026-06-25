@@ -18,6 +18,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = REPO_ROOT / ".github/workflows/ascend-benchmark-leaderboard.yml"
 SCRIPT_DIR = REPO_ROOT / ".github/workflows/scripts"
+MANAGER_HELPER = REPO_ROOT / "scripts/hust_ascend_manager_helper.sh"
 
 
 def test_perfgate_scripts_are_present() -> None:
@@ -55,6 +56,25 @@ def test_ascend_benchmark_workflow_wires_two_stage_perfgate() -> None:
     assert "github.event_name == 'issue_comment'" in workflow
     assert "VLLM_ASCEND_HUST_PUBLISH_BENCHMARK_ON_PR" not in workflow
     assert "github.event_name == 'pull_request' || github.event_name == 'issue_comment'" in workflow
+    assert (
+        "hust-ascend-manager Python stack reconciliation failed; "
+        "falling back to explicit pip installs"
+    ) in workflow
+
+
+def test_local_ascend_manager_fallback_bootstraps_pip() -> None:
+    helper = MANAGER_HELPER.read_text(encoding="utf-8")
+
+    assert "hust_ensure_python_pip()" in helper
+    assert '"${python_bin}" -m ensurepip --upgrade' in helper
+    assert "https://bootstrap.pypa.io/get-pip.py" in helper
+    assert '"${python_bin}" "${get_pip_script}" --user' in helper
+    assert "_hust_ascend_manager_command_needs_pip()" in helper
+    assert "--install-python-stack|--install-plugin" in helper
+    fallback = helper[helper.index("hust_ascend_manager_run()") :]
+    assert 'if _hust_ascend_manager_command_needs_pip "$@"; then' in fallback
+    assert 'hust_ensure_python_pip "${python_bin}" || return 1' in fallback
+    assert '"${python_bin}" -m hust_ascend_manager.cli "$@"' in fallback
 
 
 def test_stage2_trial_does_not_publish_benchmark_results() -> None:
