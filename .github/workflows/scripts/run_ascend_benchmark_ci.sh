@@ -116,6 +116,16 @@ else
   ASCEND_BENCHMARK_ROOT_HELPER=$REPO_ASCEND_BENCHMARK_ROOT_HELPER
 fi
 
+if [[ "$ASCEND_BENCHMARK_USE_SUDO" == "auto" ]]; then
+  if command -v sudo >/dev/null 2>&1 && [[ -x "$ASCEND_BENCHMARK_ROOT_HELPER" ]]; then
+    ASCEND_BENCHMARK_USE_SUDO=1
+    echo "Ascend benchmark sudo mode: enabled via auto detection ($ASCEND_BENCHMARK_ROOT_HELPER)"
+  else
+    ASCEND_BENCHMARK_USE_SUDO=0
+    echo "Ascend benchmark sudo mode: disabled via auto detection; sudo or root helper is unavailable"
+  fi
+fi
+
 server_pid=""
 server_group_pid=""
 cleanup_ran=0
@@ -499,7 +509,7 @@ runtime_ready_log_indicates_resource_busy() {
 }
 
 runtime_ready_log_indicates_sudo_auth_failure() {
-  [[ -f "$RUNTIME_READY_LOG" ]] && grep -qE 'sudo: (a password is required|a terminal is required|sorry, you must have a tty|is not allowed to execute)' "$RUNTIME_READY_LOG"
+  [[ -f "$RUNTIME_READY_LOG" ]] && grep -qE 'sudo: (a password is required|a terminal is required|sorry, you must have a tty|is not allowed to execute|command not found)' "$RUNTIME_READY_LOG"
 }
 
 cleanup_previous_ci_processes() {

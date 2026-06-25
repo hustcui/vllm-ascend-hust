@@ -61,6 +61,7 @@ def test_ascend_benchmark_workflow_wires_two_stage_perfgate() -> None:
         "hust-ascend-manager Python stack reconciliation failed; "
         "falling back to explicit pip installs"
     ) in workflow
+    assert "vars.VLLM_ASCEND_HUST_BENCHMARK_USE_SUDO || 'auto'" in workflow
 
 
 def test_local_ascend_manager_fallback_bootstraps_pip() -> None:
@@ -86,6 +87,19 @@ def test_local_plugin_editable_install_bootstraps_build_metadata_deps() -> None:
     assert 'hust_run_pip install "setuptools-scm>=8"' in install_script
     assert 'hust_run_pip install "wheel"' in install_script
     assert 'hust_run_pip install -e "${PLUGIN_REPO}" --no-build-isolation --no-deps' in install_script
+
+
+def test_benchmark_runner_auto_disables_sudo_when_unavailable() -> None:
+    runner_script = (SCRIPT_DIR / "run_ascend_benchmark_ci.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'if [[ "$ASCEND_BENCHMARK_USE_SUDO" == "auto" ]]; then' in runner_script
+    assert "command -v sudo" in runner_script
+    assert "Ascend benchmark sudo mode: disabled via auto detection" in runner_script
+    assert "command not found" in runner_script[
+        runner_script.index("runtime_ready_log_indicates_sudo_auth_failure") :
+    ]
 
 
 def test_stage2_trial_does_not_publish_benchmark_results() -> None:
