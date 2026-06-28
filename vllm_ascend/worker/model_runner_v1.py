@@ -2563,6 +2563,12 @@ class NPUModelRunner(GPUModelRunner):
             num_computed_tokens_cpu = None
             seq_lens_cpu_metadata = self.optimistic_seq_lens_cpu[:num_reqs_padded]
 
+        req_ids = list(self.input_batch.req_ids)
+        if len(req_ids) < num_reqs_padded:
+            req_ids.extend(
+                f"__pad_req_{idx}" for idx in range(len(req_ids), num_reqs_padded)
+            )
+
         cm_base = AscendCommonAttentionMetadata(
             query_start_loc=self.query_start_loc.gpu[: num_reqs_padded + 1],
             query_start_loc_cpu=self.query_start_loc.cpu[: num_reqs_padded + 1],
@@ -2583,6 +2589,7 @@ class NPUModelRunner(GPUModelRunner):
             num_input_tokens=num_tokens_padded,
             actual_seq_lengths_q=self.actual_seq_lengths_q,
             positions=self.positions,
+            req_ids=req_ids[:num_reqs_padded],
             attn_state=self.attn_state,
             decode_token_per_req=self.decode_token_per_req,
             prefill_context_parallel_metadata=self.long_seq_metadata,
