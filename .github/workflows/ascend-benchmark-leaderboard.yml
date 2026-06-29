@@ -678,7 +678,7 @@ jobs:
           PY
           bash scripts/install_local_ascend_plugin.sh "$GITHUB_WORKSPACE"
           hust_run_pip install -e "${VLLM_HUST_BENCHMARK_REPO}[publish]" jsonschema
-          hust_run_pip install "huggingface_hub>=0.20" jsonschema
+          hust_run_pip install "huggingface_hub>=0.20"
 
       - name: Verify installation
         env:

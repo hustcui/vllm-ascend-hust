@@ -49,6 +49,7 @@ def test_ascend_benchmark_workflow_wires_two_stage_perfgate() -> None:
     assert "Performance gate - Stage 1 comparison" in workflow
     assert "Performance gate - Stage 2 trial rebase and benchmark" in workflow
     assert "Performance gate - two-stage comparison" in workflow
+    assert "store-main-perfgate-baseline:" in workflow
     assert "Store main perfgate baseline" in workflow
     assert "perfgate_report.md" in workflow
     assert "issue_comment:" in workflow
