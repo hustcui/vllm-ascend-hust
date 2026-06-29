@@ -304,7 +304,7 @@ jobs:
       MODEL_PRECISION: ${{ github.event_name == 'issue_comment' && 'BF16' || (github.event_name == 'workflow_dispatch' && inputs.model_precision || 'FP16') }}
       MODEL_QUANTIZATION: ${{ github.event_name == 'workflow_dispatch' && inputs.model_quantization || '' }}
       DTYPE: ${{ github.event_name == 'issue_comment' && 'bfloat16' || (github.event_name == 'workflow_dispatch' && inputs.dtype || 'float16') }}
-      MAX_MODEL_LEN: ${{ github.event_name == 'issue_comment' && '256' || '1024' }}
+      MAX_MODEL_LEN: ""
       MAX_NUM_SEQS: "1"
       BENCH_NUM_PROMPTS: ${{ github.event_name == 'issue_comment' && needs.issue-comment-command.outputs.num_prompts || (github.event_name == 'workflow_dispatch' && inputs.num_prompts || '200') }}
       BENCH_RANDOM_INPUT_LEN: ${{ github.event_name == 'issue_comment' && '64' || '1024' }}

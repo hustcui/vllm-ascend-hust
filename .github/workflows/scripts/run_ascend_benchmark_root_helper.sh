@@ -70,13 +70,18 @@ PY
       "${XDG_CONFIG_HOME:-}"
     ;;
   serve)
+    max_model_len_args=()
+    if [[ -n "${MAX_MODEL_LEN:-}" ]]; then
+      max_model_len_args=(--max-model-len "$MAX_MODEL_LEN")
+    fi
+
     exec env VLLM_ASCEND_TORCH_PREFLIGHT=0 \
       "${PYTHON_BIN:?PYTHON_BIN must be set}" -m vllm.entrypoints.openai.api_server \
       --model "${MODEL_NAME:?MODEL_NAME must be set}" \
       --host "${HOST:?HOST must be set}" \
       --port "${PORT:?PORT must be set}" \
       --dtype "${DTYPE:?DTYPE must be set}" \
-      --max-model-len "${MAX_MODEL_LEN:?MAX_MODEL_LEN must be set}" \
+      "${max_model_len_args[@]}" \
       --max-num-seqs "${MAX_NUM_SEQS:?MAX_NUM_SEQS must be set}" \
       --enforce-eager
     ;;

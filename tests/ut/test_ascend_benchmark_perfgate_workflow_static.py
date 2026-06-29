@@ -105,6 +105,25 @@ def test_benchmark_runner_auto_disables_sudo_when_unavailable() -> None:
     ]
 
 
+def test_benchmark_server_uses_inferred_max_model_len_by_default() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    runner_script = (SCRIPT_DIR / "run_ascend_benchmark_ci.sh").read_text(
+        encoding="utf-8"
+    )
+    root_helper = (SCRIPT_DIR / "run_ascend_benchmark_root_helper.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'MAX_MODEL_LEN: ""' in workflow
+    assert "MAX_MODEL_LEN=${MAX_MODEL_LEN:-}" in runner_script
+    assert "max_model_len_args=()" in runner_script
+    assert '"${max_model_len_args[@]}"' in runner_script
+    assert runner_script.count('"${max_model_len_args[@]}"') == 2
+    assert "max_model_len_args=()" in root_helper
+    assert '"${max_model_len_args[@]}"' in root_helper
+    assert "MAX_MODEL_LEN must be set" not in root_helper
+
+
 def test_same_spec_benchmark_uses_persistent_cache_and_configurable_timeout() -> None:
     runner_script = (SCRIPT_DIR / "run_ascend_benchmark_ci.sh").read_text(
         encoding="utf-8"
