@@ -40,7 +40,7 @@ MODEL_PRECISION=${MODEL_PRECISION:-FP16}
 HOST=${HOST:-127.0.0.1}
 PORT=${PORT:-}
 DTYPE=${DTYPE:-float16}
-MAX_MODEL_LEN=${MAX_MODEL_LEN:-1024}
+MAX_MODEL_LEN=${MAX_MODEL_LEN:-}
 MAX_NUM_SEQS=${MAX_NUM_SEQS:-1}
 BENCH_NUM_PROMPTS=${BENCH_NUM_PROMPTS:-200}
 BENCH_RANDOM_INPUT_LEN=${BENCH_RANDOM_INPUT_LEN:-1024}
@@ -55,6 +55,7 @@ HARDWARE_CHIP_MODEL=${HARDWARE_CHIP_MODEL:-910B3}
 CHIP_COUNT=${CHIP_COUNT:-1}
 NODE_COUNT=${NODE_COUNT:-1}
 PUBLISH_TO_HF=${PUBLISH_TO_HF:-0}
+PUBLISH_TO_BENCHMARK_REPO=${PUBLISH_TO_BENCHMARK_REPO:-0}
 HF_REPO_ID=${HF_REPO_ID:-}
 VLLM_HUST_BENCHMARK_REF=${VLLM_HUST_BENCHMARK_REF:-}
 
@@ -103,6 +104,8 @@ RESOURCE_BUSY_EXIT_CODE=${RESOURCE_BUSY_EXIT_CODE:-75}
 SUDO_AUTH_EXIT_CODE=${SUDO_AUTH_EXIT_CODE:-76}
 INVALID_BENCHMARK_RESULT_EXIT_CODE=${INVALID_BENCHMARK_RESULT_EXIT_CODE:-77}
 ASCEND_BENCHMARK_USE_SUDO=${ASCEND_BENCHMARK_USE_SUDO:-0}
+SAME_SPEC_READY_TIMEOUT_SECONDS=${SAME_SPEC_READY_TIMEOUT_SECONDS:-$SERVER_READY_TIMEOUT_SECONDS}
+CURRENT_VLLM_CACHE_ROOT=${CURRENT_VLLM_CACHE_ROOT:-$CI_RUNTIME_ROOT/current-ascend-same-spec-cache}
 DEFAULT_SYSTEM_ASCEND_BENCHMARK_ROOT_HELPER=${DEFAULT_SYSTEM_ASCEND_BENCHMARK_ROOT_HELPER:-/usr/local/bin/run_ascend_benchmark_root_helper.sh}
 REPO_ASCEND_BENCHMARK_ROOT_HELPER=$VLLM_ASCEND_HUST_REPO/.github/workflows/scripts/run_ascend_benchmark_root_helper.sh
 REPO_ASCEND_BENCHMARK_ROOT_HELPER_INSTALL_SCRIPT=$VLLM_ASCEND_HUST_REPO/scripts/install_ascend_benchmark_root_helper.sh
@@ -113,6 +116,16 @@ elif [[ -x "$DEFAULT_SYSTEM_ASCEND_BENCHMARK_ROOT_HELPER" ]]; then
   ASCEND_BENCHMARK_ROOT_HELPER=$DEFAULT_SYSTEM_ASCEND_BENCHMARK_ROOT_HELPER
 else
   ASCEND_BENCHMARK_ROOT_HELPER=$REPO_ASCEND_BENCHMARK_ROOT_HELPER
+fi
+
+if [[ "$ASCEND_BENCHMARK_USE_SUDO" == "auto" ]]; then
+  if command -v sudo >/dev/null 2>&1 && [[ -x "$ASCEND_BENCHMARK_ROOT_HELPER" ]]; then
+    ASCEND_BENCHMARK_USE_SUDO=1
+    echo "Ascend benchmark sudo mode: enabled via auto detection ($ASCEND_BENCHMARK_ROOT_HELPER)"
+  else
+    ASCEND_BENCHMARK_USE_SUDO=0
+    echo "Ascend benchmark sudo mode: disabled via auto detection; sudo or root helper is unavailable"
+  fi
 fi
 
 server_pid=""
@@ -221,6 +234,9 @@ SUDO_PRESERVE_ENV_VARS=(
   BENCH_MAX_CONCURRENCY
   BENCH_NUM_PROMPTS
   BENCH_OUTPUT_LEN
+  BENCHMARK_REPO_GH_TOKEN
+  BENCHMARK_REPO_SLUG
+  BENCHMARK_REPO_SSH_KEY
   BENCH_RANDOM_BATCH_SIZE
   BENCH_RANDOM_INPUT_LEN
   BENCH_RANDOM_OUTPUT_LEN
@@ -271,12 +287,14 @@ SUDO_PRESERVE_ENV_VARS=(
   NODE_COUNT
   PATH
   PORT
+  PUBLISH_TO_BENCHMARK_REPO
   PYTHON_BIN
   PYTHONPATH
   RESULT_DIR
   RESULT_ROOT
   RUN_ID
   SAME_SPEC_CONSTRAINTS_FILE
+  SAME_SPEC_READY_TIMEOUT_SECONDS
   SAME_SPEC_SPEC_FILE
   SERVER_LOG
   TMPDIR
@@ -494,7 +512,7 @@ runtime_ready_log_indicates_resource_busy() {
 }
 
 runtime_ready_log_indicates_sudo_auth_failure() {
-  [[ -f "$RUNTIME_READY_LOG" ]] && grep -qE 'sudo: (a password is required|a terminal is required|sorry, you must have a tty|is not allowed to execute)' "$RUNTIME_READY_LOG"
+  [[ -f "$RUNTIME_READY_LOG" ]] && grep -qE 'sudo: (a password is required|a terminal is required|sorry, you must have a tty|is not allowed to execute|command not found)' "$RUNTIME_READY_LOG"
 }
 
 cleanup_previous_ci_processes() {
@@ -615,6 +633,11 @@ resolve_npu_smi_bin() {
 }
 
 start_server() {
+  local max_model_len_args=()
+  if [[ -n "$MAX_MODEL_LEN" ]]; then
+    max_model_len_args=(--max-model-len "$MAX_MODEL_LEN")
+  fi
+
   if command -v setsid >/dev/null 2>&1; then
     if [[ "$ASCEND_BENCHMARK_USE_SUDO" == "1" ]]; then
       local preserve_list
@@ -631,7 +654,7 @@ start_server() {
         --host "$HOST" \
         --port "$PORT" \
         --dtype "$DTYPE" \
-        --max-model-len "$MAX_MODEL_LEN" \
+        "${max_model_len_args[@]}" \
         --max-num-seqs "$MAX_NUM_SEQS" \
         --enforce-eager >"$SERVER_LOG" 2>&1 &
     fi
@@ -648,7 +671,7 @@ start_server() {
         --host "$HOST" \
         --port "$PORT" \
         --dtype "$DTYPE" \
-        --max-model-len "$MAX_MODEL_LEN" \
+        "${max_model_len_args[@]}" \
         --max-num-seqs "$MAX_NUM_SEQS" \
         --enforce-eager >"$SERVER_LOG" 2>&1 &
     fi
@@ -693,7 +716,7 @@ run_same_spec_current_benchmark() {
       CURRENT_DTYPE="$DTYPE" \
       CURRENT_VLLM_HUST_REPO="$VLLM_HUST_REPO" \
       CURRENT_VLLM_ASCEND_HUST_REPO="$VLLM_ASCEND_HUST_REPO" \
-      CURRENT_VLLM_CACHE_ROOT="$CI_RUNTIME_ROOT/current-ascend-same-spec-cache" \
+      CURRENT_VLLM_CACHE_ROOT="$CURRENT_VLLM_CACHE_ROOT" \
       CURRENT_GITHUB_REPOSITORY="vLLM-HUST/vllm-hust" \
       CURRENT_GITHUB_REF="$VLLM_HUST_REF" \
       CURRENT_GIT_COMMIT="$current_vllm_hust_commit" \
@@ -707,6 +730,7 @@ run_same_spec_current_benchmark() {
       RUN_ID="$RUN_ID" \
       CURRENT_SERVER_PORT="$PORT" \
       CURRENT_CLIENT_PORT="$PORT" \
+      READY_TIMEOUT_SECONDS="$SAME_SPEC_READY_TIMEOUT_SECONDS" \
       CONSTRAINTS_FILE="$SAME_SPEC_CONSTRAINTS_FILE" \
       run_ascend_root_helper same-spec "$same_spec_runner" "$SAME_SPEC_SPEC_FILE"
   else
@@ -723,7 +747,7 @@ run_same_spec_current_benchmark() {
       CURRENT_DTYPE="$DTYPE" \
       CURRENT_VLLM_HUST_REPO="$VLLM_HUST_REPO" \
       CURRENT_VLLM_ASCEND_HUST_REPO="$VLLM_ASCEND_HUST_REPO" \
-      CURRENT_VLLM_CACHE_ROOT="$CI_RUNTIME_ROOT/current-ascend-same-spec-cache" \
+      CURRENT_VLLM_CACHE_ROOT="$CURRENT_VLLM_CACHE_ROOT" \
       CURRENT_GITHUB_REPOSITORY="vLLM-HUST/vllm-hust" \
       CURRENT_GITHUB_REF="$VLLM_HUST_REF" \
       CURRENT_GIT_COMMIT="$current_vllm_hust_commit" \
@@ -737,6 +761,7 @@ run_same_spec_current_benchmark() {
       RUN_ID="$RUN_ID" \
       CURRENT_SERVER_PORT="$PORT" \
       CURRENT_CLIENT_PORT="$PORT" \
+      READY_TIMEOUT_SECONDS="$SAME_SPEC_READY_TIMEOUT_SECONDS" \
       CONSTRAINTS_FILE="$SAME_SPEC_CONSTRAINTS_FILE" \
       bash "$same_spec_runner" "$SAME_SPEC_SPEC_FILE"
   fi
@@ -797,6 +822,32 @@ if completed == 0 and failed > 0:
 
 print(f"validated benchmark result: completed={completed}, failed={failed}, total_input={total}")
 PY
+}
+
+sync_benchmark_publication_to_github() {
+  local publisher_script=${BENCHMARK_PUBLICATION_SYNC_SCRIPT:-$VLLM_ASCEND_HUST_REPO/.github/workflows/scripts/sync_benchmark_snapshots_to_github.sh}
+
+  if [[ "$PUBLISH_TO_BENCHMARK_REPO" != "1" ]]; then
+    return 0
+  fi
+
+  if [[ ! -x "$publisher_script" ]]; then
+    echo "benchmark publication sync script is missing or not executable: $publisher_script" >&2
+    return 2
+  fi
+
+  BENCHMARK_REPO_DIR="$VLLM_HUST_BENCHMARK_REPO" \
+  WEBSITE_REPO_DIR="$VLLM_HUST_WEBSITE_REPO" \
+  CURRENT_SUBMISSION_DIR="$SUBMISSION_DIR" \
+  VLLM_HUST_REPO_DIR="$VLLM_HUST_REPO" \
+  LOCAL_SNAPSHOT_OUTPUT_DIR="$AGGREGATE_OUTPUT_DIR" \
+  PYTHON_BIN="$PYTHON_BIN" \
+  BENCHMARK_REPO_SLUG="${BENCHMARK_REPO_SLUG:-vLLM-HUST/vllm-hust-benchmark}" \
+  BENCHMARK_REPO_GH_TOKEN="${BENCHMARK_REPO_GH_TOKEN:-}" \
+  BENCHMARK_REPO_SSH_KEY="${BENCHMARK_REPO_SSH_KEY:-}" \
+  SNAPSHOT_COMMIT_MESSAGE="chore(data): sync vllm-ascend benchmark publication $RUN_ID" \
+  RUN_ID="$RUN_ID" \
+  "$publisher_script"
 }
 
 allocate_local_port() {
@@ -1083,6 +1134,7 @@ echo "run id: $RUN_ID"
 echo "result root: $RESULT_ROOT"
 echo "benchmark port: $PORT"
 echo "benchmark scenario: $BENCH_SCENARIO"
+echo "publish to benchmark repo: $PUBLISH_TO_BENCHMARK_REPO"
 echo "publish to hf: $PUBLISH_TO_HF"
 echo "same-spec benchmark enabled: $SAME_SPEC_BENCHMARK_ENABLED"
 echo "ascend benchmark use sudo: $ASCEND_BENCHMARK_USE_SUDO"
@@ -1339,6 +1391,10 @@ PY
     --submissions-dir "$SUBMISSIONS_ROOT"
 fi
 
+if [[ "$PUBLISH_TO_BENCHMARK_REPO" == "1" ]]; then
+  sync_benchmark_publication_to_github
+fi
+
 if [[ "$PUBLISH_TO_HF" == "1" ]]; then
   if [[ -z "$HF_REPO_ID" ]]; then
     echo "HF_REPO_ID must be set when PUBLISH_TO_HF=1" >&2
@@ -1352,7 +1408,7 @@ if [[ "$PUBLISH_TO_HF" == "1" ]]; then
     --submissions-prefix submissions-auto \
     --commit-message "chore: sync vllm-hust benchmark from vllm-ascend-hust $RUN_ID (${ASCEND_HUST_TARGET_REPOSITORY}@${ASCEND_HUST_TARGET_REF}:${ASCEND_HUST_TARGET_SHA_SHORT})" \
     --execute
-else
+elif [[ "$PUBLISH_TO_BENCHMARK_REPO" != "1" ]]; then
   "${PYTHON_BIN}" -m vllm_hust_benchmark.cli publish-website \
     --source-dir "$SUBMISSIONS_ROOT" \
     --output-dir "$AGGREGATE_OUTPUT_DIR" \

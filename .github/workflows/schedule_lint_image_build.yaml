@@ -60,7 +60,7 @@ jobs:
         username: ${{ vars.QUAY_CI_USERNAME }}
         password: ${{ secrets.QUAY_CI_PASSWORD }}
 
-    - name: Build and push
+    - name: Build lint image
       if: ${{ github.event_name != 'workflow_dispatch' }}
       uses: docker/build-push-action@v7
       with:
@@ -68,12 +68,12 @@ jobs:
         platforms: 'linux/amd64'
         context: .
         file: .github/workflows/dockerfiles/Dockerfile.lint
-        push: true
+        push: ${{ github.repository_owner == 'vllm-project' }}
         labels: ${{ steps.meta.outputs.labels }}
         tags: ${{ steps.meta.outputs.tags }}
         provenance: false
 
-    - name: Build and push
+    - name: Build lint image
       if: ${{ github.event_name == 'workflow_dispatch' }}
       uses: docker/build-push-action@v7
       with:
@@ -81,7 +81,7 @@ jobs:
         platforms: 'linux/amd64'
         context: .
         file: .github/workflows/dockerfiles/Dockerfile.lint
-        push: true
+        push: ${{ github.repository_owner == 'vllm-project' }}
         labels: ${{ steps.meta.outputs.labels }}
         tags: ${{ steps.meta.outputs.tags }}
         provenance: false

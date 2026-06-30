@@ -8,11 +8,16 @@ VLLM_HUST_REPO_DIR=${VLLM_HUST_REPO_DIR:-${VLLM_HUST_REPO:-$BENCHMARK_REPO_DIR/.
 PYTHON_BIN=${PYTHON_BIN:-python3}
 SNAPSHOT_TARGET_BRANCH=${SNAPSHOT_TARGET_BRANCH:-main}
 SNAPSHOT_OUTPUT_DIR=${SNAPSHOT_OUTPUT_DIR:-$BENCHMARK_REPO_DIR/leaderboard-data/snapshots}
+LOCAL_SNAPSHOT_OUTPUT_DIR=${LOCAL_SNAPSHOT_OUTPUT_DIR:-}
 SNAPSHOT_MAX_PUSH_ATTEMPTS=${SNAPSHOT_MAX_PUSH_ATTEMPTS:-4}
 SNAPSHOT_PUSH_RETRY_SECONDS=${SNAPSHOT_PUSH_RETRY_SECONDS:-5}
-SNAPSHOT_COMMIT_MESSAGE=${SNAPSHOT_COMMIT_MESSAGE:-chore: sync benchmark leaderboard snapshots}
+SNAPSHOT_COMMIT_MESSAGE=${SNAPSHOT_COMMIT_MESSAGE:-chore(data): sync benchmark publication}
 GIT_COMMITTER_NAME=${GIT_COMMITTER_NAME:-vLLM-HUST Benchmark Bot}
 GIT_COMMITTER_EMAIL=${GIT_COMMITTER_EMAIL:-benchmark-bot@vllm-hust.local}
+BENCHMARK_REPO_REMOTE=${BENCHMARK_REPO_REMOTE:-origin}
+BENCHMARK_REPO_SLUG=${BENCHMARK_REPO_SLUG:-vLLM-HUST/vllm-hust-benchmark}
+BENCHMARK_REPO_GH_TOKEN=${BENCHMARK_REPO_GH_TOKEN:-}
+BENCHMARK_REPO_SSH_KEY=${BENCHMARK_REPO_SSH_KEY:-}
 
 required_submission_files=(leaderboard_manifest.json run_leaderboard.json)
 required_snapshot_files=(
@@ -28,6 +33,33 @@ write_github_env() {
   if [[ -n "${GITHUB_ENV:-}" ]]; then
     printf '%s=%s\n' "$key" "$value" >>"$GITHUB_ENV"
   fi
+}
+
+configure_push_remote() {
+  local remote_url=
+
+  if [[ -n "$BENCHMARK_REPO_SSH_KEY" ]]; then
+    remote_url="git@github.com:${BENCHMARK_REPO_SLUG}.git"
+    git -C "$BENCHMARK_REPO_DIR" remote set-url "$BENCHMARK_REPO_REMOTE" "$remote_url"
+    return 0
+  fi
+
+  if [[ -n "$BENCHMARK_REPO_GH_TOKEN" ]]; then
+    remote_url="https://x-access-token:${BENCHMARK_REPO_GH_TOKEN}@github.com/${BENCHMARK_REPO_SLUG}.git"
+    git -C "$BENCHMARK_REPO_DIR" remote set-url "$BENCHMARK_REPO_REMOTE" "$remote_url"
+    return 0
+  fi
+
+  if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
+    echo "L3 benchmark repository publication is enabled, but no cross-repository write credential is available." >&2
+    echo "Configure one of the following secrets on the vllm-ascend-hust workflow repository before enabling benchmark repo publish:" >&2
+    echo "  - VLLM_ASCEND_HUST_BENCHMARK_SSH_KEY: SSH private key with write access to ${BENCHMARK_REPO_SLUG}" >&2
+    echo "  - VLLM_HUST_BENCHMARK_GH_TOKEN: GitHub token with contents write access to ${BENCHMARK_REPO_SLUG}" >&2
+    echo "Benchmark repo publish target: ${BENCHMARK_REPO_SLUG}@${SNAPSHOT_TARGET_BRANCH}" >&2
+    exit 2
+  fi
+
+  git -C "$BENCHMARK_REPO_DIR" remote set-url "$BENCHMARK_REPO_REMOTE" "$remote_url"
 }
 
 for file_name in "${required_submission_files[@]}"; do
@@ -64,14 +96,14 @@ relative_snapshot_dir="leaderboard-data/snapshots"
 
 git -C "$BENCHMARK_REPO_DIR" config user.name "$GIT_COMMITTER_NAME"
 git -C "$BENCHMARK_REPO_DIR" config user.email "$GIT_COMMITTER_EMAIL"
+configure_push_remote
 export VLLM_HUST_BENCHMARK_REPO="$BENCHMARK_REPO_DIR"
 export VLLM_HUST_WEBSITE_REPO="$WEBSITE_REPO_DIR"
 export VLLM_HUST_REPO="$VLLM_HUST_REPO_DIR"
 
-prepare_snapshot_commit() {
-  git -C "$BENCHMARK_REPO_DIR" fetch origin "$SNAPSHOT_TARGET_BRANCH"
-  git -C "$BENCHMARK_REPO_DIR" switch "$SNAPSHOT_TARGET_BRANCH"
-  git -C "$BENCHMARK_REPO_DIR" reset --hard "origin/$SNAPSHOT_TARGET_BRANCH"
+prepare_publication_commit() {
+  git -C "$BENCHMARK_REPO_DIR" fetch "$BENCHMARK_REPO_REMOTE" "$SNAPSHOT_TARGET_BRANCH"
+  git -C "$BENCHMARK_REPO_DIR" checkout -B "$SNAPSHOT_TARGET_BRANCH" "$BENCHMARK_REPO_REMOTE/$SNAPSHOT_TARGET_BRANCH"
 
   mkdir -p "$target_submission_dir"
   for file_name in "${required_submission_files[@]}"; do
@@ -95,6 +127,13 @@ prepare_snapshot_commit() {
     fi
   done
 
+  if [[ -n "$LOCAL_SNAPSHOT_OUTPUT_DIR" ]]; then
+    mkdir -p "$LOCAL_SNAPSHOT_OUTPUT_DIR"
+    for file_name in "${required_snapshot_files[@]}"; do
+      cp "$SNAPSHOT_OUTPUT_DIR/$file_name" "$LOCAL_SNAPSHOT_OUTPUT_DIR/$file_name"
+    done
+  fi
+
   git -C "$BENCHMARK_REPO_DIR" add "$relative_submission_dir" "$relative_snapshot_dir"
   if git -C "$BENCHMARK_REPO_DIR" diff --cached --quiet; then
     return 1
@@ -104,25 +143,41 @@ prepare_snapshot_commit() {
 }
 
 for attempt in $(seq 1 "$SNAPSHOT_MAX_PUSH_ATTEMPTS"); do
-  if ! prepare_snapshot_commit; then
-    echo "GitHub leaderboard snapshots already include submission $run_id"
+  if ! prepare_publication_commit; then
+    echo "Benchmark publication already includes submission $run_id"
+    echo "Benchmark repo target: ${BENCHMARK_REPO_SLUG}@${SNAPSHOT_TARGET_BRANCH}"
+    echo "Submission path: $relative_submission_dir"
+    echo "Snapshot path: $relative_snapshot_dir"
     write_github_env GITHUB_SNAPSHOT_SYNC_STATUS unchanged
+    write_github_env GITHUB_SNAPSHOT_SYNC_REPO "$BENCHMARK_REPO_SLUG"
+    write_github_env GITHUB_SNAPSHOT_SYNC_BRANCH "$SNAPSHOT_TARGET_BRANCH"
+    write_github_env GITHUB_SNAPSHOT_SYNC_SUBMISSION_PATH "$relative_submission_dir"
+    write_github_env GITHUB_SNAPSHOT_SYNC_SNAPSHOT_PATH "$relative_snapshot_dir"
     exit 0
   fi
 
   snapshot_commit=$(git -C "$BENCHMARK_REPO_DIR" rev-parse HEAD)
-  if git -C "$BENCHMARK_REPO_DIR" push origin "HEAD:$SNAPSHOT_TARGET_BRANCH"; then
-    echo "Pushed GitHub leaderboard snapshots to vllm-hust-benchmark@$SNAPSHOT_TARGET_BRANCH: $snapshot_commit"
+  if git -C "$BENCHMARK_REPO_DIR" push "$BENCHMARK_REPO_REMOTE" "HEAD:$SNAPSHOT_TARGET_BRANCH"; then
+    echo "Pushed benchmark publication to ${BENCHMARK_REPO_SLUG}@${SNAPSHOT_TARGET_BRANCH}: $snapshot_commit"
+    echo "Submission path: $relative_submission_dir"
+    echo "Snapshot path: $relative_snapshot_dir"
     write_github_env GITHUB_SNAPSHOT_SYNC_STATUS pushed
     write_github_env GITHUB_SNAPSHOT_SYNC_COMMIT "$snapshot_commit"
+    write_github_env GITHUB_SNAPSHOT_SYNC_REPO "$BENCHMARK_REPO_SLUG"
+    write_github_env GITHUB_SNAPSHOT_SYNC_BRANCH "$SNAPSHOT_TARGET_BRANCH"
+    write_github_env GITHUB_SNAPSHOT_SYNC_SUBMISSION_PATH "$relative_submission_dir"
+    write_github_env GITHUB_SNAPSHOT_SYNC_SNAPSHOT_PATH "$relative_snapshot_dir"
     exit 0
   fi
 
   if [[ "$attempt" -lt "$SNAPSHOT_MAX_PUSH_ATTEMPTS" ]]; then
-    echo "snapshot push failed; retrying with fresh origin/$SNAPSHOT_TARGET_BRANCH in ${SNAPSHOT_PUSH_RETRY_SECONDS}s (attempt $attempt/$SNAPSHOT_MAX_PUSH_ATTEMPTS)" >&2
+    echo "benchmark publication push failed; retrying with fresh ${BENCHMARK_REPO_REMOTE}/${SNAPSHOT_TARGET_BRANCH} in ${SNAPSHOT_PUSH_RETRY_SECONDS}s (attempt $attempt/$SNAPSHOT_MAX_PUSH_ATTEMPTS)" >&2
     sleep "$SNAPSHOT_PUSH_RETRY_SECONDS"
   fi
 done
 
-echo "failed to push GitHub leaderboard snapshots after $SNAPSHOT_MAX_PUSH_ATTEMPTS attempts" >&2
+echo "failed to push benchmark publication after $SNAPSHOT_MAX_PUSH_ATTEMPTS attempts" >&2
+echo "Benchmark repo target: ${BENCHMARK_REPO_SLUG}@${SNAPSHOT_TARGET_BRANCH}" >&2
+echo "Submission path: $relative_submission_dir" >&2
+echo "Snapshot path: $relative_snapshot_dir" >&2
 exit 1
