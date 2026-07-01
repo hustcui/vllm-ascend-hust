@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 import copy
+import os
 import queue
 import threading
 import time
@@ -37,6 +38,89 @@ if TYPE_CHECKING:
 from vllm.model_executor.layers.attention import Attention, MLAAttention
 
 
+def _profile_enabled() -> bool:
+    return os.getenv("VLLM_ASCEND_CPU_OFFLOAD_PROFILE", "0").lower() in {"1", "true", "yes", "on"}
+
+
+def _indexed_copy_enabled() -> bool:
+    return os.getenv("VLLM_ASCEND_CPU_OFFLOAD_INDEX_COPY", "0").lower() in {"1", "true", "yes", "on"}
+
+
+def _reverse_span_copy_enabled() -> bool:
+    return os.getenv("VLLM_ASCEND_CPU_OFFLOAD_REVERSE_SPAN_COPY", "0").lower() in {"1", "true", "yes", "on"}
+
+
+def _elapsed_ms(started: float) -> float:
+    return (time.perf_counter() - started) * 1000.0
+
+
+BlockCopySpan = tuple[int, int, int]
+DirectionalBlockCopySpan = tuple[int, int, int, int]
+
+
+def _block_pair_locality(block_mapping: Sequence[tuple[int, int]]) -> tuple[int, int, list[tuple[int, int]]]:
+    """Return CPU/GPU adjacent-pair counts and a small mapping sample."""
+    cpu_adjacent = 0
+    gpu_adjacent = 0
+    for (prev_cpu_id, prev_gpu_id), (cpu_block_id, gpu_block_id) in zip(
+        block_mapping,
+        block_mapping[1:],
+    ):
+        if cpu_block_id == prev_cpu_id + 1:
+            cpu_adjacent += 1
+        if gpu_block_id == prev_gpu_id + 1:
+            gpu_adjacent += 1
+    return cpu_adjacent, gpu_adjacent, list(block_mapping[:8])
+
+
+def _coalesce_block_copy_spans(block_mapping: Sequence[tuple[int, int]]) -> list[BlockCopySpan]:
+    """Coalesce adjacent CPU/GPU block pairs into contiguous copy spans."""
+    if not block_mapping:
+        return []
+
+    spans: list[BlockCopySpan] = []
+    cpu_start, gpu_start = block_mapping[0]
+    prev_cpu_id, prev_gpu_id = cpu_start, gpu_start
+    span_len = 1
+    for cpu_block_id, gpu_block_id in block_mapping[1:]:
+        if cpu_block_id == prev_cpu_id + 1 and gpu_block_id == prev_gpu_id + 1:
+            span_len += 1
+        else:
+            spans.append((cpu_start, gpu_start, span_len))
+            cpu_start, gpu_start = cpu_block_id, gpu_block_id
+            span_len = 1
+        prev_cpu_id, prev_gpu_id = cpu_block_id, gpu_block_id
+    spans.append((cpu_start, gpu_start, span_len))
+    return spans
+
+
+def _coalesce_directional_block_copy_spans(
+    block_mapping: Sequence[tuple[int, int]],
+) -> list[DirectionalBlockCopySpan]:
+    """Coalesce spans where CPU is ascending and GPU is ascending or descending."""
+    if not block_mapping:
+        return []
+
+    spans: list[DirectionalBlockCopySpan] = []
+    cpu_start, gpu_start = block_mapping[0]
+    prev_cpu_id, prev_gpu_id = cpu_start, gpu_start
+    span_len = 1
+    direction = 0
+    for cpu_block_id, gpu_block_id in block_mapping[1:]:
+        next_direction = gpu_block_id - prev_gpu_id
+        if cpu_block_id == prev_cpu_id + 1 and next_direction in (1, -1) and direction in (0, next_direction):
+            span_len += 1
+            direction = next_direction
+        else:
+            spans.append((cpu_start, gpu_start, span_len, direction or 1))
+            cpu_start, gpu_start = cpu_block_id, gpu_block_id
+            span_len = 1
+            direction = 0
+        prev_cpu_id, prev_gpu_id = cpu_block_id, gpu_block_id
+    spans.append((cpu_start, gpu_start, span_len, direction or 1))
+    return spans
+
+
 @dataclass
 class ReqMeta:
     gpu_block_ids: list[int]
@@ -52,7 +136,14 @@ class ReqMeta:
         self.num_scheduled_tokens = other.num_scheduled_tokens
         self.num_computed_tokens = other.num_computed_tokens
         self.num_gpu_computed_tokens = other.num_gpu_computed_tokens
-        self.num_cpu_computed_tokens = other.num_cpu_computed_tokens
+        # For scheduled_cached_reqs the scheduler reports num_computed_tokens
+        # for both GPU and CPU fields. Keep the original CPU-hit prefix here:
+        # it is the lower bound of blocks already materialized in CPU memory,
+        # and save must write every later full block.
+        self.num_cpu_computed_tokens = min(
+            self.num_cpu_computed_tokens,
+            other.num_cpu_computed_tokens,
+        )
 
 
 @dataclass
@@ -155,11 +246,22 @@ class CPUOffloadingConnectorScheduler:
         logger.info("swap_in_threshold: %s", self.swap_in_threshold)
 
     def get_num_new_matched_tokens(self, ori_request: "Request", num_computed_tokens: int) -> tuple[int, bool]:
+        started = time.perf_counter()
         request = copy.deepcopy(ori_request)
         request.get_hash_new_full_blocks = None
+        request._block_hasher = None
         num_cpu_computed_tokens, load_async = self.zmq_rpc_client.call("get_matched_num_and_touch", request)
         self.num_gpu_computed_tokens[request.request_id] = num_computed_tokens
         self.num_cpu_computed_tokens[request.request_id] = num_cpu_computed_tokens
+        if _profile_enabled():
+            logger.info(
+                "[cpu-offload-profile] scheduler_match req=%s gpu_tokens=%s cpu_tokens=%s delta=%s wall_ms=%.3f",
+                request.request_id,
+                num_computed_tokens,
+                num_cpu_computed_tokens,
+                num_cpu_computed_tokens - num_computed_tokens,
+                _elapsed_ms(started),
+            )
         if num_cpu_computed_tokens - num_computed_tokens >= self.swap_in_threshold:
             return num_cpu_computed_tokens - num_computed_tokens, load_async
         else:
@@ -169,6 +271,7 @@ class CPUOffloadingConnectorScheduler:
         self.allocated_req_ids.add(request.request_id)
 
     def build_connector_meta(self, scheduler_output: SchedulerOutput) -> KVConnectorMetadata:
+        started = time.perf_counter()
         num_tokens = {}
         # process scheduled_new_reqs
         for req in scheduler_output.scheduled_new_reqs:
@@ -214,14 +317,31 @@ class CPUOffloadingConnectorScheduler:
         self.num_cpu_computed_tokens.clear()
         self.allocated_req_ids.clear()
         self.finished_req_ids.clear()
+        if _profile_enabled():
+            block_count = sum(len(req.cpu_block_ids) for req in metadata.requests.values())
+            logger.info(
+                "[cpu-offload-profile] scheduler_build_meta requests=%d finished=%d cpu_blocks=%d wall_ms=%.3f",
+                len(metadata.requests),
+                len(metadata.finished_req_ids),
+                block_count,
+                _elapsed_ms(started),
+            )
         return metadata
 
     def request_finished(self, ori_request: "Request"):
+        started = time.perf_counter()
         request = copy.deepcopy(ori_request)
         request.get_hash_new_full_blocks = None
+        request._block_hasher = None
         self.finished_req_ids.append(request.request_id)
         # inform metadata server to record request, and free it after finish sending
         self.zmq_rpc_client.call("record_request_cache_and_free_slots", request)
+        if _profile_enabled():
+            logger.info(
+                "[cpu-offload-profile] scheduler_request_finished req=%s wall_ms=%.3f",
+                request.request_id,
+                _elapsed_ms(started),
+            )
 
 
 class CPUOffloadingConnectorWorker:
@@ -237,21 +357,22 @@ class CPUOffloadingConnectorWorker:
 
         self.requests: dict[str, ReqMeta] = {}
         self.load_stream = torch.npu.Stream()
-        self.save_stream = torch.npu.Stream()
         self.zmq_rpc_client = MetadataServer.ZMQRPCClient()
         self.load_block_mapping: list[tuple[int, int]] = []
         self.save_input_queue: queue.Queue[tuple[str, ReqMeta]] = queue.Queue()
         self.save_output_queue: queue.Queue[str] = queue.Queue()
-        self.save_thread = threading.Thread(target=self._save_listener)
-        self.save_thread.start()
         self.done_sending_count: defaultdict[str, int] = defaultdict(int)
+        self.use_indexed_copy = _indexed_copy_enabled()
+        self.use_reverse_span_copy = _reverse_span_copy_enabled()
 
         # start metadata server to init cpu_kv_cache_manager and handle rpc requests
         # all dp shared the same metadata server, only start the process on data_rank 0
         if vllm_config.parallel_config.data_parallel_rank == 0 and self.tp_rank == 0 and self.pp_rank == 0:
             config = VllmConfig()
             config.cache_config = vllm_config.cache_config
+            config.model_config = vllm_config.model_config
             config.parallel_config = vllm_config.parallel_config
+            config.scheduler_config = vllm_config.scheduler_config
             config.kv_transfer_config = vllm_config.kv_transfer_config
             self.init_metadata_server(config)
         self._wait_for_metadata_process_start()
@@ -275,6 +396,9 @@ class CPUOffloadingConnectorWorker:
                 time.sleep(1)
 
     def bind_connector_metadata(self, connector_metadata: CPUOffloadingConnectorMetadata) -> None:
+        started = time.perf_counter()
+        added_load_blocks = 0
+        save_reqs = 0
         for req_id, req in connector_metadata.requests.items():
             if req_id in self.requests:
                 self.requests[req_id].update(req)
@@ -283,9 +407,21 @@ class CPUOffloadingConnectorWorker:
                 self.requests[req_id] = req
             for i in range(req.num_gpu_computed_tokens // self.block_size, req.num_computed_tokens // self.block_size):
                 self.load_block_mapping.append((req.cpu_block_ids[i], req.gpu_block_ids[i]))
+                added_load_blocks += 1
         for req_id in connector_metadata.finished_req_ids:
             if req_id in self.requests:
                 self.save_input_queue.put((req_id, self.requests[req_id]))
+                save_reqs += 1
+        if _profile_enabled():
+            logger.info(
+                "[cpu-offload-profile] worker_bind requests=%d finished=%d load_blocks_added=%d pending_load_blocks=%d save_reqs=%d wall_ms=%.3f",
+                len(connector_metadata.requests),
+                len(connector_metadata.finished_req_ids),
+                added_load_blocks,
+                len(self.load_block_mapping),
+                save_reqs,
+                _elapsed_ms(started),
+            )
 
     def clear_connector_metadata(self) -> None:
         self.load_block_mapping.clear()
@@ -315,21 +451,156 @@ class CPUOffloadingConnectorWorker:
 
     def wait_for_layer_load(self) -> None:
         # TODO: Replace with `torch.npu.current_stream().wait_stream(self.load_stream)` after fixing the bug.
+        started = time.perf_counter()
         self.load_stream.synchronize()
+        if _profile_enabled() and self.load_block_mapping:
+            logger.info(
+                "[cpu-offload-profile] worker_wait_layer_load layer=%d load_blocks=%d sync_ms=%.3f",
+                self.current_layer,
+                len(self.load_block_mapping),
+                _elapsed_ms(started),
+            )
         self.current_layer += 1
         self.load_kv_layer(self.current_layer)
 
     def load_kv_layer(self, layer: int):
         if layer == len(self.gpu_kv_caches):
             return
+        started = time.perf_counter()
         gpu_kv_caches = next(self.gpu_kv_caches_load_iter)
         cpu_kv_caches = self.cpu_kv_caches[layer]
+        layer_parts = list(zip(gpu_kv_caches, cpu_kv_caches))
+        block_spans = _coalesce_block_copy_spans(self.load_block_mapping)
+        directional_block_spans = (
+            _coalesce_directional_block_copy_spans(self.load_block_mapping)
+            if self.use_reverse_span_copy
+            else None
+        )
+        original_copy_ops = len(self.load_block_mapping) * len(layer_parts)
+        contiguous_blocks = 0
+        reverse_blocks = 0
+        fallback_blocks = 0
+        copy_ops = 0
+        copy_mode = "span"
         with torch.npu.stream(self.load_stream):
-            for cpu_block_id, gpu_block_id in self.load_block_mapping:
-                for gpu_layer_part, cpu_layer_part in zip(gpu_kv_caches, cpu_kv_caches):
-                    gpu_layer_part[gpu_block_id].copy_(cpu_layer_part[cpu_block_id], non_blocking=True)
+            if self.use_indexed_copy and len(block_spans) > 1:
+                try:
+                    cpu_indices = torch.tensor(
+                        [cpu_block_id for cpu_block_id, _ in self.load_block_mapping],
+                        dtype=torch.long,
+                        device=cpu_kv_caches[0].device,
+                    )
+                    for gpu_layer_part, cpu_layer_part in layer_parts:
+                        gpu_indices = torch.tensor(
+                            [gpu_block_id for _, gpu_block_id in self.load_block_mapping],
+                            dtype=torch.long,
+                            device=gpu_layer_part.device,
+                        )
+                        packed = cpu_layer_part.index_select(0, cpu_indices).to(
+                            gpu_layer_part.device,
+                            non_blocking=True,
+                        )
+                        gpu_layer_part.index_copy_(0, gpu_indices, packed)
+                        copy_ops += 1
+                    copy_mode = "indexed"
+                    fallback_blocks = len(self.load_block_mapping)
+                except Exception:
+                    logger.exception("indexed CPU offload load copy failed; falling back to span copy")
+                    copy_ops = 0
+                    fallback_blocks = 0
+                    for cpu_start, gpu_start, span_len in block_spans:
+                        if span_len == 1:
+                            fallback_blocks += 1
+                            for gpu_layer_part, cpu_layer_part in layer_parts:
+                                gpu_layer_part[gpu_start].copy_(cpu_layer_part[cpu_start], non_blocking=True)
+                                copy_ops += 1
+                        else:
+                            contiguous_blocks += span_len
+                            cpu_end = cpu_start + span_len
+                            gpu_end = gpu_start + span_len
+                            for gpu_layer_part, cpu_layer_part in layer_parts:
+                                gpu_layer_part[gpu_start:gpu_end].copy_(
+                                    cpu_layer_part[cpu_start:cpu_end],
+                                    non_blocking=True,
+                                )
+                            copy_ops += 1
+            elif directional_block_spans is not None:
+                copy_mode = "reverse_span"
+                for cpu_start, gpu_start, span_len, direction in directional_block_spans:
+                    if span_len == 1:
+                        fallback_blocks += 1
+                        for gpu_layer_part, cpu_layer_part in layer_parts:
+                            gpu_layer_part[gpu_start].copy_(cpu_layer_part[cpu_start], non_blocking=True)
+                            copy_ops += 1
+                    elif direction == 1:
+                        contiguous_blocks += span_len
+                        cpu_end = cpu_start + span_len
+                        gpu_end = gpu_start + span_len
+                        for gpu_layer_part, cpu_layer_part in layer_parts:
+                            gpu_layer_part[gpu_start:gpu_end].copy_(
+                                cpu_layer_part[cpu_start:cpu_end],
+                                non_blocking=True,
+                            )
+                            copy_ops += 1
+                    else:
+                        reverse_blocks += span_len
+                        cpu_end = cpu_start + span_len
+                        gpu_low = gpu_start - span_len + 1
+                        gpu_high = gpu_start + 1
+                        for gpu_layer_part, cpu_layer_part in layer_parts:
+                            gpu_layer_part[gpu_low:gpu_high].copy_(
+                                cpu_layer_part[cpu_start:cpu_end].flip(0),
+                                non_blocking=True,
+                            )
+                            copy_ops += 1
+            else:
+                for cpu_start, gpu_start, span_len in block_spans:
+                    if span_len == 1:
+                        fallback_blocks += 1
+                        for gpu_layer_part, cpu_layer_part in layer_parts:
+                            gpu_layer_part[gpu_start].copy_(cpu_layer_part[cpu_start], non_blocking=True)
+                            copy_ops += 1
+                    else:
+                        contiguous_blocks += span_len
+                        cpu_end = cpu_start + span_len
+                        gpu_end = gpu_start + span_len
+                        for gpu_layer_part, cpu_layer_part in layer_parts:
+                            gpu_layer_part[gpu_start:gpu_end].copy_(
+                                cpu_layer_part[cpu_start:cpu_end],
+                                non_blocking=True,
+                            )
+                            copy_ops += 1
+        if _profile_enabled() and self.load_block_mapping:
+            cpu_adjacent, gpu_adjacent, pair_sample = _block_pair_locality(self.load_block_mapping)
+            logger.info(
+                "[cpu-offload-profile] worker_schedule_layer_load layer=%d mode=%s load_blocks=%d spans=%d "
+                "cpu_adjacent_pairs=%d gpu_adjacent_pairs=%d pair_sample=%s contiguous_blocks=%d "
+                "reverse_blocks=%d fallback_blocks=%d copy_ops=%d original_copy_ops=%d copy_ops_saved=%d "
+                "schedule_ms=%.3f",
+                layer,
+                copy_mode,
+                len(self.load_block_mapping),
+                len(block_spans),
+                cpu_adjacent,
+                gpu_adjacent,
+                pair_sample,
+                contiguous_blocks,
+                reverse_blocks,
+                fallback_blocks,
+                copy_ops,
+                original_copy_ops,
+                original_copy_ops - copy_ops,
+                _elapsed_ms(started),
+            )
 
     def get_finished(self) -> set[str]:
+        while True:
+            try:
+                req_id, req = self.save_input_queue.get_nowait()
+            except queue.Empty:
+                break
+            self._save_req(req_id, req)
+
         done_sending: set[str] = set()
         while True:
             try:
@@ -367,33 +638,145 @@ class CPUOffloadingConnectorWorker:
 
     def _sending_finished(self, all_done_sending):
         for req_id in all_done_sending:
+            started = time.perf_counter()
             logger.debug("call cache_and_free_slots for req_id: %s", req_id)
             self.zmq_rpc_client.call("cache_and_free_slots", req_id)
+            if _profile_enabled():
+                logger.info(
+                    "[cpu-offload-profile] worker_cache_and_free req=%s wall_ms=%.3f",
+                    req_id,
+                    _elapsed_ms(started),
+                )
 
-    def _save_listener(self):
+    def _save_req(self, req_id: str, req: ReqMeta):
         save_block_mapping = []
-        while True:
-            req_id, req = self.save_input_queue.get()
-            for i in range(
-                req.num_cpu_computed_tokens // self.block_size,
-                min((req.num_computed_tokens + req.num_scheduled_tokens) // self.block_size, len(req.cpu_block_ids)),
-            ):
-                save_block_mapping.append((req.gpu_block_ids[i], req.cpu_block_ids[i]))
-            with torch.npu.stream(self.save_stream):
-                # MLA: kv_layer is tuple[tensor, tensor] means (rope, nope).
-                # non-MLA: kv_layer is list[tensor], typically means [k, v].
-                if self.use_mla:
-                    start, step = self.tp_rank, self.tp_world_size
+        started = time.perf_counter()
+        save_start_block = req.num_cpu_computed_tokens // self.block_size
+        save_end_block = min(
+            (req.num_computed_tokens + req.num_scheduled_tokens) // self.block_size,
+            len(req.cpu_block_ids),
+            len(req.gpu_block_ids),
+        )
+        for i in range(
+            save_start_block,
+            save_end_block,
+        ):
+            save_block_mapping.append((req.gpu_block_ids[i], req.cpu_block_ids[i]))
+        copy_ops = 0
+        # MLA: kv_layer is tuple[tensor, tensor] means (rope, nope).
+        # non-MLA: kv_layer is list[tensor], typically means [k, v].
+        if self.use_mla:
+            start, step = self.tp_rank, self.tp_world_size
+        else:
+            start, step = 0, 1
+        rank_save_block_mapping = [
+            (cpu_block_id, gpu_block_id)
+            for gpu_block_id, cpu_block_id in save_block_mapping[start::step]
+        ]
+        cache_layer_parts = [
+            (cpu_layer_part, gpu_layer_part)
+            for cpu_kv_caches, gpu_kv_caches in zip(self.cpu_kv_caches, self.gpu_kv_caches.values())
+            for cpu_layer_part, gpu_layer_part in zip(cpu_kv_caches, gpu_kv_caches)
+        ]
+        block_spans = _coalesce_block_copy_spans(rank_save_block_mapping)
+        directional_block_spans = (
+            _coalesce_directional_block_copy_spans(rank_save_block_mapping)
+            if self.use_reverse_span_copy
+            else None
+        )
+        cpu_adjacent, gpu_adjacent, pair_sample = _block_pair_locality(rank_save_block_mapping)
+        original_copy_ops = len(rank_save_block_mapping) * len(cache_layer_parts)
+        contiguous_blocks = 0
+        reverse_blocks = 0
+        fallback_blocks = 0
+        if directional_block_spans is not None:
+            for cpu_start, gpu_start, span_len, direction in directional_block_spans:
+                if span_len == 1:
+                    fallback_blocks += 1
+                    for cpu_layer_part, gpu_layer_part in cache_layer_parts:
+                        cpu_layer_part[cpu_start].copy_(gpu_layer_part[gpu_start], non_blocking=False)
+                        copy_ops += 1
+                elif direction == 1:
+                    contiguous_blocks += span_len
+                    cpu_end = cpu_start + span_len
+                    gpu_end = gpu_start + span_len
+                    for cpu_layer_part, gpu_layer_part in cache_layer_parts:
+                        cpu_layer_part[cpu_start:cpu_end].copy_(
+                            gpu_layer_part[gpu_start:gpu_end],
+                            non_blocking=False,
+                        )
+                        copy_ops += 1
                 else:
-                    start, step = 0, 1
-                for i in range(start, len(save_block_mapping), step):
-                    gpu_block_id, cpu_block_id = save_block_mapping[i]
-                    for cpu_kv_caches, gpu_kv_caches in zip(self.cpu_kv_caches, self.gpu_kv_caches.values()):
-                        for cpu_layer_part, gpu_layer_part in zip(cpu_kv_caches, gpu_kv_caches):
-                            cpu_layer_part[cpu_block_id].copy_(gpu_layer_part[gpu_block_id], non_blocking=True)
-            self.save_stream.synchronize()
-            self.save_output_queue.put(req_id)
-            save_block_mapping.clear()
+                    reverse_blocks += span_len
+                    cpu_end = cpu_start + span_len
+                    gpu_low = gpu_start - span_len + 1
+                    gpu_high = gpu_start + 1
+                    for cpu_layer_part, gpu_layer_part in cache_layer_parts:
+                        cpu_layer_part[cpu_start:cpu_end].copy_(
+                            gpu_layer_part[gpu_low:gpu_high].flip(0),
+                            non_blocking=False,
+                        )
+                        copy_ops += 1
+        else:
+            for cpu_start, gpu_start, span_len in block_spans:
+                if span_len == 1:
+                    fallback_blocks += 1
+                    for cpu_layer_part, gpu_layer_part in cache_layer_parts:
+                        cpu_layer_part[cpu_start].copy_(gpu_layer_part[gpu_start], non_blocking=False)
+                        copy_ops += 1
+                else:
+                    contiguous_blocks += span_len
+                    cpu_end = cpu_start + span_len
+                    gpu_end = gpu_start + span_len
+                    for cpu_layer_part, gpu_layer_part in cache_layer_parts:
+                        cpu_layer_part[cpu_start:cpu_end].copy_(
+                            gpu_layer_part[gpu_start:gpu_end],
+                            non_blocking=False,
+                        )
+                        copy_ops += 1
+        if _profile_enabled():
+            logger.info(
+                "[cpu-offload-profile] worker_save req=%s mode=sync save_block_range=%d:%d save_blocks=%d "
+                "rank_save_blocks=%d spans=%d cpu_adjacent_pairs=%d gpu_adjacent_pairs=%d pair_sample=%s "
+                "contiguous_blocks=%d reverse_blocks=%d fallback_blocks=%d copy_ops=%d "
+                "original_copy_ops=%d copy_ops_saved=%d cpu_tokens=%d computed_tokens=%d scheduled_tokens=%d "
+                "gpu_blocks=%d cpu_blocks=%d wall_ms=%.3f",
+                req_id,
+                save_start_block,
+                save_end_block,
+                len(save_block_mapping),
+                len(rank_save_block_mapping),
+                len(block_spans),
+                cpu_adjacent,
+                gpu_adjacent,
+                pair_sample,
+                contiguous_blocks,
+                reverse_blocks,
+                fallback_blocks,
+                copy_ops,
+                original_copy_ops,
+                original_copy_ops - copy_ops,
+                req.num_cpu_computed_tokens,
+                req.num_computed_tokens,
+                req.num_scheduled_tokens,
+                len(req.gpu_block_ids),
+                len(req.cpu_block_ids),
+                _elapsed_ms(started),
+            )
+            if (
+                len(save_block_mapping) == 0
+                and (req.num_computed_tokens + req.num_scheduled_tokens) // self.block_size > save_start_block
+            ):
+                logger.warning(
+                    "[cpu-offload-profile] worker_save_empty req=%s start_block=%d full_blocks=%d "
+                    "gpu_blocks=%d cpu_blocks=%d",
+                    req_id,
+                    save_start_block,
+                    (req.num_computed_tokens + req.num_scheduled_tokens) // self.block_size,
+                    len(req.gpu_block_ids),
+                    len(req.cpu_block_ids),
+                )
+        self.save_output_queue.put(req_id)
 
 
 # copied and modified from vllm_ascend/worker/model_runner_v1.py
