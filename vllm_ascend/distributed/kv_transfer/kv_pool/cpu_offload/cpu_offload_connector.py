@@ -359,6 +359,11 @@ class CPUOffloadingConnectorWorker:
         self.load_stream = torch.npu.Stream()
         self.zmq_rpc_client = MetadataServer.ZMQRPCClient()
         self.load_block_mapping: list[tuple[int, int]] = []
+        self.load_block_spans: list[BlockCopySpan] = []
+        self.load_directional_block_spans: list[DirectionalBlockCopySpan] | None = None
+        self.load_cpu_adjacent_pairs = 0
+        self.load_gpu_adjacent_pairs = 0
+        self.load_pair_sample: list[tuple[int, int]] = []
         self.save_input_queue: queue.Queue[tuple[str, ReqMeta]] = queue.Queue()
         self.save_output_queue: queue.Queue[str] = queue.Queue()
         self.done_sending_count: defaultdict[str, int] = defaultdict(int)
@@ -408,6 +413,7 @@ class CPUOffloadingConnectorWorker:
             for i in range(req.num_gpu_computed_tokens // self.block_size, req.num_computed_tokens // self.block_size):
                 self.load_block_mapping.append((req.cpu_block_ids[i], req.gpu_block_ids[i]))
                 added_load_blocks += 1
+        self._refresh_load_plan()
         for req_id in connector_metadata.finished_req_ids:
             if req_id in self.requests:
                 self.save_input_queue.put((req_id, self.requests[req_id]))
@@ -425,6 +431,20 @@ class CPUOffloadingConnectorWorker:
 
     def clear_connector_metadata(self) -> None:
         self.load_block_mapping.clear()
+        self._refresh_load_plan()
+
+    def _refresh_load_plan(self) -> None:
+        self.load_block_spans = _coalesce_block_copy_spans(self.load_block_mapping)
+        self.load_directional_block_spans = (
+            _coalesce_directional_block_copy_spans(self.load_block_mapping)
+            if self.use_reverse_span_copy
+            else None
+        )
+        (
+            self.load_cpu_adjacent_pairs,
+            self.load_gpu_adjacent_pairs,
+            self.load_pair_sample,
+        ) = _block_pair_locality(self.load_block_mapping)
 
     def register_kv_caches(self, kv_caches: dict[str, Sequence[torch.Tensor]]):
         self.gpu_kv_caches = kv_caches
@@ -450,6 +470,9 @@ class CPUOffloadingConnectorWorker:
         self.load_kv_layer(0)
 
     def wait_for_layer_load(self) -> None:
+        if not self.load_block_mapping:
+            self.current_layer += 1
+            return
         # TODO: Replace with `torch.npu.current_stream().wait_stream(self.load_stream)` after fixing the bug.
         started = time.perf_counter()
         self.load_stream.synchronize()
@@ -466,16 +489,14 @@ class CPUOffloadingConnectorWorker:
     def load_kv_layer(self, layer: int):
         if layer == len(self.gpu_kv_caches):
             return
+        if not self.load_block_mapping:
+            return
         started = time.perf_counter()
         gpu_kv_caches = next(self.gpu_kv_caches_load_iter)
         cpu_kv_caches = self.cpu_kv_caches[layer]
         layer_parts = list(zip(gpu_kv_caches, cpu_kv_caches))
-        block_spans = _coalesce_block_copy_spans(self.load_block_mapping)
-        directional_block_spans = (
-            _coalesce_directional_block_copy_spans(self.load_block_mapping)
-            if self.use_reverse_span_copy
-            else None
-        )
+        block_spans = self.load_block_spans
+        directional_block_spans = self.load_directional_block_spans
         original_copy_ops = len(self.load_block_mapping) * len(layer_parts)
         contiguous_blocks = 0
         reverse_blocks = 0
@@ -571,7 +592,6 @@ class CPUOffloadingConnectorWorker:
                             )
                             copy_ops += 1
         if _profile_enabled() and self.load_block_mapping:
-            cpu_adjacent, gpu_adjacent, pair_sample = _block_pair_locality(self.load_block_mapping)
             logger.info(
                 "[cpu-offload-profile] worker_schedule_layer_load layer=%d mode=%s load_blocks=%d spans=%d "
                 "cpu_adjacent_pairs=%d gpu_adjacent_pairs=%d pair_sample=%s contiguous_blocks=%d "
@@ -581,9 +601,9 @@ class CPUOffloadingConnectorWorker:
                 copy_mode,
                 len(self.load_block_mapping),
                 len(block_spans),
-                cpu_adjacent,
-                gpu_adjacent,
-                pair_sample,
+                self.load_cpu_adjacent_pairs,
+                self.load_gpu_adjacent_pairs,
+                self.load_pair_sample,
                 contiguous_blocks,
                 reverse_blocks,
                 fallback_blocks,
