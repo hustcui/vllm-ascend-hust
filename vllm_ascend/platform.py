@@ -60,6 +60,26 @@ else:
 _CUSTOM_OP_REGISTERED = False
 
 
+def _sync_npugraph_ex_to_additional_config(
+    vllm_config: VllmConfig,
+    ascend_config,
+) -> None:
+    """Persist *enable_npugraph_ex* into ``vllm_config.additional_config``.
+
+    Worker processes spawned via ``multiprocessing`` re-initialize their
+    own ``AscendConfig`` from ``vllm_config.additional_config``.  Without
+    this sync, workers silently fall back to ``enable_npugraph_ex=True``
+    and use the wrong compilation backend.
+    """
+    if vllm_config.additional_config is None:
+        vllm_config.additional_config = {}
+    additional = vllm_config.additional_config
+    asc_comp = additional.setdefault("ascend_compilation_config", {})
+    asc_comp["enable_npugraph_ex"] = (
+        ascend_config.ascend_compilation_config.enable_npugraph_ex
+    )
+
+
 def config_deprecated_logging():
     """Configure deprecated logging format, when used deprecated codes
     in vllm-ascend.
@@ -460,6 +480,10 @@ class NPUPlatform(Platform):
             compilation_config.cudagraph_mode = CUDAGraphMode.NONE
             compilation_config.mode = CompilationMode.NONE
             ascend_config.ascend_compilation_config.enable_npugraph_ex = False
+
+        # Sync enable_npugraph_ex back to vllm_config.additional_config so that
+        # spawned worker processes see the correct value.
+        _sync_npugraph_ex_to_additional_config(vllm_config, ascend_config)
 
         # TODO: Remove this check when ACL Graph supports ASCEND_LAUNCH_BLOCKING=1
         # Then, we will have to discuss the error handling strategy and user experience
