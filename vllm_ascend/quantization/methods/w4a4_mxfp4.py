@@ -21,7 +21,6 @@ from typing import Any
 import torch
 import torch_npu
 from vllm.config import CompilationMode, get_current_vllm_config
-from vllm.distributed import get_ep_group
 
 from vllm_ascend.ascend_config import get_ascend_config
 from vllm_ascend.ascend_forward_context import _EXTRA_CTX
@@ -112,8 +111,8 @@ class AscendW4A4MXFP4DynamicLinearMethod(AscendLinearScheme):
 
         n_dim, k_dim = layer.weight_scale.data.shape
         layer.weight_scale.data = layer.weight_scale.data.reshape(n_dim, k_dim // 2, 2)
-        layer.weight.data = layer.weight.data.transpose(0, 1)
-        layer.weight_scale.data = layer.weight_scale.data.transpose(0, 1)
+        layer.weight.data = layer.weight.data.transpose(0, 1).contiguous()
+        layer.weight_scale.data = layer.weight_scale.data.transpose(0, 1).contiguous()
 
 
 @register_scheme("W4A4_MXFP4", "moe")
@@ -125,7 +124,6 @@ class AscendW4A4MXFP4DynamicFusedMoEMethod(AscendMoEScheme):
 
     def __init__(self):
         ensure_mxfp4_moe_available("W4A4_MXFP4 MoE quantization")
-        self.ep_group = get_ep_group()
 
         vllm_config = get_current_vllm_config()
         self.group_size = vllm_config.quant_config.quant_description.get("group_size", 32)
@@ -186,6 +184,7 @@ class AscendW4A4MXFP4DynamicFusedMoEMethod(AscendMoEScheme):
         activation: str = "silu",
         apply_router_weight_on_input: bool = False,
         mc2_mask: torch.Tensor | None = None,
+        tid2eid: Any | None = None,
     ) -> torch.Tensor:
         num_shared_experts = getattr(layer, "n_shared_experts", 0)
         if num_shared_experts is None:
@@ -207,6 +206,7 @@ class AscendW4A4MXFP4DynamicFusedMoEMethod(AscendMoEScheme):
             num_expert_group=num_expert_group,
             custom_routing_function=custom_routing_function,
             scoring_func=scoring_func,
+            routed_scaling_factor=routed_scaling_factor,
             e_score_correction_bias=e_score_correction_bias,
             num_experts=num_logical_experts,
         )
@@ -252,6 +252,8 @@ class AscendW4A4MXFP4DynamicFusedMoEMethod(AscendMoEScheme):
         layer.w13_weight_scale.data = layer.w13_weight_scale.data.reshape(g_num, n_size, k_size // 2, 2)
         g_num, n_size, k_size = layer.w2_weight_scale.shape
         layer.w2_weight_scale.data = layer.w2_weight_scale.data.reshape(g_num, n_size, k_size // 2, 2)
+        # The A5 MXFP4 fused grouped-matmul-swiglu op relies on the
+        # transpose stride to interpret packed FP4 weights as logical K.
         layer.w13_weight.data = layer.w13_weight.data.transpose(1, 2)
         layer.w2_weight.data = layer.w2_weight.data.transpose(1, 2)
         layer.w13_weight_scale.data = layer.w13_weight_scale.data.transpose(1, 2)
