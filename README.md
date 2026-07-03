@@ -1,117 +1,232 @@
+<!-- markdownlint-disable MD013 MD033 MD041 -->
+
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/vllm-project/vllm-ascend/main/docs/source/logos/vllm-ascend-logo-text-dark.png">
-    <img alt="vllm-ascend" src="https://raw.githubusercontent.com/vllm-project/vllm-ascend/main/docs/source/logos/vllm-ascend-logo-text-light.png" width=55%>
+    <img alt="vLLM Ascend logo" src="https://raw.githubusercontent.com/vllm-project/vllm-ascend/main/docs/source/logos/vllm-ascend-logo-text-light.png" width="420">
   </picture>
 </p>
 
 <h3 align="center">
-vLLM Ascend Plugin
+HUST-maintained Ascend/NPU plugin paired with vLLM-HUST
 </h3>
 
-<div align="center">
-
-[![DeepWiki](https://img.shields.io/badge/DeepWiki-Ask_AI-_.svg?style=flat&color=0052D9&labelColor=000000&logo=data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACwAAAAyCAYAAAAnWDnqAAAAAXNSR0IArs4c6QAAA05JREFUaEPtmUtyEzEQhtWTQyQLHNak2AB7ZnyXZMEjXMGeK/AIi+QuHrMnbChYY7MIh8g01fJoopFb0uhhEqqcbWTp06/uv1saEDv4O3n3dV60RfP947Mm9/SQc0ICFQgzfc4CYZoTPAswgSJCCUJUnAAoRHOAUOcATwbmVLWdGoH//PB8mnKqScAhsD0kYP3j/Yt5LPQe2KvcXmGvRHcDnpxfL2zOYJ1mFwrryWTz0advv1Ut4CJgf5uhDuDj5eUcAUoahrdY/56ebRWeraTjMt/00Sh3UDtjgHtQNHwcRGOC98BJEAEymycmYcWwOprTgcB6VZ5JK5TAJ+fXGLBm3FDAmn6oPPjR4rKCAoJCal2eAiQp2x0vxTPB3ALO2CRkwmDy5WohzBDwSEFKRwPbknEggCPB/imwrycgxX2NzoMCHhPkDwqYMr9tRcP5qNrMZHkVnOjRMWwLCcr8ohBVb1OMjxLwGCvjTikrsBOiA6fNyCrm8V1rP93iVPpwaE+gO0SsWmPiXB+jikdf6SizrT5qKasx5j8ABbHpFTx+vFXp9EnYQmLx02h1QTTrl6eDqxLnGjporxl3NL3agEvXdT0WmEost648sQOYAeJS9Q7bfUVoMGnjo4AZdUMQku50McDcMWcBPvr0SzbTAFDfvJqwLzgxwATnCgnp4wDl6Aa+Ax283gghmj+vj7feE2KBBRMW3FzOpLOADl0Isb5587h/U4gGvkt5v60Z1VLG8BhYjbzRwyQZemwAd6cCR5/XFWLYZRIMpX39AR0tjaGGiGzLVyhse5C9RKC6ai42ppWPKiBagOvaYk8lO7DajerabOZP46Lby5wKjw1HCRx7p9sVMOWGzb/vA1hwiWc6jm3MvQDTogQkiqIhJV0nBQBTU+3okKCFDy9WwferkHjtxib7t3xIUQtHxnIwtx4mpg26/HfwVNVDb4oI9RHmx5WGelRVlrtiw43zboCLaxv46AZeB3IlTkwouebTr1y2NjSpHz68WNFjHvupy3q8TFn3Hos2IAk4Ju5dCo8B3wP7VPr/FGaKiG+T+v+TQqIrOqMTL1VdWV1DdmcbO8KXBz6esmYWYKPwDL5b5FA1a0hwapHiom0r/cKaoqr+27/XcrS5UwSMbQAAAABJRU5ErkJggg==)](https://deepwiki.com/vllm-project/vllm-ascend)
-
-</div>
-
 <p align="center">
-| <a href="https://www.hiascend.com/en/"><b>About Ascend</b></a> | <a href="https://docs.vllm.ai/projects/ascend/en/latest/"><b>Documentation</b></a> | <a href="https://slack.vllm.ai"><b>#SIG-Ascend</b></a> | <a href="https://discuss.vllm.ai/c/hardware-support/vllm-ascend-support"><b>Users Forum</b></a> | <a href="https://tinyurl.com/vllm-ascend-meeting"><b>Weekly Meeting</b></a> |
+| <a href="https://www.hiascend.com/en/"><b>About Ascend</b></a> |
+<a href="https://docs.vllm.ai/projects/ascend/en/latest/"><b>Upstream Ascend Docs</b></a> |
+<a href="https://github.com/vllm-project/vllm-ascend"><b>Upstream vLLM Ascend</b></a> |
+<a href="https://github.com/vLLM-HUST/vllm-hust"><b>HUST Core Fork</b></a> |
+<a href="README.zh.md"><b>中文</b></a> |
 </p>
 
-<p align="center">
-<a ><b>English</b></a> | <a href="README.zh.md"><b>中文</b></a>
-</p>
+# vLLM-Ascend-HUST
 
----
-*Latest News* 🔥
+`vLLM-Ascend-HUST` is the HUST-maintained fork of the
+[`vllm-project/vllm-ascend`](https://github.com/vllm-project/vllm-ascend)
+backend plugin. It is paired with
+[`vllm-hust`](https://github.com/vLLM-HUST/vllm-hust), the HUST core vLLM fork.
 
-- [2026/05] We released the new official version [v0.18.0](https://github.com/vllm-project/vllm-ascend/releases/tag/v0.18.0)! Please follow the [official guide](https://docs.vllm.ai/projects/ascend/en/v0.18.0/) to start using vLLM Ascend Plugin on Ascend.
-- [2026/02] We released the new official version [v0.13.0](https://github.com/vllm-project/vllm-ascend/releases/tag/v0.13.0)! Please follow the [official guide](https://docs.vllm.ai/projects/ascend/en/v0.13.0/) to start using vLLM Ascend Plugin on Ascend.
+The repository keeps the upstream vLLM Ascend plugin identity while carrying the
+local patches, scripts, and runtime integration needed for HUST Ascend/NPU
+experiments.
 
-<details>
-<summary>More</summary>
+## What Comes From Upstream vLLM Ascend
 
-- [2025/12] We released the new official version [v0.11.0](https://github.com/vllm-project/vllm-ascend/releases/tag/v0.11.0)! Please follow the [official guide](https://docs.vllm.ai/projects/ascend/en/v0.11.0/) to start using vLLM Ascend Plugin on Ascend.
-- [2025/09] We released the new official version [v0.9.1](https://github.com/vllm-project/vllm-ascend/releases/tag/v0.9.1)! Please follow the [official guide](https://docs.vllm.ai/projects/ascend/en/v0.9.1/tutorials/large_scale_ep.html) to start deploying large-scale Expert Parallelism (EP) on Ascend.
-- [2025/08] We hosted the [vLLM Beijing Meetup](https://mp.weixin.qq.com/s/7n8OYNrCC_I9SJaybHA_-Q) with vLLM and Tencent! Please find the [meetup slides](https://drive.google.com/drive/folders/1Pid6NSFLU43DZRi0EaTcPgXsAzDvbBqF).
-- [2025/06] [User stories](https://docs.vllm.ai/projects/ascend/en/latest/community/user_stories/index.html) page is now live! It kicks off with LLaMA-Factory/verl/TRL/GPUStack to demonstrate how vLLM Ascend assists Ascend users in enhancing their experience across fine-tuning, evaluation, reinforcement learning (RL), and deployment scenarios.
-- [2025/06] [Contributors](https://docs.vllm.ai/projects/ascend/en/latest/community/contributors.html) page is now live! All contributions deserve to be recorded, thanks for all contributors.
-- [2025/05] We've released the first official version [v0.7.3](https://github.com/vllm-project/vllm-ascend/releases/tag/v0.7.3)! We collaborated with the vLLM community to publish a blog post sharing our practice: [Introducing vLLM Hardware Plugin, Best Practice from Ascend NPU](https://blog.vllm.ai/2025/05/12/hardware-plugin.html).
-- [2025/03] We hosted the [vLLM Beijing Meetup](https://mp.weixin.qq.com/s/VtxO9WXa5fC-mKqlxNUJUQ) with vLLM team! Please find the [meetup slides](https://drive.google.com/drive/folders/1Pid6NSFLU43DZRi0EaTcPgXsAzDvbBqF).
-- [2025/02] vLLM community officially created [vllm-project/vllm-ascend](https://github.com/vllm-project/vllm-ascend) repo for running vLLM seamlessly on the Ascend NPU.
-- [2024/12] We are working with the vLLM community to support [[RFC]: Hardware pluggable](https://github.com/vllm-project/vllm/issues/11162).
+The upstream `vllm-ascend` project provides the Ascend backend plugin for vLLM:
 
-</details>
+- NPU platform registration and device integration
+- model execution support on Ascend hardware
+- custom ops and kernel integration paths
+- worker, attention, sampling, and distributed-runtime adaptations
+- documentation for running vLLM on Ascend devices
+- community support through the vLLM Ascend SIG
 
----
+For general Ascend plugin usage, start with the upstream documentation:
+<https://docs.vllm.ai/projects/ascend/en/latest/>.
 
-## Overview
+## What HUST Adds
 
-vLLM Ascend (`vllm-ascend`) is a community maintained hardware plugin for running vLLM seamlessly on the Ascend NPU.
+HUST-specific changes focus on making the plugin practical for local research
+and managed NPU service workflows:
 
-It is the recommended approach for supporting the Ascend backend within the vLLM community. It adheres to the principles outlined in the [[RFC]: Hardware pluggable](https://github.com/vllm-project/vllm/issues/11162), providing a hardware-pluggable interface that decouples the integration of the Ascend NPU with vLLM.
+- Pairing and compatibility with `vllm-hust`.
+- HUST patches for model loading, tool-call parsing, sampling, scheduling, and
+  worker behavior on Ascend.
+- Local custom-kernel build switches and kernel-development helpers.
+- Single-device Ascend environment scripts.
+- Managed-service compatibility for dev-hub `manage.sh`.
+- Upstream merge/version metadata used to keep fork drift visible.
 
-By using vLLM Ascend plugin, popular open-source models, including Transformer-like, Mixture-of-Experts (MoE), Embedding, Multi-modal LLMs can run seamlessly on the Ascend NPU.
+The plugin should stay thin where possible. Core vLLM behavior belongs in
+`vllm-hust`; Ascend-only runtime behavior belongs here.
 
-For detailed information on supported models, please refer to [supported models](https://docs.vllm.ai/projects/ascend/en/latest/user_guide/support_matrix/supported_models.html).
+## Repository Map
 
-## Prerequisites
+| Path | Purpose |
+| --- | --- |
+| `vllm_ascend/` | Python plugin package and Ascend runtime patches. |
+| `csrc/` | Optional C/C++/kernel sources and third-party kernel dependencies. |
+| `scripts/` | Local install and Ascend environment helpers. |
+| `tests/` | Plugin-side tests and smoke coverage. |
+| `upstream_version.json` | Current upstream anchor and HUST release base. |
+| `AGENTS.md` | Required workflow rules for AI-assisted changes. |
 
-- Hardware: Atlas 800I A2 Inference series, Atlas A2 Training series, Atlas 800I A3 Inference series, Atlas A3 Training series, Atlas 300I Duo (Experimental)
-- OS: Linux
-- Software:
-    - Python >= 3.10, < 3.12
-    - CANN == 9.0.0 (For Ascend HDK version, please refer to the [Release Notes](https://www.hiascend.com/document/detail/zh/canncommercial/900/releasenote/releasenote_0000.html))
-    - PyTorch == 2.10.0, torch-npu == 2.10.0
-    - vLLM (the same version as vllm-ascend)
+## Paired HUST Repositories
 
-## Getting Started
+| Repository | Role |
+| --- | --- |
+| [`vllm-hust`](https://github.com/vLLM-HUST/vllm-hust) | Core vLLM fork. |
+| [`vllm-ascend-hust`](https://github.com/vLLM-HUST/vllm-ascend-hust) | Ascend/NPU plugin fork. |
+| [`vllm-hust-dev-hub`](https://github.com/vLLM-HUST/vllm-hust-dev-hub) | Multi-repo workspace, managed service scripts, and NPU smoke-test entrypoint. |
+| [`vllm-hust-benchmark`](https://github.com/vLLM-HUST/vllm-hust-benchmark) | Benchmark orchestration and result export. |
+| [`vllm-hust-perf-analyzer`](https://github.com/vLLM-HUST/vllm-hust-perf-analyzer) | Offline profiler timeline analysis. |
 
-Please use the following recommended versions to get started quickly:
+Mixing this plugin with an unrelated vLLM checkout can hide ABI, API, or runtime
+contract mismatches. Keep both HUST repositories on their paired `main` heads
+unless a branch explicitly says otherwise.
 
-| Version    | Release type | Doc                                  |
-|------------|--------------|--------------------------------------|
-| v0.22.1rc1 | Latest release candidate | See [QuickStart](https://docs.vllm.ai/projects/ascend/en/latest/quick_start.html) and [Installation](https://docs.vllm.ai/projects/ascend/en/latest/installation.html) for more details |
-| v0.18.0 | Latest stable version | See [QuickStart](https://docs.vllm.ai/projects/ascend/en/v0.18.0/quick_start.html) and [Installation](https://docs.vllm.ai/projects/ascend/en/v0.18.0/installation.html) for more details |
+## Versioning
 
-## Branch
+This fork follows the same upstream-anchored version rule as `vllm-hust`:
 
-vllm-ascend has a main branch and a dev branch.
+```text
+<upstream release>.post1.dev<HUST-only commit count>+g<short sha>
+```
 
-- **main**: main branch, corresponds to the vLLM main branch, and is continuously monitored for quality through Ascend CI.
-- **releases/vX.Y.Z**: development branch, created alongside new releases of vLLM. For example, `releases/v0.13.0` is the dev branch for vLLM `v0.13.0` version.
+`upstream_version.json` records the anchor:
 
-Below are the maintained branches:
+- `upstream_commit`: exact upstream commit included in this fork graph.
+- `upstream_version`: upstream-compatible version string, including rc suffix
+  when upstream is on an rc.
+- `release_version`: the same version line without the rc suffix.
 
-| Branch           | Status       | Note                                 |
-|------------------|--------------|--------------------------------------|
-| main             | Maintained   | CI commitment for vLLM main branch and vLLM v0.23.0 tag |
-| v0.7.1-dev       | Unmaintained | Outdated, no longer maintained. |
-| v0.7.3-dev       | Unmaintained | Only bug fixes are allowed, and no new release tags anymore. |
-| v0.9.1-dev       | Unmaintained | Only bug fixes are allowed, and no new release tags anymore. |
-| v0.11.0-dev      | Unmaintained | Only bug fixes are allowed, and no new release tags anymore. |
-| releases/v0.13.0 | Maintained   | CI commitment for vLLM 0.13.0 version |
-| releases/v0.18.0 | Maintained   | CI commitment for vLLM 0.18.0 version |
-| releases/v0.20.2rc | Maintained | CI commitment for vLLM 0.20.2 version |
-| rfc/feature-name | Maintained   | [Feature branches](https://docs.vllm.ai/projects/ascend/en/latest/community/versioning_policy.html#feature-branches) for collaboration |
-  
-Please refer to [Versioning policy](https://docs.vllm.ai/projects/ascend/en/latest/community/versioning_policy.html) for more details.
+After an upstream sync lands, the fork should be zero commits behind upstream:
 
-## Contributing
+```bash
+git fetch upstream main
+git rev-list --left-right --count origin/main...upstream/main
+# <HUST-only commits>  0
+```
 
-See [CONTRIBUTING](https://docs.vllm.ai/projects/ascend/en/latest/developer_guide/contribution/index.html) for more details, which is a step-by-step guide to help you set up the development environment, build and test.
+The left side is HUST-only delta; the right side should be `0`.
 
-We welcome and value any contributions and collaborations:
+## Install For Development
 
-- Please let us know if you encounter a bug by [filing an issue](https://github.com/vllm-project/vllm-ascend/issues)
-- Please use [User forum](https://discuss.vllm.ai/c/hardware-support/vllm-ascend-support) for usage questions and help.
+Use `uv` and the paired `vllm-hust` virtual environment. Do not install with
+system `python3` or bare `pip`.
 
-## Weekly Meeting
+```bash
+cd /path/to/vllm-hust
+uv venv --python 3.12
+source .venv/bin/activate
+VLLM_USE_PRECOMPILED=1 uv pip install -e . --torch-backend=auto
+```
 
-- vLLM Ascend Weekly Meeting: <https://tinyurl.com/vllm-ascend-meeting>
-- Wednesday, 15:00 - 16:00 (UTC+8, [Convert to your timezone](https://dateful.com/convert/gmt8?t=15))
+Then install this plugin:
+
+```bash
+cd /path/to/vllm-ascend-hust
+COMPILE_CUSTOM_KERNELS=0 uv pip install -e . --no-deps
+```
+
+On HUST local hosts, prefer the repository install helper:
+
+```bash
+cd /path/to/vllm-ascend-hust
+bash scripts/install_local_ascend_plugin.sh /path/to/vllm-ascend-hust
+```
+
+If custom kernels are part of the change under test, set the build flags
+required by the local Ascend/CANN environment before installing.
+
+## Ascend Environment
+
+For single-device local tests, source the helper script:
+
+```bash
+cd /path/to/vllm-ascend-hust
+source scripts/use_single_ascend_env.sh /usr/local/Ascend/ascend-toolkit/latest
+```
+
+Then verify that the plugin imports with the paired vLLM checkout:
+
+```bash
+VLLM_PLUGINS=ascend \
+VLLM_TARGET_DEVICE=npu \
+.venv/bin/python -c "import vllm, vllm_ascend; print(vllm.__version__)"
+```
+
+On shared machines, use only the allocated device. The current HUST smoke-test
+workflow is constrained to NPU 1 unless the operator explicitly assigns another
+device.
+
+## Managed NPU Smoke Tests
+
+Production-like serving tests should be launched through dev-hub:
+
+```bash
+cd /path/to/vllm-hust-dev-hub
+./manage.sh status
+./manage.sh restart
+./manage.sh health --json
+```
+
+This keeps environment setup, device selection, ports, logs, and cleanup aligned
+with HUST experiment services.
+
+## Validation Checklist
+
+README-only changes:
+
+```bash
+git diff --check -- README.md README.zh.md
+```
+
+Plugin Python changes:
+
+```bash
+.venv/bin/python -m py_compile path/to/file.py
+pre-commit run --files path/to/file.py
+```
+
+Upstream merges:
+
+```bash
+git diff --name-only --diff-filter=U
+git rev-list --left-right --count origin/main...upstream/main
+git submodule status --recursive
+```
+
+NPU runtime changes should also be tested through `manage.sh` from
+`vllm-hust-dev-hub`, using NPU 1 unless another device is assigned.
+
+## Upstream Sync Workflow
+
+1. Fetch upstream and create a staging branch from `origin/main`.
+2. Merge `upstream/main` into that branch with a real merge commit when
+   possible.
+3. Resolve conflicts by keeping Ascend-only deltas here and moving core behavior
+   into `vllm-hust`.
+4. Update `upstream_version.json` and the derived package version.
+5. Validate imports, syntax, submodules, and NPU smoke behavior.
+6. Merge the staging PR, pull `main`, and confirm the fork is zero commits
+   behind upstream.
+
+Avoid routine cherry-pick/backport stacks when a real upstream merge can keep
+the fork graph honest.
+
+## Documentation And Community
+
+- Upstream vLLM Ascend docs: <https://docs.vllm.ai/projects/ascend/en/latest/>
+- Upstream vLLM Ascend repository: <https://github.com/vllm-project/vllm-ascend>
+- Upstream vLLM repository: <https://github.com/vllm-project/vllm>
+- HUST core fork: <https://github.com/vLLM-HUST/vllm-hust>
+- HUST organization: <https://github.com/vLLM-HUST>
+- HUST agent workflow: [`AGENTS.md`](AGENTS.md)
+
+Chinese documentation is available in [`README.zh.md`](README.zh.md).
 
 ## License
 
-Apache License 2.0, as found in the [LICENSE](./LICENSE) file.
+This repository follows the upstream vLLM Ascend license. See
+[`LICENSE`](LICENSE) and upstream notices for details.
