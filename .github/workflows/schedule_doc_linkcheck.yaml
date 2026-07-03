@@ -26,11 +26,13 @@ concurrency:
 jobs:
   linkcheck:
     name: Sphinx linkcheck
-    runs-on: ubuntu-latest
+    runs-on: linux-aarch64-a2b3-0
+    container:
+      image: swr.cn-southwest-2.myhuaweicloud.com/base_image/ascend-ci/cann:9.0.0-910b-ubuntu22.04-py3.12
     timeout-minutes: 30
     steps:
       - name: Checkout vllm-project/vllm-ascend repo
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Collect changed docs files
         id: changed-docs
@@ -44,7 +46,7 @@ jobs:
       - name: Install docs dependencies
         if: ${{ github.event_name != 'pull_request' || steps.changed-docs.outputs.any_changed == 'true' }}
         run: |
-          python3 -m pip install --upgrade pip
+          python -m pip install --upgrade pip
           pip install -r docs/requirements-docs.txt
 
       - name: Prepare linkcheck retry helper
@@ -73,7 +75,7 @@ jobs:
               echo "Retry failed: ${url}"
               retry_failed=1
             fi
-          done < <(python3 -c 'import json, pathlib, sys; p = pathlib.Path(sys.argv[1]); print("\n".join(sorted({json.loads(line).get("uri", "").split("#", 1)[0] for line in p.read_text(encoding="utf-8").splitlines() if json.loads(line).get("status") in {"broken", "timeout"} and json.loads(line).get("uri")})) if p.exists() else "")' "${output_json}")
+          done < <(python -c 'import json, pathlib, sys; p = pathlib.Path(sys.argv[1]); print("\n".join(sorted({json.loads(line).get("uri", "").split("#", 1)[0] for line in p.read_text(encoding="utf-8").splitlines() if json.loads(line).get("status") in {"broken", "timeout"} and json.loads(line).get("uri")})) if p.exists() else "")' "${output_json}")
 
           if [[ "${retried}" == "0" ]]; then
             exit "${linkcheck_exit_code}"
