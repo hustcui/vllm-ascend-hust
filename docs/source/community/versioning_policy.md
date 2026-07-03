@@ -30,6 +30,28 @@ family together:
 * Fork release tags: `vX.Y.Z.postN`
 * Development builds: `X.Y.Z.postN.devM+gSHA`
 
+After a direct `upstream/main` merge, the fork should be behind upstream by zero
+commits. Validate with:
+
+```bash
+git rev-list --left-right --count origin/main...upstream/main
+```
+
+The expected shape is `N 0`: `0` means there are no missing upstream commits,
+and `N` is the HUST-only commit count.
+
+Update `upstream_version.json` whenever the upstream anchor changes:
+
+* `upstream_commit`: exact `git rev-parse upstream/main`
+* `upstream_version`: upstream-compatible version tag, including rc suffix
+  when present, without the leading `v`
+* `release_version`: the same version line without the rc suffix
+
+Development package versions are derived from that anchor as
+`<release_version>.post1.dev<N>+gSHA`, where `N` is the count of HUST-only
+commits after the upstream anchor. Do not count upstream commits introduced by
+the merge as HUST development distance.
+
 The generated package metadata exports:
 
 * `__version__`: full fork version string
