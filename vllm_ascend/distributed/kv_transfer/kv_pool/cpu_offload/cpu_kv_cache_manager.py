@@ -57,6 +57,8 @@ class CPUKVCacheManager:
         self,
         kv_cache_spec: KVCacheSpec,
         num_cpu_blocks: int,
+        max_num_batched_tokens: int,
+        max_model_len: int,
         caching_hash_algo: str = "builtin",
         use_eagle: bool = False,
         enable_kv_cache_events: bool = False,
@@ -68,7 +70,10 @@ class CPUKVCacheManager:
         self.block_pool = BlockPool(self.num_cpu_blocks, True, self.block_size, enable_kv_cache_events)
         self.single_type_manager = get_manager_for_kv_cache_spec(
             kv_cache_spec=kv_cache_spec,
+            max_num_batched_tokens=max_num_batched_tokens,
+            max_model_len=max_model_len,
             block_pool=self.block_pool,
+            enable_caching=True,
             kv_cache_group_id=0,
         )
         # Record kv block hashes, avoid redundant computation.
@@ -106,7 +111,7 @@ class CPUKVCacheManager:
         num_computed_tokens = len(computed_blocks[0]) * self.block_size
         self.req_to_computed_blocks[request_id] = computed_blocks[0]
         # We should touch these blocks in the concurrent scenarios.
-        self.block_pool.touch(computed_blocks)
+        self.block_pool.touch(computed_blocks[0])
 
         # cup prefix cache status set and log
         assert self.cpu_cache_stats is not None and self.cpu_cache_stats.prefix_cache_stats is not None
@@ -134,6 +139,8 @@ class CPUKVCacheManager:
                 request_id=request_id,
                 num_tokens=num_tokens,
                 new_computed_blocks=new_computed_blocks,
+                total_computed_tokens=len(new_computed_blocks) * self.block_size,
+                num_tokens_main_model=num_tokens,
             )
             if num_blocks_to_allocate > self.block_pool.get_num_free_blocks():
                 self._release_ahead_touch(request_id)
@@ -141,9 +148,18 @@ class CPUKVCacheManager:
                 continue
             # Append the new computed blocks to the request blocks until now to
             # avoid the case where the new blocks cannot be allocated.
-            self.single_type_manager.save_new_computed_blocks(request_id, new_computed_blocks)
+            self.single_type_manager.allocate_new_computed_blocks(
+                request_id=request_id,
+                new_computed_blocks=new_computed_blocks,
+                num_local_computed_tokens=len(new_computed_blocks) * self.block_size,
+                num_external_computed_tokens=0,
+            )
             # Allocate new blocks but do not cache now.
-            new_blocks = self.single_type_manager.allocate_new_blocks(request_id, num_tokens)
+            new_blocks = self.single_type_manager.allocate_new_blocks(
+                request_id,
+                num_tokens,
+                num_tokens_main_model=num_tokens,
+            )
             self.req_to_num_tokens[request_id] = num_tokens
             # No need to release ref_cnt because we use officially.
             self.req_to_computed_blocks.pop(request_id, None)
