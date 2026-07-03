@@ -61,7 +61,7 @@ on:
         description: Ascend chip model (e.g. 910B2, 910B3)
         required: false
         type: string
-        default: "910B3"
+        default: "910B2"
       dataset_path:
         description: Dataset path on the trusted runner for formal workloads such as sharegpt-online
         required: false
@@ -296,7 +296,7 @@ jobs:
       VLLM_HUST_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.vllm_hust_ref || vars.VLLM_ASCEND_HUST_VLLM_HUST_REF || 'main' }}
       VLLM_HUST_BENCHMARK_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.benchmark_ref || vars.VLLM_ASCEND_HUST_BENCHMARK_REF || 'main' }}
       MODEL_NAME: ${{ github.event_name == 'issue_comment' && needs.issue-comment-command.outputs.model_name || (github.event_name == 'workflow_dispatch' && inputs.model_name || 'Qwen/Qwen2.5-14B-Instruct') }}
-      SOC_VERSION: ascend910b1
+      SOC_VERSION: ascend910b2
       BENCH_SCENARIO: ${{ github.event_name == 'issue_comment' && needs.issue-comment-command.outputs.benchmark_scenario || (github.event_name == 'workflow_dispatch' && inputs.benchmark_scenario || (github.event_name == 'pull_request' && vars.VLLM_ASCEND_HUST_PR_BENCHMARK_SCENARIO) || (github.event_name == 'push' && vars.VLLM_ASCEND_HUST_MAIN_BENCHMARK_SCENARIO) || 'random-online') }}
       BENCH_DATASET_PATH: ${{ github.event_name == 'issue_comment' && needs.issue-comment-command.outputs.dataset_path || (github.event_name == 'workflow_dispatch' && inputs.dataset_path || (github.event_name == 'pull_request' && vars.VLLM_ASCEND_HUST_PR_BENCHMARK_DATASET_PATH) || (github.event_name == 'push' && vars.VLLM_ASCEND_HUST_MAIN_BENCHMARK_DATASET_PATH) || '') }}
       BENCH_CONSTRAINTS_FILE: ${{ github.event_name == 'issue_comment' && needs.issue-comment-command.outputs.constraints_file || (github.event_name == 'workflow_dispatch' && inputs.constraints_file || (github.event_name == 'pull_request' && vars.VLLM_ASCEND_HUST_PR_BENCHMARK_CONSTRAINTS_FILE) || (github.event_name == 'push' && vars.VLLM_ASCEND_HUST_MAIN_BENCHMARK_CONSTRAINTS_FILE) || '') }}
@@ -316,7 +316,7 @@ jobs:
       INPUT_BENCHMARK_SCENARIO: ${{ github.event_name == 'issue_comment' && needs.issue-comment-command.outputs.benchmark_scenario || (github.event_name == 'workflow_dispatch' && inputs.benchmark_scenario || '') }}
       PR_LABELS: ${{ github.event_name == 'pull_request' && toJson(github.event.pull_request.labels) || '[]' }}
       HARDWARE_VENDOR: Huawei
-      HARDWARE_CHIP_MODEL: ${{ github.event_name == 'workflow_dispatch' && inputs.hardware_chip_model || '910B3' }}
+      HARDWARE_CHIP_MODEL: ${{ github.event_name == 'workflow_dispatch' && inputs.hardware_chip_model || '910B2' }}
       CHIP_COUNT: "1"
       NODE_COUNT: "1"
       ASCEND_BENCHMARK_USE_SUDO: ${{ vars.VLLM_ASCEND_HUST_BENCHMARK_USE_SUDO || 'auto' }}
@@ -325,7 +325,7 @@ jobs:
       ALLOW_RANDOM_HF_PUBLISH: ${{ vars.VLLM_ASCEND_HUST_ALLOW_RANDOM_HF_PUBLISH || '0' }}
       SAME_SPEC_BENCHMARK_ENABLED: ${{ vars.VLLM_ASCEND_HUST_SAME_SPEC_BENCHMARK_ENABLED || '1' }}
       PERFGATE_MODE: ${{ vars.VLLM_ASCEND_HUST_PERFGATE_MODE || 'report' }}
-      PERFGATE_SPEC_FILE: ${{ vars.VLLM_ASCEND_HUST_PERFGATE_SPEC_FILE || 'docs/official-baselines/perfgate-ascend-qwen25-3b-910b3.json' }}
+      PERFGATE_SPEC_FILE: ${{ vars.VLLM_ASCEND_HUST_PERFGATE_SPEC_FILE || 'docs/official-baselines/perfgate-ascend-qwen25-3b-910b2.json' }}
       PERFGATE_BASELINE_BRANCH: ${{ vars.VLLM_ASCEND_HUST_PERFGATE_BASELINE_BRANCH || 'benchmark-baselines' }}
       SAME_SPEC_SPEC_FILE: ${{ vars.VLLM_ASCEND_HUST_SAME_SPEC_SPEC_FILE || '' }}
       SAME_SPEC_CONSTRAINTS_FILE: ${{ vars.VLLM_ASCEND_HUST_SAME_SPEC_CONSTRAINTS_FILE || '' }}
@@ -1104,7 +1104,7 @@ jobs:
         shell: bash
         env:
           PYTHON_BIN: python3
-          PERFGATE_SPEC_FILE: ${{ vars.VLLM_ASCEND_HUST_PERFGATE_SPEC_FILE || 'docs/official-baselines/perfgate-ascend-qwen25-3b-910b3.json' }}
+          PERFGATE_SPEC_FILE: ${{ vars.VLLM_ASCEND_HUST_PERFGATE_SPEC_FILE || 'docs/official-baselines/perfgate-ascend-qwen25-3b-910b2.json' }}
           PERFGATE_BASELINE_BRANCH: ${{ vars.VLLM_ASCEND_HUST_PERFGATE_BASELINE_BRANCH || 'benchmark-baselines' }}
         run: |
           set -euo pipefail
