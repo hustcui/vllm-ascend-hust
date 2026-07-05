@@ -73,6 +73,8 @@ class AscendInputBatch(InputBatch):
     seq_lens_np: np.ndarray
     # attn_state is used to build attention metadata.
     attn_state: AscendAttentionState | None = None
+    # Request ids that finished between the previous and current steps.
+    finished_req_ids: set[str] | None = None
 
     @classmethod
     def make_dummy(

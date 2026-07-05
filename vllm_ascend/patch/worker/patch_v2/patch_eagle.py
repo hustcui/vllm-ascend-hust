@@ -157,6 +157,7 @@ def propose(
         block_tables=block_tables,
         slot_mappings=slot_mappings,
         kv_cache_config=self.kv_cache_config,
+        finished_req_ids=getattr(self.input_batch, "finished_req_ids", None),
     )
     slot_mappings_by_layer = build_slot_mappings_by_layer(slot_mappings, self.kv_cache_config)
     self.generate_draft(

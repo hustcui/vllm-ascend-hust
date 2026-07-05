@@ -1730,6 +1730,7 @@ class NPUModelRunner(GPUModelRunner):
                     num_scheduled_tokens=scheduler_output.num_scheduled_tokens,
                     num_scheduled_tokens_np=num_scheduled_tokens_np,
                     cascade_attn_prefix_lens=cascade_attn_prefix_lens,
+                    finished_req_ids=set(scheduler_output.finished_req_ids),
                 )
 
             (
@@ -2459,6 +2460,7 @@ class NPUModelRunner(GPUModelRunner):
         num_scheduled_tokens: dict[str, int] | None = None,
         num_scheduled_tokens_np: np.ndarray | None = None,
         cascade_attn_prefix_lens: list[list[int]] | None = None,
+        finished_req_ids: set[str] | None = None,
     ) -> tuple[PerLayerAttnMetadata, CommonAttentionMetadata | None]:
         """
         :return: tuple[attn_metadata, spec_decode_common_attn_metadata]
@@ -2590,6 +2592,7 @@ class NPUModelRunner(GPUModelRunner):
             actual_seq_lengths_q=self.actual_seq_lengths_q,
             positions=self.positions,
             req_ids=req_ids[:num_reqs_padded],
+            finished_req_ids=finished_req_ids,
             attn_state=self.attn_state,
             decode_token_per_req=self.decode_token_per_req,
             prefill_context_parallel_metadata=self.long_seq_metadata,
