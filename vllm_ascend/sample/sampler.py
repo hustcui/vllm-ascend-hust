@@ -7,6 +7,7 @@ from vllm.v1.sample.metadata import SamplingMetadata
 from vllm.v1.sample.ops.topk_topp_sampler import TopKTopPSampler
 from vllm.v1.sample.sampler import Sampler
 
+import vllm_ascend.envs as envs_ascend
 from vllm_ascend.ascend_config import get_ascend_config
 from vllm_ascend.sample.penalties import apply_all_penalties
 from vllm_ascend.utils import AscendDeviceType, get_ascend_device_type, global_stream, npu_stream_switch
@@ -298,6 +299,9 @@ def _apply_top_k_top_p_ascendc(
 
 
 def _has_ascend_top_k_top_p_op() -> bool:
+    if envs_ascend.VLLM_ASCEND_DISABLE_TOP_K_TOP_P_CUSTOM_OP:
+        return False
+
     ascend_namespace = getattr(torch.ops, "_C_ascend", None)
     return hasattr(ascend_namespace, "npu_apply_top_k_top_p")
 
