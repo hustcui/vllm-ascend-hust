@@ -705,16 +705,6 @@ def register_ascend_customop(vllm_config: VllmConfig | None = None):
         AscendVocabParallelEmbedding,
     )
 
-    try:
-        from vllm_ascend.ops.fused_moe.fused_moe import AscendFusedMoE, AscendSharedFusedMoE
-    except ModuleNotFoundError as exc:
-        logger.warning(
-            "Skipping Ascend fused MoE custom op registration because an optional "
-            "upstream dependency is unavailable: %s",
-            exc,
-        )
-        AscendFusedMoE = None
-        AscendSharedFusedMoE = None
     is_moe_model = bool(
         vllm_config is not None
         and vllm_config.model_config is not None
@@ -768,14 +758,24 @@ def register_ascend_customop(vllm_config: VllmConfig | None = None):
         REGISTERED_ASCEND_OPS["GateLinear"] = AscendGateLinear
 
     if is_moe_model:
-        from vllm_ascend.ops.fused_moe.fused_moe import AscendFusedMoE, AscendSharedFusedMoE
-
-        REGISTERED_ASCEND_OPS.update(
-            {
-                "FusedMoE": AscendFusedMoE,
-                "SharedFusedMoE": AscendSharedFusedMoE,
-            }
-        )
+        try:
+            from vllm_ascend.ops.fused_moe.fused_moe import (
+                AscendFusedMoE,
+                AscendSharedFusedMoE,
+            )
+        except ImportError as exc:
+            logger.warning(
+                "Skipping Ascend fused MoE custom op registration because an "
+                "optional upstream dependency is unavailable: %s",
+                exc,
+            )
+        else:
+            REGISTERED_ASCEND_OPS.update(
+                {
+                    "FusedMoE": AscendFusedMoE,
+                    "SharedFusedMoE": AscendSharedFusedMoE,
+                }
+            )
 
     # 310P: override selected ops with 310P implementations (keep minimal changes outside _310p)
     if is_310p():

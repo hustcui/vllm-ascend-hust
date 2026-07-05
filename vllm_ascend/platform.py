@@ -510,6 +510,20 @@ class NPUPlatform(Platform):
             "pipeline_parallel_size=1 and may combine data parallelism with MTP."
         )
 
+    @staticmethod
+    def _validate_layer_sharding_config(vllm_config: VllmConfig) -> None:
+        additional_config = getattr(vllm_config, "additional_config", {}) or {}
+        layer_sharding = additional_config.get("layer_sharding")
+        if layer_sharding is None:
+            return
+        if not isinstance(layer_sharding, list) or not all(
+            isinstance(layer, str) and layer for layer in layer_sharding
+        ):
+            raise ValueError(
+                "additional_config.layer_sharding must be a list of non-empty "
+                f"strings, got {layer_sharding!r}."
+            )
+
     @classmethod
     def check_and_update_config(cls, vllm_config: VllmConfig) -> None:
         from vllm_ascend.quantization.utils import maybe_auto_detect_quantization

@@ -37,7 +37,7 @@ def _import_optional_patch(module_name: str) -> None:
     try:
         importlib.import_module(module_name)
     except ModuleNotFoundError as exc:
-        if exc.name != "torchvision":
+        if exc.name not in {module_name, "torchvision"}:
             raise
 
 if HAS_TRITON:
@@ -56,7 +56,7 @@ import vllm_ascend.patch.worker.patch_qwen3_next_mtp  # noqa
 
 if not is_310p():
     _import_optional_patch("vllm_ascend.patch.worker.patch_qwen3_5")
-    import vllm_ascend.patch.worker.patch_gdn_attn  # noqa
+    _import_optional_patch("vllm_ascend.patch.worker.patch_gdn_attn")
     import vllm_ascend.patch.worker.patch_qwen3_dflash  # noqa
     import vllm_ascend.patch.worker.patch_qwen3vl  # noqa
 else:
