@@ -19,19 +19,61 @@ class TestAscendSampler(TestBase):
         logits = torch.tensor([[1.0, 2.0, 3.0]], dtype=torch.float32)
         k = torch.tensor([2], dtype=torch.int32)
 
-        expected = sampler_module._apply_top_k_top_p_pytorch(logits.clone(), k, None)
+        ascend_config = SimpleNamespace(enable_reduce_sample=False)
 
         with patch.object(
             sampler_module,
             "get_ascend_device_type",
             return_value=sampler_module.AscendDeviceType.A2,
         ), patch.object(
+            sampler_module,
+            "get_ascend_config",
+            return_value=ascend_config,
+        ), patch.object(
             sampler_module.torch.ops,
             "_C_ascend",
             SimpleNamespace(),
             create=True,
         ):
+            expected = sampler_module._apply_top_k_top_p_pytorch(logits.clone(), k, None)
             sampler_module._MISSING_TOP_K_TOP_P_OP_WARNED = False
             actual = sampler_module.apply_top_k_top_p(logits.clone(), k, None)
 
         torch.testing.assert_close(actual, expected)
+
+    def test_apply_top_k_top_p_falls_back_when_custom_op_is_broken(self):
+        logits = torch.tensor([[1.0, 2.0, 3.0]], dtype=torch.float32)
+        k = torch.tensor([2], dtype=torch.int32)
+
+        ascend_config = SimpleNamespace(enable_reduce_sample=False)
+
+        def broken_custom_op(*args, **kwargs):
+            raise RuntimeError(
+                "aclnnApplyTopKTopPCustom or "
+                "aclnnApplyTopKTopPCustomGetWorkspaceSize not in libopapi.so"
+            )
+
+        with patch.object(
+            sampler_module,
+            "get_ascend_device_type",
+            return_value=sampler_module.AscendDeviceType.A2,
+        ), patch.object(
+            sampler_module,
+            "get_ascend_config",
+            return_value=ascend_config,
+        ), patch.object(
+            sampler_module.torch.ops,
+            "_C_ascend",
+            SimpleNamespace(npu_apply_top_k_top_p=broken_custom_op),
+            create=True,
+        ):
+            expected = sampler_module._apply_top_k_top_p_pytorch(logits.clone(), k, None)
+            sampler_module._MISSING_TOP_K_TOP_P_OP_WARNED = False
+            sampler_module._BROKEN_TOP_K_TOP_P_OP_WARNED = False
+            sampler_module._DISABLE_TOP_K_TOP_P_CUSTOM_OP = False
+            actual = sampler_module.apply_top_k_top_p(logits.clone(), k, None)
+
+        torch.testing.assert_close(actual, expected)
+        self.assertTrue(sampler_module._DISABLE_TOP_K_TOP_P_CUSTOM_OP)
+
+        sampler_module._DISABLE_TOP_K_TOP_P_CUSTOM_OP = False
