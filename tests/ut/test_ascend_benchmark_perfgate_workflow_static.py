@@ -77,7 +77,7 @@ def test_ascend_benchmark_workflow_wires_two_stage_perfgate() -> None:
     assert "github.event_name == 'issue_comment'" in workflow
     assert "VLLM_ASCEND_HUST_PUBLISH_BENCHMARK_ON_PR" not in workflow
     assert "github.event_name == 'pull_request' || github.event_name == 'issue_comment'" in workflow
-    assert ("hust-ascend-manager Python stack reconciliation failed; falling back to explicit pip installs") in workflow
+    assert "hust-ascend-manager runtime setup failed; continuing with the runner Python stack" in workflow
     assert "vars.VLLM_ASCEND_HUST_BENCHMARK_USE_SUDO || 'auto'" in workflow
     assert "CURRENT_VLLM_CACHE_ROOT: ${{ github.workspace }}/../.hf-cache/vllm" in workflow
     assert "VLLM_ASCEND_HUST_SAME_SPEC_READY_TIMEOUT_SECONDS || '1800'" in workflow
@@ -145,6 +145,22 @@ def test_local_plugin_editable_install_bootstraps_build_metadata_deps() -> None:
     assert 'hust_run_pip install -e "${PLUGIN_REPO}" --no-build-isolation --no-deps' in install_script
 
 
+def test_benchmark_prepare_preserves_torch_npu_stack() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    prepare_step = workflow[workflow.index("Prepare Ascend runtime and install repos") :]
+    prepare_step = prepare_step[: prepare_step.index("- name: Verify installation")]
+
+    assert "hust_ascend_manager_run setup --non-interactive" in prepare_step
+    assert "--install-python-stack" not in prepare_step
+    assert "ascend-benchmark-pip-constraints.txt" in prepare_step
+    assert "torch==2.9.0" in prepare_step
+    assert "torch-npu==2.9.0" in prepare_step
+    assert 'export PIP_CONSTRAINT="$benchmark_pip_constraints"' in prepare_step
+    assert 'echo "PIP_CONSTRAINT=$PIP_CONSTRAINT" >> "$GITHUB_ENV"' in prepare_step
+    assert 'hust_run_pip install --force-reinstall "torch==2.9.0" "torch-npu==2.9.0"' in prepare_step
+    assert 'hust_run_pip install -r "$VLLM_HUST_REPO/requirements/common.txt"' in prepare_step
+
+
 def test_benchmark_runner_auto_disables_sudo_when_unavailable() -> None:
     runner_script = (SCRIPT_DIR / "run_ascend_benchmark_ci.sh").read_text(encoding="utf-8")
 
@@ -152,6 +168,18 @@ def test_benchmark_runner_auto_disables_sudo_when_unavailable() -> None:
     assert "command -v sudo" in runner_script
     assert "Ascend benchmark sudo mode: disabled via auto detection" in runner_script
     assert "command not found" in runner_script[runner_script.index("runtime_ready_log_indicates_sudo_auth_failure") :]
+
+
+def test_benchmark_runner_fails_fast_for_ascend_node_env_failure() -> None:
+    runner_script = (SCRIPT_DIR / "run_ascend_benchmark_ci.sh").read_text(encoding="utf-8")
+
+    assert "NODE_ENV_FAILURE_EXIT_CODE=${NODE_ENV_FAILURE_EXIT_CODE:-86}" in runner_script
+    assert "runtime_ready_log_indicates_node_env_failure()" in runner_script
+    assert "ASCEND_HOME_PATH environment variable is not set" in runner_script
+    assert "ModuleNotFoundError: No module named 'tbe'" in runner_script
+    assert "CANN/TBE runtime is not available" in runner_script
+    assert "not retrying across devices" in runner_script
+    assert "not retrying server startup across devices" in runner_script
 
 
 def test_benchmark_server_uses_inferred_max_model_len_by_default() -> None:

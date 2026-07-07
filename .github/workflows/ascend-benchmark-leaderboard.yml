@@ -670,12 +670,19 @@ jobs:
           mkdir -p "$HOME" "$XDG_CACHE_HOME" "$XDG_CONFIG_HOME"
           chmod 700 "$HOME"
           source scripts/use_single_ascend_env.sh
-          if ! hust_ascend_manager_run setup --install-python-stack --non-interactive; then
-            echo "[WARN] hust-ascend-manager Python stack reconciliation failed; falling back to explicit pip installs"
+          if ! hust_ascend_manager_run setup --non-interactive; then
+            echo "[WARN] hust-ascend-manager runtime setup failed; continuing with the runner Python stack"
           fi
+          benchmark_pip_constraints="${CI_RUNTIME_ROOT:-${RUNNER_TEMP:-/tmp}}/ascend-benchmark-pip-constraints.txt"
+          cat > "$benchmark_pip_constraints" <<'EOF'
+torch==2.9.0
+torch-npu==2.9.0
+EOF
+          export PIP_CONSTRAINT="$benchmark_pip_constraints"
+          echo "PIP_CONSTRAINT=$PIP_CONSTRAINT" >> "$GITHUB_ENV"
           export PYTHONPATH="$VLLM_HUST_REPO:$VLLM_HUST_BENCHMARK_REPO/src${PYTHONPATH:+:$PYTHONPATH}"
           echo "PYTHONPATH=$PYTHONPATH" >> "$GITHUB_ENV"
-          hust_run_pip install "torch==2.9.0" "torch-npu==2.9.0"
+          hust_run_pip install --force-reinstall "torch==2.9.0" "torch-npu==2.9.0"
           hust_run_pip install "numpy<2.0.0" scipy attrs decorator psutil
           hust_run_pip install -r "$VLLM_HUST_REPO/requirements/common.txt"
           PYTHON_BIN="$(hust_resolve_python_bin)"
