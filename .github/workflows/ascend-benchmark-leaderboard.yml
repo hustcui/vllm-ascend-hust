@@ -277,7 +277,7 @@ jobs:
       - self-hosted
       - linux-aarch64-a2b3-0
       - docker
-    timeout-minutes: 60
+    timeout-minutes: 90
     env:
       BENCHMARK_CHECKOUT_USE_SSH_443: ${{ secrets.VLLM_ASCEND_HUST_BENCHMARK_SSH_KEY != '' && '1' || '0' }}
       DEFAULT_SYSTEM_ASCEND_BENCHMARK_ROOT_HELPER: /usr/local/bin/run_ascend_benchmark_root_helper.sh
@@ -290,6 +290,7 @@ jobs:
       TRANSFORMERS_CACHE: ${{ github.workspace }}/../.hf-cache/transformers
       CURRENT_VLLM_CACHE_ROOT: ${{ github.workspace }}/../.hf-cache/vllm
       SAME_SPEC_READY_TIMEOUT_SECONDS: ${{ vars.VLLM_ASCEND_HUST_SAME_SPEC_READY_TIMEOUT_SECONDS || '1800' }}
+      SAME_SPEC_CLIENT_READY_TIMEOUT_SECONDS: ${{ vars.VLLM_ASCEND_HUST_SAME_SPEC_CLIENT_READY_TIMEOUT_SECONDS || '300' }}
       HF_TOKEN: ${{ (github.event_name != 'pull_request' && github.event_name != 'issue_comment') && secrets.HF_TOKEN || '' }}
       HF_REPO_ID: ${{ vars.VLLM_ASCEND_HUST_BENCHMARK_HF_REPO || 'intellistream/vllm-ascend-hust-benchmark-results' }}
       ASCEND_HUST_TARGET: ${{ github.event_name == 'workflow_dispatch' && inputs.ascend_hust_target || format('{0}@{1}', github.repository, github.event_name == 'issue_comment' && needs.issue-comment-command.outputs.pr_head_sha || (github.event_name == 'pull_request' && github.event.pull_request.head.ref || github.ref_name)) }}

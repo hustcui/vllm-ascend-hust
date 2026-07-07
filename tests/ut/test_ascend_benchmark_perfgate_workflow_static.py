@@ -71,6 +71,7 @@ def test_ascend_benchmark_workflow_wires_two_stage_perfgate() -> None:
     assert "Parse Ascend comment command" in workflow
     assert "resolve_ascend_benchmark_scenario.py" in workflow
     assert "github.event_name == 'issue_comment'" in workflow
+    assert "timeout-minutes: 90" in workflow
     assert "VLLM_ASCEND_HUST_PUBLISH_BENCHMARK_ON_PR" not in workflow
     assert "github.event_name == 'pull_request' || github.event_name == 'issue_comment'" in workflow
     assert "Checkout dev-hub repo" in workflow
@@ -84,6 +85,7 @@ def test_ascend_benchmark_workflow_wires_two_stage_perfgate() -> None:
     assert "vars.VLLM_ASCEND_HUST_BENCHMARK_USE_SUDO || 'auto'" in workflow
     assert "CURRENT_VLLM_CACHE_ROOT: ${{ github.workspace }}/../.hf-cache/vllm" in workflow
     assert "VLLM_ASCEND_HUST_SAME_SPEC_READY_TIMEOUT_SECONDS || '1800'" in workflow
+    assert "VLLM_ASCEND_HUST_SAME_SPEC_CLIENT_READY_TIMEOUT_SECONDS || '300'" in workflow
     assert "vars.VLLM_ASCEND_HUST_COMPILE_CUSTOM_KERNELS || 'auto'" in workflow
     assert "VLLM_ASCEND_HUST_STAGE2_DEV_HUB_QUICKSTART_CONDA || '0'" in workflow
 
@@ -92,6 +94,7 @@ def test_benchmark_runner_resolves_same_spec_without_random_online_default() -> 
     runner_script = (SCRIPT_DIR / "run_ascend_benchmark_ci.sh").read_text(encoding="utf-8")
 
     assert "SAME_SPEC_SPEC_FILE=${SAME_SPEC_SPEC_FILE:-}" in runner_script
+    assert "SAME_SPEC_CLIENT_READY_TIMEOUT_SECONDS=${SAME_SPEC_CLIENT_READY_TIMEOUT_SECONDS:-300}" in runner_script
     assert "vllm_hust_benchmark.perfgate_specs resolve" in runner_script
     assert '--scenario "$BENCH_SCENARIO"' in runner_script
     assert '--hardware-chip-model "$HARDWARE_CHIP_MODEL"' in runner_script
@@ -105,6 +108,8 @@ def test_benchmark_runner_resolves_same_spec_without_random_online_default() -> 
     sharegpt_block = sharegpt_block[: sharegpt_block.index("  *)")]
     assert "EFFECTIVE_CONSTRAINTS_FILE=$SAME_SPEC_CONSTRAINTS_FILE" in sharegpt_block
     assert "BENCH_DATASET_PATH is required for sharegpt-online" in sharegpt_block
+    assert 'CLIENT_READY_CHECK_TIMEOUT_SECONDS="$SAME_SPEC_CLIENT_READY_TIMEOUT_SECONDS"' in runner_script
+    assert "print_same_spec_server_log_tail" in runner_script
 
 
 def test_local_ascend_manager_fallback_bootstraps_pip() -> None:

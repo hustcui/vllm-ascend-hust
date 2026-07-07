@@ -109,6 +109,7 @@ SUDO_AUTH_EXIT_CODE=${SUDO_AUTH_EXIT_CODE:-76}
 INVALID_BENCHMARK_RESULT_EXIT_CODE=${INVALID_BENCHMARK_RESULT_EXIT_CODE:-77}
 ASCEND_BENCHMARK_USE_SUDO=${ASCEND_BENCHMARK_USE_SUDO:-0}
 SAME_SPEC_READY_TIMEOUT_SECONDS=${SAME_SPEC_READY_TIMEOUT_SECONDS:-$SERVER_READY_TIMEOUT_SECONDS}
+SAME_SPEC_CLIENT_READY_TIMEOUT_SECONDS=${SAME_SPEC_CLIENT_READY_TIMEOUT_SECONDS:-300}
 CURRENT_VLLM_CACHE_ROOT=${CURRENT_VLLM_CACHE_ROOT:-$CI_RUNTIME_ROOT/current-ascend-same-spec-cache}
 
 normalize_benchmark_spec_path() {
@@ -283,6 +284,7 @@ SUDO_PRESERVE_ENV_VARS=(
   BENCH_SCENARIO
   CHIP_COUNT
   CI_HOME
+  CLIENT_READY_CHECK_TIMEOUT_SECONDS
   CONSTRAINTS_FILE
   CMAKE_PREFIX_PATH
   CURRENT_CLIENT_PORT
@@ -333,6 +335,7 @@ SUDO_PRESERVE_ENV_VARS=(
   RESULT_ROOT
   RUN_ID
   SAME_SPEC_CONSTRAINTS_FILE
+  SAME_SPEC_CLIENT_READY_TIMEOUT_SECONDS
   SAME_SPEC_READY_TIMEOUT_SECONDS
   SAME_SPEC_SPEC_FILE
   SERVER_LOG
@@ -540,6 +543,19 @@ cleanup() {
 same_spec_server_log_indicates_resource_busy() {
   local same_spec_server_log=$RESULT_ROOT/server.stdout.log
   [[ -f "$same_spec_server_log" ]] && grep -qE 'Resource_Busy\(EL0005\)|aclInit, error code is 507899|The resources are busy' "$same_spec_server_log"
+}
+
+print_same_spec_server_log_tail() {
+  local same_spec_server_log=$RESULT_ROOT/server.stdout.log
+
+  if [[ ! -f "$same_spec_server_log" ]]; then
+    echo "same-spec server log not found: $same_spec_server_log" >&2
+    return 0
+  fi
+
+  echo "---- same-spec server log tail: $same_spec_server_log ----" >&2
+  tail -n 120 "$same_spec_server_log" >&2 || true
+  echo "---- end same-spec server log tail ----" >&2
 }
 
 server_log_indicates_resource_busy() {
@@ -859,6 +875,7 @@ run_same_spec_current_benchmark() {
   local same_spec_raw_result=$RESULT_ROOT/raw_benchmark_result.json
   local same_spec_submission_dir=$RESULT_ROOT/submission
   local current_vllm_hust_commit
+  local same_spec_exit_code=0
 
   if [[ ! -f "$same_spec_runner" ]]; then
     echo "same-spec benchmark runner not found: $same_spec_runner" >&2
@@ -905,8 +922,9 @@ run_same_spec_current_benchmark() {
       CURRENT_SERVER_PORT="$PORT" \
       CURRENT_CLIENT_PORT="$PORT" \
       READY_TIMEOUT_SECONDS="$SAME_SPEC_READY_TIMEOUT_SECONDS" \
+      CLIENT_READY_CHECK_TIMEOUT_SECONDS="$SAME_SPEC_CLIENT_READY_TIMEOUT_SECONDS" \
       CONSTRAINTS_FILE="$SAME_SPEC_CONSTRAINTS_FILE" \
-      run_ascend_root_helper same-spec "$same_spec_runner" "$SAME_SPEC_SPEC_FILE"
+      run_ascend_root_helper same-spec "$same_spec_runner" "$SAME_SPEC_SPEC_FILE" || same_spec_exit_code=$?
   else
     env \
       VLLM_HUST_WORKSPACE_ROOT="$WORKSPACE_ROOT" \
@@ -936,8 +954,14 @@ run_same_spec_current_benchmark() {
       CURRENT_SERVER_PORT="$PORT" \
       CURRENT_CLIENT_PORT="$PORT" \
       READY_TIMEOUT_SECONDS="$SAME_SPEC_READY_TIMEOUT_SECONDS" \
+      CLIENT_READY_CHECK_TIMEOUT_SECONDS="$SAME_SPEC_CLIENT_READY_TIMEOUT_SECONDS" \
       CONSTRAINTS_FILE="$SAME_SPEC_CONSTRAINTS_FILE" \
-      bash "$same_spec_runner" "$SAME_SPEC_SPEC_FILE"
+      bash "$same_spec_runner" "$SAME_SPEC_SPEC_FILE" || same_spec_exit_code=$?
+  fi
+
+  if [[ "$same_spec_exit_code" -ne 0 ]]; then
+    print_same_spec_server_log_tail
+    return "$same_spec_exit_code"
   fi
 
   if [[ ! -f "$same_spec_raw_result" ]]; then
