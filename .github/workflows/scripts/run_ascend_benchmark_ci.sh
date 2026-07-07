@@ -94,8 +94,12 @@ export CI_STATE_ROOT BENCHMARK_RESULTS_ROOT CI_HOME HOME XDG_CACHE_HOME XDG_CONF
 export PYTHONPATH="${VLLM_HUST_REPO}:${VLLM_HUST_BENCHMARK_REPO}/src${PYTHONPATH:+:${PYTHONPATH}}"
 VLLM_CLI=("${PYTHON_BIN}" -m vllm.entrypoints.cli.main)
 VLLM_SERVE=("${PYTHON_BIN}" -m vllm.entrypoints.openai.api_server)
+ASCEND_BENCHMARK_ENFORCE_EAGER=${ASCEND_BENCHMARK_ENFORCE_EAGER:-0}
 SERVER_READY_TIMEOUT_SECONDS=${SERVER_READY_TIMEOUT_SECONDS:-600}
 SERVER_READY_POLL_SECONDS=${SERVER_READY_POLL_SECONDS:-2}
+CHAT_SMOKE_TIMEOUT_SECONDS=${CHAT_SMOKE_TIMEOUT_SECONDS:-120}
+CHAT_SMOKE_POLL_SECONDS=${CHAT_SMOKE_POLL_SECONDS:-5}
+CHAT_SMOKE_REQUEST_TIMEOUT_SECONDS=${CHAT_SMOKE_REQUEST_TIMEOUT_SECONDS:-15}
 SERVER_START_RETRIES=${SERVER_START_RETRIES:-8}
 SERVER_START_RETRY_DELAY_SECONDS=${SERVER_START_RETRY_DELAY_SECONDS:-10}
 ASCEND_RUNTIME_READY_TIMEOUT_SECONDS=${ASCEND_RUNTIME_READY_TIMEOUT_SECONDS:-30}
@@ -212,6 +216,7 @@ kill_matching_pids() {
 SUDO_PRESERVE_ENV_VARS=(
   ASCEND_AICPU_PATH
   ASCEND_BENCHMARK_USE_SUDO
+  ASCEND_BENCHMARK_ENFORCE_EAGER
   ASCEND_HOME_PATH
   ASCEND_OPP_PATH
   ASCEND_RT_VISIBLE_DEVICES
@@ -634,8 +639,12 @@ resolve_npu_smi_bin() {
 
 start_server() {
   local max_model_len_args=()
+  local serve_extra_args=()
   if [[ -n "$MAX_MODEL_LEN" ]]; then
     max_model_len_args=(--max-model-len "$MAX_MODEL_LEN")
+  fi
+  if [[ "$ASCEND_BENCHMARK_ENFORCE_EAGER" == "1" ]]; then
+    serve_extra_args+=(--enforce-eager)
   fi
 
   if command -v setsid >/dev/null 2>&1; then
@@ -656,7 +665,7 @@ start_server() {
         --dtype "$DTYPE" \
         "${max_model_len_args[@]}" \
         --max-num-seqs "$MAX_NUM_SEQS" \
-        --enforce-eager >"$SERVER_LOG" 2>&1 &
+        "${serve_extra_args[@]}" >"$SERVER_LOG" 2>&1 &
     fi
     server_pid=$!
     server_group_pid=$server_pid
@@ -673,11 +682,142 @@ start_server() {
         --dtype "$DTYPE" \
         "${max_model_len_args[@]}" \
         --max-num-seqs "$MAX_NUM_SEQS" \
-        --enforce-eager >"$SERVER_LOG" 2>&1 &
+        "${serve_extra_args[@]}" >"$SERVER_LOG" 2>&1 &
     fi
     server_pid=$!
     printf '%s\n' "$server_pid" >"$SERVER_PID_MARKER"
   fi
+}
+
+run_chat_completions_smoke() {
+  local request_timeout="${1:-$CHAT_SMOKE_REQUEST_TIMEOUT_SECONDS}"
+
+  "$PYTHON_BIN" - "$HOST" "$PORT" "$MODEL_NAME" "$RESULT_ROOT/chat_completions_smoke.json" "$request_timeout" <<'PY'
+import json
+import sys
+import urllib.error
+import urllib.request
+
+host, port, model, output_path, request_timeout = sys.argv[1:6]
+url = f"http://{host}:{port}/v1/chat/completions"
+payload = {
+    "model": model,
+    "messages": [{"role": "user", "content": "Reply with ok."}],
+    "max_tokens": 2,
+    "temperature": 0,
+}
+request = urllib.request.Request(
+    url,
+    data=json.dumps(payload).encode("utf-8"),
+    headers={"Content-Type": "application/json"},
+    method="POST",
+)
+
+try:
+    with urllib.request.urlopen(request, timeout=float(request_timeout)) as response:
+        body = response.read().decode("utf-8", errors="replace")
+except urllib.error.HTTPError as exc:
+    body = exc.read().decode("utf-8", errors="replace")
+    print(
+        f"chat completions smoke returned HTTP {exc.code}; "
+        f"response prefix: {body[:500]}",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+except Exception as exc:
+    print(f"chat completions smoke request failed: {exc}", file=sys.stderr)
+    raise SystemExit(1)
+
+try:
+    data = json.loads(body)
+except json.JSONDecodeError as exc:
+    print(f"chat completions smoke returned invalid JSON: {exc}", file=sys.stderr)
+    raise SystemExit(1)
+
+choices = data.get("choices")
+if not isinstance(choices, list) or not choices:
+    print("chat completions smoke returned no choices", file=sys.stderr)
+    raise SystemExit(1)
+
+message = choices[0].get("message")
+content = message.get("content") if isinstance(message, dict) else None
+if content is None:
+    print("chat completions smoke returned no message content", file=sys.stderr)
+    raise SystemExit(1)
+
+usage = data.get("usage")
+completion_tokens = usage.get("completion_tokens") if isinstance(usage, dict) else None
+has_text = isinstance(content, str) and bool(content.strip())
+has_completion_tokens = isinstance(completion_tokens, int) and completion_tokens > 0
+if not has_text and not has_completion_tokens:
+    print(
+        "chat completions smoke did not observe generated text or completion tokens",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+
+with open(output_path, "w", encoding="utf-8") as f:
+    json.dump(
+        {
+            "id": data.get("id"),
+            "model": data.get("model"),
+            "finish_reason": choices[0].get("finish_reason"),
+            "content_length": len(str(content)),
+            "completion_tokens": completion_tokens,
+        },
+        f,
+        ensure_ascii=True,
+        indent=2,
+    )
+
+print("chat completions smoke succeeded")
+PY
+}
+
+wait_for_chat_completions_smoke() {
+  local deadline
+  local remaining
+  local request_timeout
+  local sleep_seconds
+
+  deadline=$(($(date +%s) + CHAT_SMOKE_TIMEOUT_SECONDS))
+
+  while true; do
+    remaining=$((deadline - $(date +%s)))
+    if (( remaining <= 0 )); then
+      break
+    fi
+
+    request_timeout="$CHAT_SMOKE_REQUEST_TIMEOUT_SECONDS"
+    if (( request_timeout > remaining )); then
+      request_timeout="$remaining"
+    fi
+    if (( request_timeout < 1 )); then
+      request_timeout=1
+    fi
+
+    if run_chat_completions_smoke "$request_timeout"; then
+      return 0
+    fi
+
+    if ! kill -0 "$server_pid" 2>/dev/null; then
+      echo "vLLM server exited while waiting for chat completions smoke"
+      return 1
+    fi
+
+    remaining=$((deadline - $(date +%s)))
+    if (( remaining <= 0 )); then
+      break
+    fi
+    sleep_seconds="$CHAT_SMOKE_POLL_SECONDS"
+    if (( sleep_seconds > remaining )); then
+      sleep_seconds="$remaining"
+    fi
+    sleep "$sleep_seconds"
+  done
+
+  echo "Timed out waiting for chat completions smoke after ${CHAT_SMOKE_TIMEOUT_SECONDS}s"
+  return 1
 }
 
 run_same_spec_current_benchmark() {
@@ -1285,8 +1425,24 @@ else
 
     for attempt in $(seq 1 "$server_ready_max_attempts"); do
       if curl -fsS "http://$HOST:$PORT/v1/models" >/dev/null; then
-        server_ready=1
-        break 2
+        if wait_for_chat_completions_smoke; then
+          server_ready=1
+          break 2
+        fi
+        echo "vLLM server models endpoint is ready, but chat completions smoke failed"
+        cat "$SERVER_LOG"
+        if server_log_indicates_resource_busy; then
+          if [[ "$start_attempt" -lt "$SERVER_START_RETRIES" ]]; then
+            echo "Detected transient Ascend resource busy state after chat smoke failure; retrying server start in ${SERVER_START_RETRY_DELAY_SECONDS}s (attempt ${start_attempt}/${SERVER_START_RETRIES})"
+            cleanup
+            sleep "$SERVER_START_RETRY_DELAY_SECONDS"
+            break
+          fi
+
+          echo "Detected transient Ascend resource busy state after exhausting ${SERVER_START_RETRIES} start attempt(s)"
+          exit "$RESOURCE_BUSY_EXIT_CODE"
+        fi
+        exit 1
       fi
 
       if ! kill -0 "$server_pid" 2>/dev/null; then

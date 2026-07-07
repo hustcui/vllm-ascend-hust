@@ -20,6 +20,7 @@ WORKFLOW = REPO_ROOT / ".github/workflows/ascend-benchmark-leaderboard.yml"
 SCRIPT_DIR = REPO_ROOT / ".github/workflows/scripts"
 MANAGER_HELPER = REPO_ROOT / "scripts/hust_ascend_manager_helper.sh"
 INSTALL_PLUGIN_SCRIPT = REPO_ROOT / "scripts/install_local_ascend_plugin.sh"
+INSTALL_DEV_HUB_SCRIPT = SCRIPT_DIR / "install_ascend_benchmark_with_dev_hub.sh"
 
 
 def test_perfgate_scripts_are_present() -> None:
@@ -29,6 +30,7 @@ def test_perfgate_scripts_are_present() -> None:
         "perfgate_stage2_rebase_and_benchmark.sh",
         "perfgate_compare.sh",
         "perfgate_store_baseline.sh",
+        "install_ascend_benchmark_with_dev_hub.sh",
         "parse_ascend_comment_command.py",
         "resolve_ascend_benchmark_scenario.py",
     ):
@@ -58,13 +60,19 @@ def test_ascend_benchmark_workflow_wires_two_stage_perfgate() -> None:
     assert "github.event_name == 'issue_comment'" in workflow
     assert "VLLM_ASCEND_HUST_PUBLISH_BENCHMARK_ON_PR" not in workflow
     assert "github.event_name == 'pull_request' || github.event_name == 'issue_comment'" in workflow
-    assert (
-        "hust-ascend-manager Python stack reconciliation failed; "
-        "falling back to explicit pip installs"
-    ) in workflow
+    assert "Checkout dev-hub repo" in workflow
+    assert "VLLM_HUST_DEV_HUB_REF" in workflow
+    assert "HUST_ASCEND_MANAGER_REF" in workflow
+    assert "ref: ${{ env.HUST_ASCEND_MANAGER_REF }}" in workflow
+    assert "install_ascend_benchmark_with_dev_hub.sh" in workflow
+    assert "hust_run_pip install \"torch==2.9.0\"" not in workflow
+    assert "scripts/install_local_ascend_plugin.sh" not in workflow
+    assert "resolve_cann_major_version()" not in workflow
     assert "vars.VLLM_ASCEND_HUST_BENCHMARK_USE_SUDO || 'auto'" in workflow
     assert "CURRENT_VLLM_CACHE_ROOT: ${{ github.workspace }}/../.hf-cache/vllm" in workflow
     assert "VLLM_ASCEND_HUST_SAME_SPEC_READY_TIMEOUT_SECONDS || '1800'" in workflow
+    assert "vars.VLLM_ASCEND_HUST_COMPILE_CUSTOM_KERNELS || 'auto'" in workflow
+    assert "VLLM_ASCEND_HUST_STAGE2_DEV_HUB_QUICKSTART_CONDA || '0'" in workflow
 
 
 def test_local_ascend_manager_fallback_bootstraps_pip() -> None:
@@ -124,6 +132,40 @@ def test_benchmark_server_uses_inferred_max_model_len_by_default() -> None:
     assert "MAX_MODEL_LEN must be set" not in root_helper
 
 
+def test_benchmark_server_uses_configurable_eager_and_chat_smoke() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    runner_script = (SCRIPT_DIR / "run_ascend_benchmark_ci.sh").read_text(
+        encoding="utf-8"
+    )
+    root_helper = (SCRIPT_DIR / "run_ascend_benchmark_root_helper.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert "ASCEND_BENCHMARK_ENFORCE_EAGER:" in workflow
+    assert "VLLM_ASCEND_HUST_BENCHMARK_ENFORCE_EAGER || '0'" in workflow
+    assert "ASCEND_BENCHMARK_ENFORCE_EAGER=${ASCEND_BENCHMARK_ENFORCE_EAGER:-0}" in runner_script
+    assert "ASCEND_BENCHMARK_ENFORCE_EAGER" in runner_script[
+        runner_script.index("SUDO_PRESERVE_ENV_VARS=(") :
+    ]
+    assert "serve_extra_args=()" in runner_script
+    assert 'serve_extra_args+=(--enforce-eager)' in runner_script
+    assert "run_chat_completions_smoke()" in runner_script
+    assert "wait_for_chat_completions_smoke()" in runner_script
+    assert "CHAT_SMOKE_TIMEOUT_SECONDS=${CHAT_SMOKE_TIMEOUT_SECONDS:-120}" in runner_script
+    assert "CHAT_SMOKE_POLL_SECONDS=${CHAT_SMOKE_POLL_SECONDS:-5}" in runner_script
+    assert "CHAT_SMOKE_REQUEST_TIMEOUT_SECONDS=${CHAT_SMOKE_REQUEST_TIMEOUT_SECONDS:-15}" in runner_script
+    assert "/v1/chat/completions" in runner_script
+    assert "chat_completions_smoke.json" in runner_script
+    assert "content.strip()" in runner_script
+    assert "completion_tokens > 0" in runner_script
+    assert "if wait_for_chat_completions_smoke; then" in runner_script
+    assert "Timed out waiting for chat completions smoke" in runner_script
+    assert "--enforce-eager >" not in runner_script
+    assert "serve_extra_args=()" in root_helper
+    assert 'serve_extra_args+=(--enforce-eager)' in root_helper
+    assert '"${serve_extra_args[@]}"' in root_helper
+
+
 def test_same_spec_benchmark_uses_persistent_cache_and_configurable_timeout() -> None:
     runner_script = (SCRIPT_DIR / "run_ascend_benchmark_ci.sh").read_text(
         encoding="utf-8"
@@ -147,7 +189,37 @@ def test_stage2_trial_does_not_publish_benchmark_results() -> None:
     assert "PUBLISH_TO_BENCHMARK_REPO=0" in stage2_script
     assert "SYNC_GITHUB_SNAPSHOTS=0" in stage2_script
     assert "BENCHMARK_RESULTS_ROOT" in stage2_script
-    assert "install_local_ascend_plugin.sh" in stage2_script
+    assert "install_ascend_benchmark_with_dev_hub.sh" in stage2_script
+    assert 'DEV_HUB_QUICKSTART_CONDA="${PERFGATE_STAGE2_DEV_HUB_QUICKSTART_CONDA:-0}"' in stage2_script
+    assert "install_local_ascend_plugin.sh" not in stage2_script
+
+
+def test_dev_hub_install_wrapper_centralizes_custom_kernel_policy() -> None:
+    install_script = INSTALL_DEV_HUB_SCRIPT.read_text(encoding="utf-8")
+
+    assert "VLLM_HUST_DEV_HUB_REPO=" in install_script
+    assert "ascend-runtime-manager checkout not found" in install_script
+    assert "detect_cann_major_version()" in install_script
+    assert 'if [[ "$requested" == "auto" ]]; then' in install_script
+    assert 'if [[ "$cann_major" == "9" ]]; then' in install_script
+    assert "dev-hub-default" in install_script
+    assert "COMPILE_CUSTOM_KERNELS=auto resolved to dev-hub default policy for CANN 9" in install_script
+    assert "--ascend-lightweight" in install_script
+    assert "--ascend-custom-kernels" in install_script
+    assert "HUST_DEV_HUB_ASCEND_COMPILE_CUSTOM_KERNELS" in install_script
+    assert "HUST_DEV_HUB_SKIP_ASCEND_SYSTEM_APPLY=1" in install_script
+    assert 'bash "$VLLM_HUST_DEV_HUB_REPO/scripts/quickstart.sh"' in install_script
+    assert "COMPILE_CUSTOM_KERNELS=${COMPILE_CUSTOM_KERNELS:-auto}" in install_script
+
+
+def test_benchmark_workflow_masks_cross_service_credentials() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+
+    assert "Mask benchmark credentials" in workflow
+    assert "::add-mask::" in workflow
+    assert '"HF_TOKEN"' in workflow
+    assert '"BENCHMARK_REPO_GH_TOKEN"' in workflow
+    assert '"BENCHMARK_REPO_SSH_KEY"' in workflow
 
 
 def test_benchmark_repo_publish_is_gated_and_reported() -> None:
