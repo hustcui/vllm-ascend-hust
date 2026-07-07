@@ -928,6 +928,8 @@ client_parameters = dict(payload.get("client_parameters") or {})
 server_parameters["no_enable_chunked_prefill"] = True
 server_parameters["no_enable_prefix_caching"] = True
 client_parameters.setdefault("temperature", 0)
+client_parameters["max_concurrency"] = 1
+client_parameters["request_rate"] = 1
 
 payload["server_parameters"] = server_parameters
 payload["client_parameters"] = client_parameters
@@ -1027,6 +1029,7 @@ PY
   local validation_status=0
   validate_benchmark_result_file "$same_spec_raw_result" || validation_status=$?
   if [[ "$validation_status" -ne 0 ]]; then
+    print_same_spec_server_log_tail
     return "$validation_status"
   fi
 

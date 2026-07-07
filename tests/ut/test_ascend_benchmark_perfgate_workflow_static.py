@@ -115,8 +115,17 @@ def test_benchmark_runner_resolves_same_spec_without_random_online_default() -> 
     assert 'server_parameters["no_enable_chunked_prefill"] = True' in runner_script
     assert 'server_parameters["no_enable_prefix_caching"] = True' in runner_script
     assert 'client_parameters.setdefault("temperature", 0)' in runner_script
+    assert 'client_parameters["max_concurrency"] = 1' in runner_script
+    assert 'client_parameters["request_rate"] = 1' in runner_script
     assert '"$SAME_SPEC_PR_PREVIEW_COMPAT" == "1"' in runner_script
     assert '"$effective_same_spec_file"' in runner_script
+    validation_failure_block = runner_script[
+        runner_script.index('if [[ "$validation_status" -ne 0 ]]; then') :
+    ]
+    validation_failure_block = validation_failure_block[
+        : validation_failure_block.index("  fi")
+    ]
+    assert "print_same_spec_server_log_tail" in validation_failure_block
 
 
 def test_local_ascend_manager_fallback_bootstraps_pip() -> None:
