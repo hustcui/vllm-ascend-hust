@@ -31,7 +31,7 @@ BENCH_DATASET_PATH=${BENCH_DATASET_PATH:-}
 BENCH_CONSTRAINTS_FILE=${BENCH_CONSTRAINTS_FILE:-}
 ALLOW_RANDOM_HF_PUBLISH=${ALLOW_RANDOM_HF_PUBLISH:-0}
 SAME_SPEC_BENCHMARK_ENABLED=${SAME_SPEC_BENCHMARK_ENABLED:-1}
-SAME_SPEC_SPEC_FILE=${SAME_SPEC_SPEC_FILE:-$VLLM_HUST_BENCHMARK_REPO/docs/official-baselines/official-ascend-jan-2026-v0180-random-online-qwen25-14b-910b2.json}
+SAME_SPEC_SPEC_FILE=${SAME_SPEC_SPEC_FILE:-}
 SAME_SPEC_CONSTRAINTS_FILE=${SAME_SPEC_CONSTRAINTS_FILE:-$VLLM_HUST_BENCHMARK_REPO/docs/official-baselines/official-ascend-constraints.stub.json}
 
 MODEL_NAME=${MODEL_NAME:-Qwen/Qwen2.5-14B-Instruct}
@@ -51,7 +51,7 @@ BENCH_MAX_CONCURRENCY=${BENCH_MAX_CONCURRENCY:-4}
 BENCH_INPUT_LEN=${BENCH_INPUT_LEN:-}
 BENCH_OUTPUT_LEN=${BENCH_OUTPUT_LEN:-}
 HARDWARE_VENDOR=${HARDWARE_VENDOR:-Huawei}
-HARDWARE_CHIP_MODEL=${HARDWARE_CHIP_MODEL:-910B3}
+HARDWARE_CHIP_MODEL=${HARDWARE_CHIP_MODEL:-910B2}
 CHIP_COUNT=${CHIP_COUNT:-1}
 NODE_COUNT=${NODE_COUNT:-1}
 PUBLISH_TO_HF=${PUBLISH_TO_HF:-0}
@@ -110,6 +110,40 @@ INVALID_BENCHMARK_RESULT_EXIT_CODE=${INVALID_BENCHMARK_RESULT_EXIT_CODE:-77}
 ASCEND_BENCHMARK_USE_SUDO=${ASCEND_BENCHMARK_USE_SUDO:-0}
 SAME_SPEC_READY_TIMEOUT_SECONDS=${SAME_SPEC_READY_TIMEOUT_SECONDS:-$SERVER_READY_TIMEOUT_SECONDS}
 CURRENT_VLLM_CACHE_ROOT=${CURRENT_VLLM_CACHE_ROOT:-$CI_RUNTIME_ROOT/current-ascend-same-spec-cache}
+
+normalize_benchmark_spec_path() {
+  local spec_file=${1:-}
+  if [[ -z "$spec_file" ]]; then
+    return 1
+  fi
+  if [[ "$spec_file" = /* ]]; then
+    printf '%s\n' "$spec_file"
+  else
+    printf '%s\n' "$VLLM_HUST_BENCHMARK_REPO/$spec_file"
+  fi
+}
+
+resolve_same_spec_spec_file() {
+  local resolved_spec_file
+  if [[ -n "${SAME_SPEC_SPEC_FILE:-}" ]]; then
+    SAME_SPEC_SPEC_FILE=$(normalize_benchmark_spec_path "$SAME_SPEC_SPEC_FILE")
+    export SAME_SPEC_SPEC_FILE
+    return 0
+  fi
+
+  if ! resolved_spec_file=$("$PYTHON_BIN" -m vllm_hust_benchmark.perfgate_specs resolve \
+    --scenario "$BENCH_SCENARIO" \
+    --hardware-chip-model "$HARDWARE_CHIP_MODEL" \
+    --repo-root "$VLLM_HUST_BENCHMARK_REPO"); then
+    echo "Could not resolve same-spec benchmark spec for ${BENCH_SCENARIO}/${HARDWARE_CHIP_MODEL}" >&2
+    return 2
+  fi
+
+  SAME_SPEC_SPEC_FILE=$(normalize_benchmark_spec_path "$resolved_spec_file")
+  export SAME_SPEC_SPEC_FILE
+  echo "Resolved same-spec benchmark spec file: $SAME_SPEC_SPEC_FILE"
+}
+
 DEFAULT_SYSTEM_ASCEND_BENCHMARK_ROOT_HELPER=${DEFAULT_SYSTEM_ASCEND_BENCHMARK_ROOT_HELPER:-/usr/local/bin/run_ascend_benchmark_root_helper.sh}
 REPO_ASCEND_BENCHMARK_ROOT_HELPER=$VLLM_ASCEND_HUST_REPO/.github/workflows/scripts/run_ascend_benchmark_root_helper.sh
 REPO_ASCEND_BENCHMARK_ROOT_HELPER_INSTALL_SCRIPT=$VLLM_ASCEND_HUST_REPO/scripts/install_ascend_benchmark_root_helper.sh
@@ -1303,26 +1337,31 @@ case "$BENCH_SCENARIO" in
     )
     ;;
   sharegpt-online)
-    if [[ -z "$BENCH_DATASET_PATH" ]]; then
-      echo "BENCH_DATASET_PATH is required for sharegpt-online" >&2
-      exit 2
-    fi
-    if [[ -z "$BENCH_CONSTRAINTS_FILE" ]]; then
-      echo "BENCH_CONSTRAINTS_FILE is required for sharegpt-online" >&2
-      exit 2
-    fi
     EFFECTIVE_INPUT_LEN=${BENCH_INPUT_LEN:-1024}
     EFFECTIVE_OUTPUT_LEN=${BENCH_OUTPUT_LEN:-256}
-    EFFECTIVE_CONSTRAINTS_FILE="$BENCH_CONSTRAINTS_FILE"
-    bench_args=(
-      --backend vllm
-      --endpoint /v1/completions
-      --dataset-name sharegpt
-      --dataset-path "$BENCH_DATASET_PATH"
-      --num-prompts "$BENCH_NUM_PROMPTS"
-      --request-rate "$BENCH_REQUEST_RATE"
-      --max-concurrency "$BENCH_MAX_CONCURRENCY"
-    )
+    if [[ "$SAME_SPEC_BENCHMARK_ENABLED" == "1" ]]; then
+      EFFECTIVE_CONSTRAINTS_FILE=$SAME_SPEC_CONSTRAINTS_FILE
+      bench_args=()
+    else
+      if [[ -z "$BENCH_DATASET_PATH" ]]; then
+        echo "BENCH_DATASET_PATH is required for sharegpt-online" >&2
+        exit 2
+      fi
+      if [[ -z "$BENCH_CONSTRAINTS_FILE" ]]; then
+        echo "BENCH_CONSTRAINTS_FILE is required for sharegpt-online" >&2
+        exit 2
+      fi
+      EFFECTIVE_CONSTRAINTS_FILE="$BENCH_CONSTRAINTS_FILE"
+      bench_args=(
+        --backend vllm
+        --endpoint /v1/completions
+        --dataset-name sharegpt
+        --dataset-path "$BENCH_DATASET_PATH"
+        --num-prompts "$BENCH_NUM_PROMPTS"
+        --request-rate "$BENCH_REQUEST_RATE"
+        --max-concurrency "$BENCH_MAX_CONCURRENCY"
+      )
+    fi
     ;;
   *)
     echo "Unsupported BENCH_SCENARIO: $BENCH_SCENARIO" >&2
@@ -1340,7 +1379,8 @@ if [[ ! -f "$EFFECTIVE_CONSTRAINTS_FILE" ]]; then
   exit 2
 fi
 
-if [[ "$BENCH_SCENARIO" == "random-online" && "$SAME_SPEC_BENCHMARK_ENABLED" == "1" ]]; then
+if [[ "$SAME_SPEC_BENCHMARK_ENABLED" == "1" ]]; then
+  resolve_same_spec_spec_file
   for start_attempt in $(seq 1 "$SERVER_START_RETRIES"); do
     if [[ "$CHIP_COUNT" == "1" ]]; then
       configure_single_card_ascend_device "$start_attempt"

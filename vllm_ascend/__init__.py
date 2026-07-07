@@ -51,6 +51,10 @@ def register_model_loader():
     register_rforkloader()
 
 
+def register_model():
+    register_model_loader()
+
+
 def register_service_profiling():
     from .profiling_config import generate_service_profiling_config
 

@@ -33,8 +33,14 @@ from vllm.entrypoints.openai.engine.protocol import (
     DeltaMessage,
     DeltaToolCall,
 )
-from vllm.tool_parsers import glm4_moe_tool_parser as glm4_parser
-from vllm.tool_parsers.glm4_moe_tool_parser import Glm4MoeModelToolParser
+
+try:
+    from vllm.tool_parsers.glm4_moe_tool_parser import Glm4MoeModelToolParser
+except ImportError as exc:
+    Glm4MoeModelToolParser = None  # type: ignore[assignment]
+    _GLM4_MOE_TOOL_PARSER_IMPORT_ERROR = exc
+else:
+    _GLM4_MOE_TOOL_PARSER_IMPORT_ERROR = None
 
 logger = chat_serving.logger
 
@@ -489,7 +495,7 @@ def _patched_extract_tool_calls_streaming(
                         "arguments": args_dict,
                     }
                 except (json.JSONDecodeError, IndexError) as e:
-                    glm4_parser.logger.warning(
+                    logger.warning(
                         "Failed to finalize tool call state for tool %d: %s",
                         self.current_tool_id,
                         e,
@@ -560,35 +566,39 @@ def _split_terminal_tool_arg_chunk(data: str) -> list[str]:
     ]
 
 
-if not hasattr(OpenAIServingChat, "_ascend_glm_original_chat_completion_stream_generator"):
-    OpenAIServingChat._ascend_glm_original_chat_completion_stream_generator = (
-        OpenAIServingChat.chat_completion_stream_generator
+if Glm4MoeModelToolParser is None:
+    logger.warning(
+        "Skipping GLM tool-call parser patch because vllm.tool_parsers.glm4_moe_tool_parser is unavailable: %s",
+        _GLM4_MOE_TOOL_PARSER_IMPORT_ERROR,
     )
+else:
+    if not hasattr(OpenAIServingChat, "_ascend_glm_original_chat_completion_stream_generator"):
+        OpenAIServingChat._ascend_glm_original_chat_completion_stream_generator = (
+            OpenAIServingChat.chat_completion_stream_generator
+        )
 
+    async def _wrapped_chat_completion_stream_generator(
+        self,
+        *args,
+        **kwargs,
+    ):
+        original_stream_generator = self._ascend_glm_original_chat_completion_stream_generator
+        async for data in original_stream_generator(*args, **kwargs):
+            for chunk in _split_terminal_tool_arg_chunk(data):
+                yield chunk
 
-async def _wrapped_chat_completion_stream_generator(
-    self,
-    *args,
-    **kwargs,
-):
-    original_stream_generator = self._ascend_glm_original_chat_completion_stream_generator
-    async for data in original_stream_generator(*args, **kwargs):
-        for chunk in _split_terminal_tool_arg_chunk(data):
-            yield chunk
-
-
-OpenAIServingChat._create_remaining_args_delta = staticmethod(_create_remaining_args_delta)
-_wrapped_chat_completion_stream_generator.__module__ = OpenAIServingChat.__module__
-_wrapped_chat_completion_stream_generator.__qualname__ = (
-    f"{OpenAIServingChat.__qualname__}.chat_completion_stream_generator"
-)
-OpenAIServingChat.chat_completion_stream_generator = _wrapped_chat_completion_stream_generator
-Glm4MoeModelToolParser._ensure_tool_state = _ensure_tool_state
-Glm4MoeModelToolParser._begin_tool_call = _begin_tool_call
-Glm4MoeModelToolParser._finish_tool_call = _finish_tool_call
-Glm4MoeModelToolParser._revert_last_tool_call_state = _revert_last_tool_call_state
-Glm4MoeModelToolParser._emit_tool_name_delta = _emit_tool_name_delta
-Glm4MoeModelToolParser._emit_tool_args_delta = _emit_tool_args_delta
-Glm4MoeModelToolParser._append_arg_fragment = _append_arg_fragment
-Glm4MoeModelToolParser._close_args_if_needed = _close_args_if_needed
-Glm4MoeModelToolParser.extract_tool_calls_streaming = _patched_extract_tool_calls_streaming
+    OpenAIServingChat._create_remaining_args_delta = staticmethod(_create_remaining_args_delta)
+    _wrapped_chat_completion_stream_generator.__module__ = OpenAIServingChat.__module__
+    _wrapped_chat_completion_stream_generator.__qualname__ = (
+        f"{OpenAIServingChat.__qualname__}.chat_completion_stream_generator"
+    )
+    OpenAIServingChat.chat_completion_stream_generator = _wrapped_chat_completion_stream_generator
+    Glm4MoeModelToolParser._ensure_tool_state = _ensure_tool_state
+    Glm4MoeModelToolParser._begin_tool_call = _begin_tool_call
+    Glm4MoeModelToolParser._finish_tool_call = _finish_tool_call
+    Glm4MoeModelToolParser._revert_last_tool_call_state = _revert_last_tool_call_state
+    Glm4MoeModelToolParser._emit_tool_name_delta = _emit_tool_name_delta
+    Glm4MoeModelToolParser._emit_tool_args_delta = _emit_tool_args_delta
+    Glm4MoeModelToolParser._append_arg_fragment = _append_arg_fragment
+    Glm4MoeModelToolParser._close_args_if_needed = _close_args_if_needed
+    Glm4MoeModelToolParser.extract_tool_calls_streaming = _patched_extract_tool_calls_streaming
