@@ -1,6 +1,7 @@
 import math
 import os
 import pickle
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from multiprocessing.shared_memory import SharedMemory
@@ -13,9 +14,14 @@ from vllm.config import KVTransferConfig, VllmConfig
 from vllm.logger import logger
 from vllm.utils.network_utils import make_zmq_socket
 from vllm.utils.torch_utils import get_dtype_size
-from vllm.v1.kv_cache_interface import AttentionSpec, MLAAttentionSpec
+from vllm.v1.kv_cache_interface import AttentionSpec
 
+from vllm_ascend.core.kv_cache_interface import AscendMLAAttentionSpec
 from vllm_ascend.distributed.kv_transfer.kv_pool.cpu_offload.cpu_kv_cache_manager import CPUKVCacheManager
+
+
+def _profile_enabled() -> bool:
+    return os.getenv("VLLM_ASCEND_CPU_OFFLOAD_PROFILE", "0").lower() in {"1", "true", "yes", "on"}
 
 
 @dataclass
@@ -58,11 +64,15 @@ class MetadataServer:
             )
 
         def call(self, func_name: str, *args, **kwargs) -> Any:
+            started = time.perf_counter()
             request = (func_name, args, kwargs)
             self.socket.send(b"", zmq.SNDMORE)  # type: ignore
             self.socket.send(pickle.dumps(request))
             _ = self.socket.recv()
             response = pickle.loads(self.socket.recv())
+            elapsed_ms = (time.perf_counter() - started) * 1000.0
+            if _profile_enabled():
+                logger.info("[cpu-offload-profile] rpc func=%s wall_ms=%.3f", func_name, elapsed_ms)
             result, error = response
             if error:
                 logger.exception("call metadata sever error: %s", error)
@@ -88,6 +98,7 @@ class MetadataServer:
                     shm.close()
 
     def __init__(self, vllm_config: VllmConfig):
+        self.vllm_config = vllm_config
         self.world_size = vllm_config.parallel_config.world_size
         self.pipeline_parallel_size = vllm_config.parallel_config.pipeline_parallel_size
         kv_transfer_config = get_cpu_offload_connector(vllm_config)
@@ -137,7 +148,7 @@ class MetadataServer:
         # follow the assumption that each layer has the same spec
         layer = next(iter(kv_cache_specs.values()))
         assert all([layer.page_size_bytes == any.page_size_bytes for any in kv_cache_specs.values()])
-        use_mla = isinstance(layer, MLAAttentionSpec)
+        use_mla = isinstance(layer, AscendMLAAttentionSpec)
         # mla shares the same kv cache among different tp
         if use_mla:
             tp_rank = 0
@@ -179,7 +190,12 @@ class MetadataServer:
         # do shared_memory() at least once
         logger.info("assign cpu num blocks: %s", self.num_cpu_blocks)
         assert self.num_cpu_blocks >= 0
-        self.cpu_block_manager = CPUKVCacheManager(self.layer, self.num_cpu_blocks)
+        self.cpu_block_manager = CPUKVCacheManager(
+            self.layer,
+            self.num_cpu_blocks,
+            max_num_batched_tokens=self.vllm_config.scheduler_config.max_num_batched_tokens,
+            max_model_len=self.vllm_config.model_config.max_model_len,
+        )
         self.functions.update(
             {
                 "get_matched_num_and_touch": self.cpu_block_manager.get_matched_num_and_touch,

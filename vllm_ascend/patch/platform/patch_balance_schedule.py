@@ -1,4 +1,5 @@
 # mypy: ignore-errors
+import os
 import signal
 import time
 
@@ -34,6 +35,23 @@ WAITING_FOR_STRUCTURED_OUTPUT_STATUS = getattr(
     "WAITING_FOR_STRUCTURED_OUTPUT_GRAMMAR",
     getattr(RequestStatus, "WAITING_FOR_FSM", None),
 )
+_ORIGINAL_RUN_ENGINE_CORE = EngineCoreProc.run_engine_core
+_ORIGINAL_SCHEDULER = Scheduler
+
+
+def _balance_scheduling_enabled(vllm_config) -> bool:
+    # TODO: Unify this path with AscendConfig once AscendConfig initialization
+    # is moved earlier in the startup flow.
+    try:
+        from vllm_ascend.ascend_config import get_ascend_config
+
+        return bool(get_ascend_config().enable_balance_scheduling)
+    except Exception:
+        pass
+    additional_config = getattr(vllm_config, "additional_config", None) or {}
+    if "enable_balance_scheduling" in additional_config:
+        return bool(additional_config["enable_balance_scheduling"])
+    return bool(int(os.getenv("VLLM_ASCEND_BALANCE_SCHEDULING", "0")))
 
 
 class BalanceScheduler(Scheduler):
@@ -43,6 +61,7 @@ class BalanceScheduler(Scheduler):
         kv_cache_config: KVCacheConfig,
         structured_output_manager: StructuredOutputManager,
         block_size: int,
+        hash_block_size: int | None = None,
         mm_registry: MultiModalRegistry = MULTIMODAL_REGISTRY,
         include_finished_set: bool = False,
         log_stats: bool = False,
@@ -52,22 +71,28 @@ class BalanceScheduler(Scheduler):
             kv_cache_config=kv_cache_config,
             structured_output_manager=structured_output_manager,
             block_size=block_size,
+            hash_block_size=hash_block_size,
             mm_registry=mm_registry,
             include_finished_set=include_finished_set,
             log_stats=log_stats,
         )
-        # Balance scheduling.
-        self.balance_queue = [
-            torch.tensor([0], dtype=torch.int, device="cpu")
-            for _ in range(self.vllm_config.parallel_config.data_parallel_size)
-        ]
+        self._balance_enabled = _balance_scheduling_enabled(vllm_config)
+        if self._balance_enabled:
+            self.balance_queue = [
+                torch.tensor([0], dtype=torch.int, device="cpu")
+                for _ in range(self.vllm_config.parallel_config.data_parallel_size)
+            ]
         self.victim_selector = UnifiedVictimSelector.from_vllm_config(vllm_config)
 
     def balance_gather(self, dp_group):
+        if not self._balance_enabled:
+            return
         running_tensor = torch.tensor([len(self.running)], dtype=torch.int, device="cpu")
         dist.all_gather(self.balance_queue, running_tensor, group=dp_group)
 
-    def schedule(self) -> SchedulerOutput:
+    def schedule(self, throttle_prefills: bool = False) -> SchedulerOutput:
+        if not self._balance_enabled:
+            return super().schedule(throttle_prefills)
         # NOTE(woosuk) on the scheduling algorithm:
         # There's no "decoding phase" nor "prefill phase" in the scheduler.
         # Each request just has the num_computed_tokens and
@@ -273,11 +298,9 @@ class BalanceScheduler(Scheduler):
 
         # Next, schedule the WAITING requests.
         if not preempted_reqs and self._pause_state == PauseState.UNPAUSED:
-            # Use a temporary RequestQueue to collect requests that need to be
-            # skipped and put back at the head of the waiting queue later
-            skipped_waiting_requests = create_request_queue(self.policy)
+            step_skipped_waiting = create_request_queue(self.policy)
 
-            while self.waiting and token_budget > 0:
+            while (self.waiting or self.skipped_waiting) and token_budget > 0:
                 if len(self.running) == self.max_num_running_reqs:
                     break
 
@@ -285,26 +308,25 @@ class BalanceScheduler(Scheduler):
                 if balance_flag:
                     break
 
-                request = self.waiting.peek_request()
+                request_queue = self._select_waiting_queue_for_scheduling()
+                if request_queue is None:
+                    break
+
+                request = request_queue.peek_request()
                 request_id = request.request_id
 
-                # KVTransfer: skip request if still waiting for remote kvs.
-                if request.status == RequestStatus.WAITING_FOR_REMOTE_KVS:
-                    if request.request_id not in self.finished_recving_kv_req_ids:
+                # try to promote blocked statuses while traversing skipped queue.
+                if self._is_blocked_waiting_status(request.status) and not self._try_promote_blocked_waiting_request(
+                    request
+                ):
+                    if request.status == RequestStatus.WAITING_FOR_REMOTE_KVS:
                         logger.debug(
                             "%s is still in WAITING_FOR_REMOTE_KVS state.",
                             request_id,
                         )
-                        self.waiting.pop_request()
-                        skipped_waiting_requests.prepend_request(request)
-                        continue
-                    self._update_waiting_for_remote_kv(request)
-                    if request.num_preemptions:
-                        # We must be loading for a resumed preemption
-                        # rather than a new request.
-                        request.status = RequestStatus.PREEMPTED
-                    else:
-                        request.status = RequestStatus.WAITING
+                    request_queue.pop_request()
+                    step_skipped_waiting.prepend_request(request)
+                    continue
 
                 # Skip request if the structured output request is still waiting
                 # for FSM compilation.
@@ -316,15 +338,15 @@ class BalanceScheduler(Scheduler):
                     if structured_output_req and structured_output_req.grammar:
                         request.status = RequestStatus.WAITING
                     else:
-                        self.waiting.pop_request()
-                        skipped_waiting_requests.prepend_request(request)
+                        request_queue.pop_request()
+                        step_skipped_waiting.prepend_request(request)
                         continue
 
                 # Streaming: skip request if still waiting for next streaming req.
                 if request.status == RequestStatus.WAITING_FOR_STREAMING_REQ:
                     assert not request.streaming_queue
-                    self.waiting.pop_request()
-                    skipped_waiting_requests.prepend_request(request)
+                    request_queue.pop_request()
+                    step_skipped_waiting.prepend_request(request)
                     continue
 
                 # Check that adding the request still respects the max_loras
@@ -338,8 +360,8 @@ class BalanceScheduler(Scheduler):
                     )
                 ):
                     # Scheduling would exceed max_loras, skip.
-                    self.waiting.pop_request()
-                    skipped_waiting_requests.prepend_request(request)
+                    request_queue.pop_request()
+                    step_skipped_waiting.prepend_request(request)
                     continue
 
                 num_external_computed_tokens = 0
@@ -363,8 +385,8 @@ class BalanceScheduler(Scheduler):
                             # The request cannot be scheduled because
                             # the KVConnector couldn't determine
                             # the number of matched tokens.
-                            self.waiting.pop_request()
-                            skipped_waiting_requests.prepend_request(request)
+                            request_queue.pop_request()
+                            step_skipped_waiting.prepend_request(request)
                             continue
 
                         num_external_computed_tokens = ext_tokens
@@ -492,14 +514,13 @@ class BalanceScheduler(Scheduler):
                             preempted=request.num_preemptions > 0,
                         )
 
-                # Request was already popped from self.waiting
-                # unless it was re-added above due to new_blocks being None.
-                request = self.waiting.pop_request()
+                request = request_queue.pop_request()
                 if load_kv_async:
                     # If loading async, allocate memory and put request
                     # into the WAITING_FOR_REMOTE_KV state.
-                    skipped_waiting_requests.prepend_request(request)
                     request.status = RequestStatus.WAITING_FOR_REMOTE_KVS
+                    step_skipped_waiting.prepend_request(request)
+                    request.num_computed_tokens = num_computed_tokens
                     continue
 
                 self.running.append(request)
@@ -533,9 +554,9 @@ class BalanceScheduler(Scheduler):
                         if self.ec_connector is not None:
                             self.ec_connector.update_state_after_alloc(request, i)
 
-            # Put back any skipped requests at the head of the waiting queue
-            if skipped_waiting_requests:
-                self.waiting.prepend_requests(skipped_waiting_requests)
+            # re-queue requests skipped in this pass ahead of older skipped items.
+            if step_skipped_waiting:
+                self.skipped_waiting.prepend_requests(step_skipped_waiting)
 
         # Check if the scheduling constraints are satisfied.
         total_num_scheduled_tokens = sum(num_scheduled_tokens.values())
@@ -673,6 +694,9 @@ class BalanceDPEngineCoreProc(DPEngineCoreProc):
 
 def run_engine_core(*args, dp_rank: int = 0, local_dp_rank: int = 0, **kwargs):
     """Launch EngineCore busy loop in background process."""
+    vllm_config = kwargs.get("vllm_config")
+    if not _balance_scheduling_enabled(vllm_config):
+        return _ORIGINAL_RUN_ENGINE_CORE(*args, dp_rank=dp_rank, local_dp_rank=local_dp_rank, **kwargs)
 
     # Signal handler used for graceful termination.
     # SystemExit exception is only raised once to allow this and worker

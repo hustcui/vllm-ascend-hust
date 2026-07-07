@@ -41,6 +41,11 @@ def test_ascend_benchmark_workflow_wires_two_stage_perfgate() -> None:
 
     assert "PERFGATE_MODE" in workflow
     assert "PERFGATE_SPEC_FILE" in workflow
+    assert "SOC_VERSION: ascend910b2" in workflow
+    assert (
+        "HARDWARE_CHIP_MODEL: ${{ github.event_name == 'workflow_dispatch' && inputs.hardware_chip_model || '910B2' }}"
+        in workflow
+    )
     assert "vllm_hust_benchmark.perfgate_specs resolve" in workflow
     assert "HARDWARE_CHIP_MODEL: 910B2" in workflow
     assert '--hardware-chip-model "${HARDWARE_CHIP_MODEL}"' in workflow
@@ -48,6 +53,7 @@ def test_ascend_benchmark_workflow_wires_two_stage_perfgate() -> None:
     assert '--repo-root "${GITHUB_WORKSPACE}/vllm-hust-benchmark"' in workflow
     assert "MAIN_BENCH_SCENARIO" in workflow
     assert '--scenario "${MAIN_BENCH_SCENARIO}"' in workflow
+    assert "docs/official-baselines/perfgate-ascend-qwen25-3b-910b2.json" not in workflow
     assert "docs/official-baselines/perfgate-ascend-qwen25-3b-910b3.json" not in workflow
     assert "perfgate-ascend-qwen25-3b-910b3.json" not in workflow
     assert "VLLM_HUST_BENCHMARK_REF" in workflow
