@@ -94,6 +94,7 @@ def test_benchmark_runner_resolves_same_spec_without_random_online_default() -> 
     runner_script = (SCRIPT_DIR / "run_ascend_benchmark_ci.sh").read_text(encoding="utf-8")
 
     assert "SAME_SPEC_SPEC_FILE=${SAME_SPEC_SPEC_FILE:-}" in runner_script
+    assert "SAME_SPEC_PR_PREVIEW_COMPAT=${SAME_SPEC_PR_PREVIEW_COMPAT:-1}" in runner_script
     assert "SAME_SPEC_CLIENT_READY_TIMEOUT_SECONDS=${SAME_SPEC_CLIENT_READY_TIMEOUT_SECONDS:-300}" in runner_script
     assert "vllm_hust_benchmark.perfgate_specs resolve" in runner_script
     assert '--scenario "$BENCH_SCENARIO"' in runner_script
@@ -110,6 +111,12 @@ def test_benchmark_runner_resolves_same_spec_without_random_online_default() -> 
     assert "BENCH_DATASET_PATH is required for sharegpt-online" in sharegpt_block
     assert 'CLIENT_READY_CHECK_TIMEOUT_SECONDS="$SAME_SPEC_CLIENT_READY_TIMEOUT_SECONDS"' in runner_script
     assert "print_same_spec_server_log_tail" in runner_script
+    assert "prepare_same_spec_pr_preview_compat_file()" in runner_script
+    assert 'server_parameters["no_enable_chunked_prefill"] = True' in runner_script
+    assert 'server_parameters["no_enable_prefix_caching"] = True' in runner_script
+    assert 'client_parameters.setdefault("temperature", 0)' in runner_script
+    assert '"$SAME_SPEC_PR_PREVIEW_COMPAT" == "1"' in runner_script
+    assert '"$effective_same_spec_file"' in runner_script
 
 
 def test_local_ascend_manager_fallback_bootstraps_pip() -> None:

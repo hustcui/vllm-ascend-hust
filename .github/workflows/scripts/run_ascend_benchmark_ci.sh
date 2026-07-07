@@ -33,6 +33,7 @@ ALLOW_RANDOM_HF_PUBLISH=${ALLOW_RANDOM_HF_PUBLISH:-0}
 SAME_SPEC_BENCHMARK_ENABLED=${SAME_SPEC_BENCHMARK_ENABLED:-1}
 SAME_SPEC_SPEC_FILE=${SAME_SPEC_SPEC_FILE:-}
 SAME_SPEC_CONSTRAINTS_FILE=${SAME_SPEC_CONSTRAINTS_FILE:-$VLLM_HUST_BENCHMARK_REPO/docs/official-baselines/official-ascend-constraints.stub.json}
+SAME_SPEC_PR_PREVIEW_COMPAT=${SAME_SPEC_PR_PREVIEW_COMPAT:-1}
 
 MODEL_NAME=${MODEL_NAME:-Qwen/Qwen2.5-14B-Instruct}
 MODEL_PARAMETERS=${MODEL_PARAMETERS:-14B}
@@ -337,6 +338,7 @@ SUDO_PRESERVE_ENV_VARS=(
   RUN_ID
   SAME_SPEC_CONSTRAINTS_FILE
   SAME_SPEC_CLIENT_READY_TIMEOUT_SECONDS
+  SAME_SPEC_PR_PREVIEW_COMPAT
   SAME_SPEC_READY_TIMEOUT_SECONDS
   SAME_SPEC_SPEC_FILE
   SERVER_LOG
@@ -885,6 +887,7 @@ run_same_spec_current_benchmark() {
   local same_spec_runner=$VLLM_HUST_BENCHMARK_REPO/scripts/run-current-ascend-same-spec.sh
   local same_spec_raw_result=$RESULT_ROOT/raw_benchmark_result.json
   local same_spec_submission_dir=$RESULT_ROOT/submission
+  local effective_same_spec_file=$SAME_SPEC_SPEC_FILE
   local current_vllm_hust_commit
   local same_spec_exit_code=0
 
@@ -904,6 +907,44 @@ run_same_spec_current_benchmark() {
   current_vllm_hust_commit=$(git -C "$VLLM_HUST_REPO" rev-parse HEAD 2>/dev/null || true)
   rm -f "$same_spec_raw_result" "$RAW_RESULT_FILE"
   rm -rf "$same_spec_submission_dir" "$SUBMISSION_DIR"
+
+  prepare_same_spec_pr_preview_compat_file() {
+    local output_file=$RESULT_ROOT/pr-preview-same-spec.compat.json
+
+    "$PYTHON_BIN" - "$SAME_SPEC_SPEC_FILE" "$output_file" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+source = Path(sys.argv[1])
+target = Path(sys.argv[2])
+payload = json.loads(source.read_text(encoding="utf-8"))
+
+server_parameters = dict(payload.get("server_parameters") or {})
+client_parameters = dict(payload.get("client_parameters") or {})
+
+# PR preview runs on self-hosted Ascend runners where the shared same-spec
+# defaults can exercise unstable plugin paths before the CI signal is useful.
+server_parameters["no_enable_chunked_prefill"] = True
+server_parameters["no_enable_prefix_caching"] = True
+client_parameters.setdefault("temperature", 0)
+
+payload["server_parameters"] = server_parameters
+payload["client_parameters"] = client_parameters
+
+target.parent.mkdir(parents=True, exist_ok=True)
+target.write_text(
+    json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
+    encoding="utf-8",
+)
+print(target)
+PY
+  }
+
+  if [[ "$SAME_SPEC_PR_PREVIEW_COMPAT" == "1" && ( "${GITHUB_EVENT_NAME:-}" == "pull_request" || "${GITHUB_EVENT_NAME:-}" == "issue_comment" ) ]]; then
+    effective_same_spec_file=$(prepare_same_spec_pr_preview_compat_file)
+    echo "Using PR preview same-spec compatibility overlay: $effective_same_spec_file"
+  fi
 
   if [[ "$ASCEND_BENCHMARK_USE_SUDO" == "1" ]]; then
     VLLM_HUST_WORKSPACE_ROOT="$WORKSPACE_ROOT" \
@@ -935,7 +976,7 @@ run_same_spec_current_benchmark() {
       READY_TIMEOUT_SECONDS="$SAME_SPEC_READY_TIMEOUT_SECONDS" \
       CLIENT_READY_CHECK_TIMEOUT_SECONDS="$SAME_SPEC_CLIENT_READY_TIMEOUT_SECONDS" \
       CONSTRAINTS_FILE="$SAME_SPEC_CONSTRAINTS_FILE" \
-      run_ascend_root_helper same-spec "$same_spec_runner" "$SAME_SPEC_SPEC_FILE" || same_spec_exit_code=$?
+      run_ascend_root_helper same-spec "$same_spec_runner" "$effective_same_spec_file" || same_spec_exit_code=$?
   else
     env \
       VLLM_HUST_WORKSPACE_ROOT="$WORKSPACE_ROOT" \
@@ -967,7 +1008,7 @@ run_same_spec_current_benchmark() {
       READY_TIMEOUT_SECONDS="$SAME_SPEC_READY_TIMEOUT_SECONDS" \
       CLIENT_READY_CHECK_TIMEOUT_SECONDS="$SAME_SPEC_CLIENT_READY_TIMEOUT_SECONDS" \
       CONSTRAINTS_FILE="$SAME_SPEC_CONSTRAINTS_FILE" \
-      bash "$same_spec_runner" "$SAME_SPEC_SPEC_FILE" || same_spec_exit_code=$?
+      bash "$same_spec_runner" "$effective_same_spec_file" || same_spec_exit_code=$?
   fi
 
   if [[ "$same_spec_exit_code" -ne 0 ]]; then
