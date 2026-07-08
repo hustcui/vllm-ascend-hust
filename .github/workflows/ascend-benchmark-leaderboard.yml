@@ -2,11 +2,9 @@ name: Ascend Benchmark Leaderboard
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, labeled]
+    types: [labeled]
   issue_comment:
     types: [created]
-  push:
-    branches: [main]
   workflow_dispatch:
     inputs:
       ascend_hust_target:
@@ -264,9 +262,12 @@ jobs:
     if: >-
       always() &&
       (
-        github.event_name == 'push' ||
         github.event_name == 'workflow_dispatch' ||
-        (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) ||
+        (
+          github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.full_name == github.repository &&
+          (github.event.label.name == 'ready' || github.event.label.name == 'verified')
+        ) ||
         (github.event_name == 'issue_comment' && needs.issue-comment-command.outputs.should_run == '1')
       )
     permissions:
@@ -276,7 +277,6 @@ jobs:
     runs-on:
       - self-hosted
       - linux-aarch64-a2b3-0
-      - docker
     timeout-minutes: 60
     env:
       BENCHMARK_CHECKOUT_USE_SSH_443: ${{ secrets.VLLM_ASCEND_HUST_BENCHMARK_SSH_KEY != '' && '1' || '0' }}
@@ -673,18 +673,23 @@ jobs:
           if ! hust_ascend_manager_run setup --non-interactive; then
             echo "[WARN] hust-ascend-manager runtime setup failed; continuing with the runner Python stack"
           fi
-          benchmark_pip_constraints="${CI_RUNTIME_ROOT:-${RUNNER_TEMP:-/tmp}}/ascend-benchmark-pip-constraints.txt"
-          cat > "$benchmark_pip_constraints" <<'EOF'
-torch==2.9.0
-torch-npu==2.9.0
-EOF
-          export PIP_CONSTRAINT="$benchmark_pip_constraints"
-          echo "PIP_CONSTRAINT=$PIP_CONSTRAINT" >> "$GITHUB_ENV"
           export PYTHONPATH="$VLLM_HUST_REPO:$VLLM_HUST_BENCHMARK_REPO/src${PYTHONPATH:+:$PYTHONPATH}"
           echo "PYTHONPATH=$PYTHONPATH" >> "$GITHUB_ENV"
-          hust_run_pip install --force-reinstall "torch==2.9.0" "torch-npu==2.9.0"
+          torch_constraints="$RUNNER_TEMP/ascend-torch-constraints.txt"
+          cat > "$torch_constraints" <<'EOF'
+          torch==2.10.0
+          torch-npu==2.10.0
+          torchvision==0.25.0
+          torchaudio==2.10.0
+          EOF
+          hust_run_pip install -c "$torch_constraints" \
+            "torch==2.10.0" \
+            "torch-npu==2.10.0" \
+            "torchvision==0.25.0" \
+            "torchaudio==2.10.0" \
+            "setuptools>=77,<81"
           hust_run_pip install "numpy<2.0.0" scipy attrs decorator psutil
-          hust_run_pip install -r "$VLLM_HUST_REPO/requirements/common.txt"
+          hust_run_pip install -c "$torch_constraints" -r "$VLLM_HUST_REPO/requirements/common.txt"
           PYTHON_BIN="$(hust_resolve_python_bin)"
           echo "PYTHON_BIN=$PYTHON_BIN" >> "$GITHUB_ENV"
           "$PYTHON_BIN" - <<'PY'
