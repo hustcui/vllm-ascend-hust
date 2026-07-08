@@ -2,11 +2,9 @@ name: Ascend Benchmark Leaderboard
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, labeled]
+    types: [labeled]
   issue_comment:
     types: [created]
-  push:
-    branches: [main]
   workflow_dispatch:
     inputs:
       ascend_hust_target:
@@ -42,26 +40,6 @@ on:
         required: false
         type: string
         default: Qwen/Qwen2.5-14B-Instruct
-      model_precision:
-        description: Model weight precision (e.g. FP16, BF16, INT8)
-        required: false
-        type: string
-        default: FP16
-      model_quantization:
-        description: Quantization scheme (e.g. W8A8, W4A4). Leave empty for unquantized models.
-        required: false
-        type: string
-        default: ""
-      dtype:
-        description: vLLM runtime dtype (e.g. float16, bfloat16, auto). Use auto for quantized models.
-        required: false
-        type: string
-        default: float16
-      hardware_chip_model:
-        description: Ascend chip model (e.g. 910B2, 910B3)
-        required: false
-        type: string
-        default: "910B2"
       dataset_path:
         description: Dataset path on the trusted runner for formal workloads such as sharegpt-online
         required: false
@@ -77,26 +55,11 @@ on:
         required: false
         type: string
         default: "200"
-      request_rate:
-        description: Request rate passed to vllm bench serve
-        required: false
-        type: string
-        default: "1"
       max_concurrency:
         description: Max concurrency passed to vllm bench serve
         required: false
         type: string
         default: "4"
-      input_length:
-        description: Optional logical input length recorded in exported metadata
-        required: false
-        type: string
-        default: ""
-      output_length:
-        description: Optional logical output length recorded in exported metadata
-        required: false
-        type: string
-        default: ""
 
 concurrency:
   group: >-
@@ -264,9 +227,12 @@ jobs:
     if: >-
       always() &&
       (
-        github.event_name == 'push' ||
         github.event_name == 'workflow_dispatch' ||
-        (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) ||
+        (
+          github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.full_name == github.repository &&
+          (github.event.label.name == 'ready' || github.event.label.name == 'verified')
+        ) ||
         (github.event_name == 'issue_comment' && needs.issue-comment-command.outputs.should_run == '1')
       )
     permissions:
@@ -276,7 +242,6 @@ jobs:
     runs-on:
       - self-hosted
       - linux-aarch64-a2b3-0
-      - docker
     timeout-minutes: 60
     env:
       BENCHMARK_CHECKOUT_USE_SSH_443: ${{ secrets.VLLM_ASCEND_HUST_BENCHMARK_SSH_KEY != '' && '1' || '0' }}
@@ -301,22 +266,22 @@ jobs:
       BENCH_DATASET_PATH: ${{ github.event_name == 'issue_comment' && needs.issue-comment-command.outputs.dataset_path || (github.event_name == 'workflow_dispatch' && inputs.dataset_path || (github.event_name == 'pull_request' && vars.VLLM_ASCEND_HUST_PR_BENCHMARK_DATASET_PATH) || (github.event_name == 'push' && vars.VLLM_ASCEND_HUST_MAIN_BENCHMARK_DATASET_PATH) || '') }}
       BENCH_CONSTRAINTS_FILE: ${{ github.event_name == 'issue_comment' && needs.issue-comment-command.outputs.constraints_file || (github.event_name == 'workflow_dispatch' && inputs.constraints_file || (github.event_name == 'pull_request' && vars.VLLM_ASCEND_HUST_PR_BENCHMARK_CONSTRAINTS_FILE) || (github.event_name == 'push' && vars.VLLM_ASCEND_HUST_MAIN_BENCHMARK_CONSTRAINTS_FILE) || '') }}
       MODEL_PARAMETERS: ${{ github.event_name == 'issue_comment' && '3B' || '14B' }}
-      MODEL_PRECISION: ${{ github.event_name == 'issue_comment' && 'BF16' || (github.event_name == 'workflow_dispatch' && inputs.model_precision || 'FP16') }}
-      MODEL_QUANTIZATION: ${{ github.event_name == 'workflow_dispatch' && inputs.model_quantization || '' }}
-      DTYPE: ${{ github.event_name == 'issue_comment' && 'bfloat16' || (github.event_name == 'workflow_dispatch' && inputs.dtype || 'float16') }}
+      MODEL_PRECISION: ${{ github.event_name == 'issue_comment' && 'BF16' || 'FP16' }}
+      MODEL_QUANTIZATION: ""
+      DTYPE: ${{ github.event_name == 'issue_comment' && 'bfloat16' || 'float16' }}
       MAX_MODEL_LEN: ""
       MAX_NUM_SEQS: "1"
       BENCH_NUM_PROMPTS: ${{ github.event_name == 'issue_comment' && needs.issue-comment-command.outputs.num_prompts || (github.event_name == 'workflow_dispatch' && inputs.num_prompts || '200') }}
       BENCH_RANDOM_INPUT_LEN: ${{ github.event_name == 'issue_comment' && '64' || '1024' }}
       BENCH_RANDOM_OUTPUT_LEN: ${{ github.event_name == 'issue_comment' && '16' || '256' }}
-      BENCH_REQUEST_RATE: ${{ github.event_name == 'issue_comment' && needs.issue-comment-command.outputs.request_rate || (github.event_name == 'workflow_dispatch' && inputs.request_rate || '1') }}
+      BENCH_REQUEST_RATE: ${{ github.event_name == 'issue_comment' && needs.issue-comment-command.outputs.request_rate || '1' }}
       BENCH_MAX_CONCURRENCY: ${{ github.event_name == 'issue_comment' && needs.issue-comment-command.outputs.max_concurrency || (github.event_name == 'workflow_dispatch' && inputs.max_concurrency || '4') }}
-      BENCH_INPUT_LEN: ${{ github.event_name == 'issue_comment' && needs.issue-comment-command.outputs.input_length || (github.event_name == 'workflow_dispatch' && inputs.input_length || '') }}
-      BENCH_OUTPUT_LEN: ${{ github.event_name == 'issue_comment' && needs.issue-comment-command.outputs.output_length || (github.event_name == 'workflow_dispatch' && inputs.output_length || '') }}
+      BENCH_INPUT_LEN: ${{ github.event_name == 'issue_comment' && needs.issue-comment-command.outputs.input_length || '' }}
+      BENCH_OUTPUT_LEN: ${{ github.event_name == 'issue_comment' && needs.issue-comment-command.outputs.output_length || '' }}
       INPUT_BENCHMARK_SCENARIO: ${{ github.event_name == 'issue_comment' && needs.issue-comment-command.outputs.benchmark_scenario || (github.event_name == 'workflow_dispatch' && inputs.benchmark_scenario || '') }}
       PR_LABELS: ${{ github.event_name == 'pull_request' && toJson(github.event.pull_request.labels) || '[]' }}
       HARDWARE_VENDOR: Huawei
-      HARDWARE_CHIP_MODEL: ${{ github.event_name == 'workflow_dispatch' && inputs.hardware_chip_model || '910B2' }}
+      HARDWARE_CHIP_MODEL: "910B2"
       CHIP_COUNT: "1"
       NODE_COUNT: "1"
       ASCEND_BENCHMARK_USE_SUDO: ${{ vars.VLLM_ASCEND_HUST_BENCHMARK_USE_SUDO || 'auto' }}
@@ -656,9 +621,21 @@ jobs:
           fi
           export PYTHONPATH="$VLLM_HUST_REPO:$VLLM_HUST_BENCHMARK_REPO/src${PYTHONPATH:+:$PYTHONPATH}"
           echo "PYTHONPATH=$PYTHONPATH" >> "$GITHUB_ENV"
-          hust_run_pip install "torch==2.9.0" "torch-npu==2.9.0"
+          torch_constraints="$RUNNER_TEMP/ascend-torch-constraints.txt"
+          cat > "$torch_constraints" <<'EOF'
+          torch==2.10.0
+          torch-npu==2.10.0
+          torchvision==0.25.0
+          torchaudio==2.10.0
+          EOF
+          hust_run_pip install -c "$torch_constraints" \
+            "torch==2.10.0" \
+            "torch-npu==2.10.0" \
+            "torchvision==0.25.0" \
+            "torchaudio==2.10.0" \
+            "setuptools>=77,<81"
           hust_run_pip install "numpy<2.0.0" scipy attrs decorator psutil
-          hust_run_pip install -r "$VLLM_HUST_REPO/requirements/common.txt"
+          hust_run_pip install -c "$torch_constraints" -r "$VLLM_HUST_REPO/requirements/common.txt"
           PYTHON_BIN="$(hust_resolve_python_bin)"
           echo "PYTHON_BIN=$PYTHON_BIN" >> "$GITHUB_ENV"
           "$PYTHON_BIN" - <<'PY'
