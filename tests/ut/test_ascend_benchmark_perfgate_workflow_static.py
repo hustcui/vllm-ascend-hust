@@ -20,6 +20,7 @@ SCRIPT_DIR = REPO_ROOT / ".github/workflows/scripts"
 MANAGER_HELPER = REPO_ROOT / "scripts/hust_ascend_manager_helper.sh"
 INSTALL_PLUGIN_SCRIPT = REPO_ROOT / "scripts/install_local_ascend_plugin.sh"
 INSTALL_DEV_HUB_SCRIPT = SCRIPT_DIR / "install_ascend_benchmark_with_dev_hub.sh"
+USE_SINGLE_ASCEND_ENV_SCRIPT = REPO_ROOT / "scripts/use_single_ascend_env.sh"
 
 
 def test_perfgate_scripts_are_present() -> None:
@@ -141,6 +142,20 @@ def test_local_ascend_manager_fallback_bootstraps_pip() -> None:
     assert 'if _hust_ascend_manager_command_needs_pip "$@"; then' in fallback
     assert 'hust_ensure_python_pip "${python_bin}" || return 1' in fallback
     assert '"${python_bin}" -m hust_ascend_manager.cli "$@"' in fallback
+
+
+def test_single_ascend_env_falls_back_when_manager_env_fails() -> None:
+    single_env = USE_SINGLE_ASCEND_ENV_SCRIPT.read_text(encoding="utf-8")
+
+    assert "manager_env_status=0" in single_env
+    assert 'manager_env="$(hust_ascend_manager_run env --shell' in single_env
+    assert 'manager_env_status=$?' in single_env
+    assert 'if [[ "${manager_env_status}" -eq 0 ]]; then' in single_env
+    assert 'eval "${manager_env}"' in single_env
+    assert "falling back to local CANN set_env.sh discovery" in single_env
+    assert "/usr/local/Ascend/cann-*/set_env.sh" in single_env
+    assert '[[ -n "${ASCEND_HOME_PATH:-}" && -n "${ASCEND_OPP_PATH:-}" ]] && python_can_import_tbe' in single_env
+    assert 'ASCEND_OPP_PATH=${ASCEND_OPP_PATH:-<unset>}' in single_env
 
 
 def test_local_plugin_editable_install_bootstraps_build_metadata_deps() -> None:
