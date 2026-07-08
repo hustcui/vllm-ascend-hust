@@ -192,7 +192,7 @@ def test_benchmark_server_uses_inferred_max_model_len_by_default() -> None:
     assert "MAX_MODEL_LEN must be set" not in root_helper
 
 
-def test_benchmark_server_uses_configurable_eager_and_chat_smoke() -> None:
+def test_benchmark_server_uses_configurable_eager_and_completions_smoke() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
     runner_script = (SCRIPT_DIR / "run_ascend_benchmark_ci.sh").read_text(encoding="utf-8")
     root_helper = (SCRIPT_DIR / "run_ascend_benchmark_root_helper.sh").read_text(encoding="utf-8")
@@ -203,17 +203,18 @@ def test_benchmark_server_uses_configurable_eager_and_chat_smoke() -> None:
     assert "ASCEND_BENCHMARK_ENFORCE_EAGER" in runner_script[runner_script.index("SUDO_PRESERVE_ENV_VARS=(") :]
     assert "serve_extra_args=()" in runner_script
     assert "serve_extra_args+=(--enforce-eager)" in runner_script
-    assert "run_chat_completions_smoke()" in runner_script
-    assert "wait_for_chat_completions_smoke()" in runner_script
+    assert "run_completions_smoke()" in runner_script
+    assert "wait_for_completions_smoke()" in runner_script
     assert "CHAT_SMOKE_TIMEOUT_SECONDS=${CHAT_SMOKE_TIMEOUT_SECONDS:-120}" in runner_script
     assert "CHAT_SMOKE_POLL_SECONDS=${CHAT_SMOKE_POLL_SECONDS:-5}" in runner_script
     assert "CHAT_SMOKE_REQUEST_TIMEOUT_SECONDS=${CHAT_SMOKE_REQUEST_TIMEOUT_SECONDS:-15}" in runner_script
-    assert "/v1/chat/completions" in runner_script
-    assert "chat_completions_smoke.json" in runner_script
-    assert "content.strip()" in runner_script
+    assert "/v1/completions" in runner_script
+    assert "/v1/chat/completions" not in runner_script
+    assert "completions_smoke.json" in runner_script
+    assert "text.strip()" in runner_script
     assert "completion_tokens > 0" in runner_script
-    assert "if wait_for_chat_completions_smoke; then" in runner_script
-    assert "Timed out waiting for chat completions smoke" in runner_script
+    assert "if wait_for_completions_smoke; then" in runner_script
+    assert "Timed out waiting for completions smoke" in runner_script
     assert "--enforce-eager >" not in runner_script
     assert "serve_extra_args=()" in root_helper
     assert "serve_extra_args+=(--enforce-eager)" in root_helper

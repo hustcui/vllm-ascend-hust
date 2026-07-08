@@ -752,20 +752,20 @@ start_server() {
   fi
 }
 
-run_chat_completions_smoke() {
+run_completions_smoke() {
   local request_timeout="${1:-$CHAT_SMOKE_REQUEST_TIMEOUT_SECONDS}"
 
-  "$PYTHON_BIN" - "$HOST" "$PORT" "$MODEL_NAME" "$RESULT_ROOT/chat_completions_smoke.json" "$request_timeout" <<'PY'
+  "$PYTHON_BIN" - "$HOST" "$PORT" "$MODEL_NAME" "$RESULT_ROOT/completions_smoke.json" "$request_timeout" <<'PY'
 import json
 import sys
 import urllib.error
 import urllib.request
 
 host, port, model, output_path, request_timeout = sys.argv[1:6]
-url = f"http://{host}:{port}/v1/chat/completions"
+url = f"http://{host}:{port}/v1/completions"
 payload = {
     "model": model,
-    "messages": [{"role": "user", "content": "Reply with ok."}],
+    "prompt": "Reply with ok.",
     "max_tokens": 2,
     "temperature": 0,
 }
@@ -782,39 +782,35 @@ try:
 except urllib.error.HTTPError as exc:
     body = exc.read().decode("utf-8", errors="replace")
     print(
-        f"chat completions smoke returned HTTP {exc.code}; "
+        f"completions smoke returned HTTP {exc.code}; "
         f"response prefix: {body[:500]}",
         file=sys.stderr,
     )
     raise SystemExit(1)
 except Exception as exc:
-    print(f"chat completions smoke request failed: {exc}", file=sys.stderr)
+    print(f"completions smoke request failed: {exc}", file=sys.stderr)
     raise SystemExit(1)
 
 try:
     data = json.loads(body)
 except json.JSONDecodeError as exc:
-    print(f"chat completions smoke returned invalid JSON: {exc}", file=sys.stderr)
+    print(f"completions smoke returned invalid JSON: {exc}", file=sys.stderr)
     raise SystemExit(1)
 
 choices = data.get("choices")
 if not isinstance(choices, list) or not choices:
-    print("chat completions smoke returned no choices", file=sys.stderr)
+    print("completions smoke returned no choices", file=sys.stderr)
     raise SystemExit(1)
 
-message = choices[0].get("message")
-content = message.get("content") if isinstance(message, dict) else None
-if content is None:
-    print("chat completions smoke returned no message content", file=sys.stderr)
-    raise SystemExit(1)
+text = choices[0].get("text")
 
 usage = data.get("usage")
 completion_tokens = usage.get("completion_tokens") if isinstance(usage, dict) else None
-has_text = isinstance(content, str) and bool(content.strip())
+has_text = isinstance(text, str) and bool(text.strip())
 has_completion_tokens = isinstance(completion_tokens, int) and completion_tokens > 0
 if not has_text and not has_completion_tokens:
     print(
-        "chat completions smoke did not observe generated text or completion tokens",
+        "completions smoke did not observe generated text or completion tokens",
         file=sys.stderr,
     )
     raise SystemExit(1)
@@ -825,7 +821,7 @@ with open(output_path, "w", encoding="utf-8") as f:
             "id": data.get("id"),
             "model": data.get("model"),
             "finish_reason": choices[0].get("finish_reason"),
-            "content_length": len(str(content)),
+            "text_length": len(str(text)),
             "completion_tokens": completion_tokens,
         },
         f,
@@ -833,11 +829,11 @@ with open(output_path, "w", encoding="utf-8") as f:
         indent=2,
     )
 
-print("chat completions smoke succeeded")
+print("completions smoke succeeded")
 PY
 }
 
-wait_for_chat_completions_smoke() {
+wait_for_completions_smoke() {
   local deadline
   local remaining
   local request_timeout
@@ -859,12 +855,12 @@ wait_for_chat_completions_smoke() {
       request_timeout=1
     fi
 
-    if run_chat_completions_smoke "$request_timeout"; then
+    if run_completions_smoke "$request_timeout"; then
       return 0
     fi
 
     if ! kill -0 "$server_pid" 2>/dev/null; then
-      echo "vLLM server exited while waiting for chat completions smoke"
+      echo "vLLM server exited while waiting for completions smoke"
       return 1
     fi
 
@@ -879,7 +875,7 @@ wait_for_chat_completions_smoke() {
     sleep "$sleep_seconds"
   done
 
-  echo "Timed out waiting for chat completions smoke after ${CHAT_SMOKE_TIMEOUT_SECONDS}s"
+  echo "Timed out waiting for completions smoke after ${CHAT_SMOKE_TIMEOUT_SECONDS}s"
   return 1
 }
 
@@ -1552,15 +1548,15 @@ else
 
     for attempt in $(seq 1 "$server_ready_max_attempts"); do
       if curl -fsS "http://$HOST:$PORT/v1/models" >/dev/null; then
-        if wait_for_chat_completions_smoke; then
+        if wait_for_completions_smoke; then
           server_ready=1
           break 2
         fi
-        echo "vLLM server models endpoint is ready, but chat completions smoke failed"
+        echo "vLLM server models endpoint is ready, but completions smoke failed"
         cat "$SERVER_LOG"
         if server_log_indicates_resource_busy; then
           if [[ "$start_attempt" -lt "$SERVER_START_RETRIES" ]]; then
-            echo "Detected transient Ascend resource busy state after chat smoke failure; retrying server start in ${SERVER_START_RETRY_DELAY_SECONDS}s (attempt ${start_attempt}/${SERVER_START_RETRIES})"
+            echo "Detected transient Ascend resource busy state after completions smoke failure; retrying server start in ${SERVER_START_RETRY_DELAY_SECONDS}s (attempt ${start_attempt}/${SERVER_START_RETRIES})"
             cleanup
             sleep "$SERVER_START_RETRY_DELAY_SECONDS"
             break
