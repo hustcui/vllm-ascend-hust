@@ -33,6 +33,7 @@ def test_perfgate_scripts_are_present() -> None:
         "install_ascend_benchmark_with_dev_hub.sh",
         "parse_ascend_comment_command.py",
         "resolve_ascend_benchmark_scenario.py",
+        "resolve_perfgate_spec_file.py",
     ):
         assert (SCRIPT_DIR / script_name).is_file()
 
@@ -47,13 +48,18 @@ def test_ascend_benchmark_workflow_wires_two_stage_perfgate() -> None:
         "HARDWARE_CHIP_MODEL: ${{ github.event_name == 'workflow_dispatch' && inputs.hardware_chip_model || '910B2' }}"
         in workflow
     )
-    assert "vllm_hust_benchmark.perfgate_specs resolve" in workflow
-    assert "HARDWARE_CHIP_MODEL: 910B2" in workflow
-    assert '--hardware-chip-model "${HARDWARE_CHIP_MODEL}"' in workflow
-    assert '--repo-root "${VLLM_HUST_BENCHMARK_REPO}"' in workflow
-    assert '--repo-root "${GITHUB_WORKSPACE}/vllm-hust-benchmark"' in workflow
+    assert "Resolve perfgate same-spec file" in workflow
+    assert "Resolve main same-spec file" in workflow
+    assert "resolve_perfgate_spec_file.py" in workflow
+    assert "MAIN_SAME_SPEC_SPEC_FILE:" in workflow
+    assert "github.event_name != 'pull_request' && github.event_name != 'issue_comment'" in workflow
+    assert '--explicit-chip-model "${HARDWARE_CHIP_MODEL}"' in workflow
+    assert '--benchmark-repo "${VLLM_HUST_BENCHMARK_REPO}"' in workflow
+    assert '--explicit-same-spec-file ""' in workflow
+    assert 'spec_file="${SAME_SPEC_SPEC_FILE:-$MAIN_SAME_SPEC_SPEC_FILE}"' in workflow
     assert "MAIN_BENCH_SCENARIO" in workflow
     assert '--scenario "${MAIN_BENCH_SCENARIO}"' in workflow
+    assert '--repo-root "${GITHUB_WORKSPACE}/vllm-hust-benchmark"' in workflow
     assert "docs/official-baselines/perfgate-ascend-qwen25-3b-910b2.json" not in workflow
     assert "docs/official-baselines/perfgate-ascend-qwen25-3b-910b3.json" not in workflow
     assert "perfgate-ascend-qwen25-3b-910b3.json" not in workflow
@@ -72,7 +78,7 @@ def test_ascend_benchmark_workflow_wires_two_stage_perfgate() -> None:
     assert "Parse Ascend comment command" in workflow
     assert "resolve_ascend_benchmark_scenario.py" in workflow
     assert "github.event_name == 'issue_comment'" in workflow
-    assert "timeout-minutes: 90" in workflow
+    assert "timeout-minutes: 60" in workflow
     assert "VLLM_ASCEND_HUST_PUBLISH_BENCHMARK_ON_PR" not in workflow
     assert "github.event_name == 'pull_request' || github.event_name == 'issue_comment'" in workflow
     assert "Checkout dev-hub repo" in workflow
@@ -129,6 +135,43 @@ def test_benchmark_runner_resolves_same_spec_without_random_online_default() -> 
     assert "print_same_spec_server_log_tail" in validation_failure_block
 
 
+def test_pull_request_defaults_match_perfgate_spec_size() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+
+    assert (
+        "MODEL_NAME: ${{ (github.event_name == 'pull_request' || "
+        "github.event_name == 'issue_comment') && "
+        "(github.event_name == 'issue_comment' && "
+        "needs.issue-comment-command.outputs.model_name || "
+        "'Qwen/Qwen2.5-3B-Instruct') || "
+        "(github.event_name == 'workflow_dispatch' && inputs.model_name || "
+        "'Qwen/Qwen2.5-14B-Instruct') }}"
+    ) in workflow
+    assert (
+        "MODEL_PARAMETERS: ${{ (github.event_name == 'pull_request' || "
+        "github.event_name == 'issue_comment') && '3B' || '14B' }}"
+    ) in workflow
+    assert (
+        "MODEL_PRECISION: ${{ (github.event_name == 'pull_request' || "
+        "github.event_name == 'issue_comment') && 'BF16' || "
+        "(github.event_name == 'workflow_dispatch' && inputs.model_precision || "
+        "'FP16') }}"
+    ) in workflow
+    assert (
+        "DTYPE: ${{ (github.event_name == 'pull_request' || "
+        "github.event_name == 'issue_comment') && 'bfloat16' || "
+        "(github.event_name == 'workflow_dispatch' && inputs.dtype || 'float16') }}"
+    ) in workflow
+    assert (
+        "BENCH_RANDOM_INPUT_LEN: ${{ (github.event_name == 'pull_request' || "
+        "github.event_name == 'issue_comment') && '64' || '1024' }}"
+    ) in workflow
+    assert (
+        "BENCH_RANDOM_OUTPUT_LEN: ${{ (github.event_name == 'pull_request' || "
+        "github.event_name == 'issue_comment') && '16' || '256' }}"
+    ) in workflow
+
+
 def test_local_ascend_manager_fallback_bootstraps_pip() -> None:
     helper = MANAGER_HELPER.read_text(encoding="utf-8")
     workflow = WORKFLOW.read_text(encoding="utf-8")
@@ -178,6 +221,23 @@ def test_local_plugin_editable_install_bootstraps_build_metadata_deps() -> None:
     assert 'hust_run_pip install -e "${PLUGIN_REPO}" --no-build-isolation --no-deps' in install_script
 
 
+def test_benchmark_prepare_preserves_torch_npu_stack() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    prepare_step = workflow[workflow.index("Prepare Ascend runtime and install repos") :]
+    prepare_step = prepare_step[: prepare_step.index("- name: Verify installation")]
+
+    assert "install_ascend_benchmark_with_dev_hub.sh" in prepare_step
+    assert "hust_ascend_manager_run setup --non-interactive" not in prepare_step
+    assert "ascend-torch-constraints.txt" in prepare_step
+    assert "torch==2.10.0" in prepare_step
+    assert "torch-npu==2.10.0" in prepare_step
+    assert "torchvision==0.25.0" in prepare_step
+    assert "torchaudio==2.10.0" in prepare_step
+    assert 'hust_run_pip install -c "$torch_constraints"' in prepare_step
+    assert 'hust_run_pip install -c "$torch_constraints" -r "$VLLM_HUST_REPO/requirements/common.txt"' in prepare_step
+    assert "VLLM_HUST_PYTHON_BIN" in prepare_step
+
+
 def test_benchmark_runner_auto_disables_sudo_when_unavailable() -> None:
     runner_script = (SCRIPT_DIR / "run_ascend_benchmark_ci.sh").read_text(encoding="utf-8")
 
@@ -185,6 +245,18 @@ def test_benchmark_runner_auto_disables_sudo_when_unavailable() -> None:
     assert "command -v sudo" in runner_script
     assert "Ascend benchmark sudo mode: disabled via auto detection" in runner_script
     assert "command not found" in runner_script[runner_script.index("runtime_ready_log_indicates_sudo_auth_failure") :]
+
+
+def test_benchmark_runner_fails_fast_for_ascend_node_env_failure() -> None:
+    runner_script = (SCRIPT_DIR / "run_ascend_benchmark_ci.sh").read_text(encoding="utf-8")
+
+    assert "NODE_ENV_FAILURE_EXIT_CODE=${NODE_ENV_FAILURE_EXIT_CODE:-86}" in runner_script
+    assert "runtime_ready_log_indicates_node_env_failure()" in runner_script
+    assert "ASCEND_HOME_PATH environment variable is not set" in runner_script
+    assert "ModuleNotFoundError: No module named 'tbe'" in runner_script
+    assert "CANN/TBE runtime is not available" in runner_script
+    assert "not retrying across devices" in runner_script
+    assert "not retrying server startup across devices" in runner_script
 
 
 def test_benchmark_server_uses_inferred_max_model_len_by_default() -> None:
