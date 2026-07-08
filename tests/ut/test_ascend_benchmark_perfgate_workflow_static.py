@@ -139,6 +139,11 @@ def test_local_ascend_manager_fallback_bootstraps_pip() -> None:
     assert '"${python_bin}" "${get_pip_script}" --user' in helper
     assert "${CI_HOME:-}" in helper
     assert '"${ci_home}/miniconda3/envs/${env_name}"' in helper
+    prepare_step = workflow[workflow.index("Prepare Ascend runtime and install repos") :]
+    assert "source scripts/hust_ascend_manager_helper.sh" in prepare_step
+    assert prepare_step.index("source scripts/hust_ascend_manager_helper.sh") < prepare_step.index(
+        'PYTHON_BIN="$(hust_resolve_python_bin)"'
+    )
     assert "export VLLM_HUST_PYTHON_BIN=\"$PYTHON_BIN\"" in workflow
     assert "VLLM_HUST_PYTHON_BIN=$VLLM_HUST_PYTHON_BIN" in workflow
     assert "_hust_ascend_manager_command_needs_pip()" in helper
