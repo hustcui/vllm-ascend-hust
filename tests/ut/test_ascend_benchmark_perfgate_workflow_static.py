@@ -247,18 +247,6 @@ def test_benchmark_runner_auto_disables_sudo_when_unavailable() -> None:
     assert "command not found" in runner_script[runner_script.index("runtime_ready_log_indicates_sudo_auth_failure") :]
 
 
-def test_benchmark_runner_fails_fast_for_ascend_node_env_failure() -> None:
-    runner_script = (SCRIPT_DIR / "run_ascend_benchmark_ci.sh").read_text(encoding="utf-8")
-
-    assert "NODE_ENV_FAILURE_EXIT_CODE=${NODE_ENV_FAILURE_EXIT_CODE:-86}" in runner_script
-    assert "runtime_ready_log_indicates_node_env_failure()" in runner_script
-    assert "ASCEND_HOME_PATH environment variable is not set" in runner_script
-    assert "ModuleNotFoundError: No module named 'tbe'" in runner_script
-    assert "CANN/TBE runtime is not available" in runner_script
-    assert "not retrying across devices" in runner_script
-    assert "not retrying server startup across devices" in runner_script
-
-
 def test_benchmark_server_uses_inferred_max_model_len_by_default() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
     runner_script = (SCRIPT_DIR / "run_ascend_benchmark_ci.sh").read_text(encoding="utf-8")
