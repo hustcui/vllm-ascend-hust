@@ -131,11 +131,16 @@ def test_benchmark_runner_resolves_same_spec_without_random_online_default() -> 
 
 def test_local_ascend_manager_fallback_bootstraps_pip() -> None:
     helper = MANAGER_HELPER.read_text(encoding="utf-8")
+    workflow = WORKFLOW.read_text(encoding="utf-8")
 
     assert "hust_ensure_python_pip()" in helper
     assert '"${python_bin}" -m ensurepip --upgrade' in helper
     assert "https://bootstrap.pypa.io/get-pip.py" in helper
     assert '"${python_bin}" "${get_pip_script}" --user' in helper
+    assert "${CI_HOME:-}" in helper
+    assert '"${ci_home}/miniconda3/envs/${env_name}"' in helper
+    assert "export VLLM_HUST_PYTHON_BIN=\"$PYTHON_BIN\"" in workflow
+    assert "VLLM_HUST_PYTHON_BIN=$VLLM_HUST_PYTHON_BIN" in workflow
     assert "_hust_ascend_manager_command_needs_pip()" in helper
     assert "--install-python-stack|--install-plugin" in helper
     fallback = helper[helper.index("hust_ascend_manager_run()") :]
