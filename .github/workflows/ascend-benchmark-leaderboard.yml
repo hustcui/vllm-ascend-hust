@@ -40,6 +40,26 @@ on:
         required: false
         type: string
         default: Qwen/Qwen2.5-14B-Instruct
+      model_precision:
+        description: Model weight precision (e.g. FP16, BF16, INT8)
+        required: false
+        type: string
+        default: FP16
+      model_quantization:
+        description: Quantization scheme (e.g. W8A8, W4A4). Leave empty for unquantized models.
+        required: false
+        type: string
+        default: ""
+      dtype:
+        description: vLLM runtime dtype (e.g. float16, bfloat16, auto). Use auto for quantized models.
+        required: false
+        type: string
+        default: float16
+      hardware_chip_model:
+        description: Ascend chip model (e.g. 910B2, 910B3)
+        required: false
+        type: string
+        default: "910B2"
       dataset_path:
         description: Dataset path on the trusted runner for formal workloads such as sharegpt-online
         required: false
@@ -55,11 +75,26 @@ on:
         required: false
         type: string
         default: "200"
+      request_rate:
+        description: Request rate passed to vllm bench serve
+        required: false
+        type: string
+        default: "1"
       max_concurrency:
         description: Max concurrency passed to vllm bench serve
         required: false
         type: string
         default: "4"
+      input_length:
+        description: Optional logical input length recorded in exported metadata
+        required: false
+        type: string
+        default: ""
+      output_length:
+        description: Optional logical output length recorded in exported metadata
+        required: false
+        type: string
+        default: ""
 
 concurrency:
   group: >-
@@ -260,28 +295,28 @@ jobs:
       VLLM_HUST_CONDA_ENV: vllm-hust-dev
       VLLM_HUST_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.vllm_hust_ref || vars.VLLM_ASCEND_HUST_VLLM_HUST_REF || 'main' }}
       VLLM_HUST_BENCHMARK_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.benchmark_ref || vars.VLLM_ASCEND_HUST_BENCHMARK_REF || 'main' }}
-      MODEL_NAME: ${{ github.event_name == 'issue_comment' && needs.issue-comment-command.outputs.model_name || (github.event_name == 'workflow_dispatch' && inputs.model_name || 'Qwen/Qwen2.5-14B-Instruct') }}
+      MODEL_NAME: ${{ (github.event_name == 'pull_request' || github.event_name == 'issue_comment') && (github.event_name == 'issue_comment' && needs.issue-comment-command.outputs.model_name || 'Qwen/Qwen2.5-3B-Instruct') || (github.event_name == 'workflow_dispatch' && inputs.model_name || 'Qwen/Qwen2.5-14B-Instruct') }}
       SOC_VERSION: ascend910b2
       BENCH_SCENARIO: ${{ github.event_name == 'issue_comment' && needs.issue-comment-command.outputs.benchmark_scenario || (github.event_name == 'workflow_dispatch' && inputs.benchmark_scenario || (github.event_name == 'pull_request' && vars.VLLM_ASCEND_HUST_PR_BENCHMARK_SCENARIO) || (github.event_name == 'push' && vars.VLLM_ASCEND_HUST_MAIN_BENCHMARK_SCENARIO) || 'random-online') }}
       BENCH_DATASET_PATH: ${{ github.event_name == 'issue_comment' && needs.issue-comment-command.outputs.dataset_path || (github.event_name == 'workflow_dispatch' && inputs.dataset_path || (github.event_name == 'pull_request' && vars.VLLM_ASCEND_HUST_PR_BENCHMARK_DATASET_PATH) || (github.event_name == 'push' && vars.VLLM_ASCEND_HUST_MAIN_BENCHMARK_DATASET_PATH) || '') }}
       BENCH_CONSTRAINTS_FILE: ${{ github.event_name == 'issue_comment' && needs.issue-comment-command.outputs.constraints_file || (github.event_name == 'workflow_dispatch' && inputs.constraints_file || (github.event_name == 'pull_request' && vars.VLLM_ASCEND_HUST_PR_BENCHMARK_CONSTRAINTS_FILE) || (github.event_name == 'push' && vars.VLLM_ASCEND_HUST_MAIN_BENCHMARK_CONSTRAINTS_FILE) || '') }}
-      MODEL_PARAMETERS: ${{ github.event_name == 'issue_comment' && '3B' || '14B' }}
-      MODEL_PRECISION: ${{ github.event_name == 'issue_comment' && 'BF16' || 'FP16' }}
-      MODEL_QUANTIZATION: ""
-      DTYPE: ${{ github.event_name == 'issue_comment' && 'bfloat16' || 'float16' }}
+      MODEL_PARAMETERS: ${{ (github.event_name == 'pull_request' || github.event_name == 'issue_comment') && '3B' || '14B' }}
+      MODEL_PRECISION: ${{ (github.event_name == 'pull_request' || github.event_name == 'issue_comment') && 'BF16' || (github.event_name == 'workflow_dispatch' && inputs.model_precision || 'FP16') }}
+      MODEL_QUANTIZATION: ${{ github.event_name == 'workflow_dispatch' && inputs.model_quantization || '' }}
+      DTYPE: ${{ (github.event_name == 'pull_request' || github.event_name == 'issue_comment') && 'bfloat16' || (github.event_name == 'workflow_dispatch' && inputs.dtype || 'float16') }}
       MAX_MODEL_LEN: ""
       MAX_NUM_SEQS: "1"
       BENCH_NUM_PROMPTS: ${{ github.event_name == 'issue_comment' && needs.issue-comment-command.outputs.num_prompts || (github.event_name == 'workflow_dispatch' && inputs.num_prompts || '200') }}
-      BENCH_RANDOM_INPUT_LEN: ${{ github.event_name == 'issue_comment' && '64' || '1024' }}
-      BENCH_RANDOM_OUTPUT_LEN: ${{ github.event_name == 'issue_comment' && '16' || '256' }}
-      BENCH_REQUEST_RATE: ${{ github.event_name == 'issue_comment' && needs.issue-comment-command.outputs.request_rate || '1' }}
+      BENCH_RANDOM_INPUT_LEN: ${{ (github.event_name == 'pull_request' || github.event_name == 'issue_comment') && '64' || '1024' }}
+      BENCH_RANDOM_OUTPUT_LEN: ${{ (github.event_name == 'pull_request' || github.event_name == 'issue_comment') && '16' || '256' }}
+      BENCH_REQUEST_RATE: ${{ github.event_name == 'issue_comment' && needs.issue-comment-command.outputs.request_rate || (github.event_name == 'workflow_dispatch' && inputs.request_rate || '1') }}
       BENCH_MAX_CONCURRENCY: ${{ github.event_name == 'issue_comment' && needs.issue-comment-command.outputs.max_concurrency || (github.event_name == 'workflow_dispatch' && inputs.max_concurrency || '4') }}
-      BENCH_INPUT_LEN: ${{ github.event_name == 'issue_comment' && needs.issue-comment-command.outputs.input_length || '' }}
-      BENCH_OUTPUT_LEN: ${{ github.event_name == 'issue_comment' && needs.issue-comment-command.outputs.output_length || '' }}
+      BENCH_INPUT_LEN: ${{ github.event_name == 'issue_comment' && needs.issue-comment-command.outputs.input_length || (github.event_name == 'workflow_dispatch' && inputs.input_length || '') }}
+      BENCH_OUTPUT_LEN: ${{ github.event_name == 'issue_comment' && needs.issue-comment-command.outputs.output_length || (github.event_name == 'workflow_dispatch' && inputs.output_length || '') }}
       INPUT_BENCHMARK_SCENARIO: ${{ github.event_name == 'issue_comment' && needs.issue-comment-command.outputs.benchmark_scenario || (github.event_name == 'workflow_dispatch' && inputs.benchmark_scenario || '') }}
       PR_LABELS: ${{ github.event_name == 'pull_request' && toJson(github.event.pull_request.labels) || '[]' }}
       HARDWARE_VENDOR: Huawei
-      HARDWARE_CHIP_MODEL: "910B2"
+      HARDWARE_CHIP_MODEL: ${{ github.event_name == 'workflow_dispatch' && inputs.hardware_chip_model || '910B2' }}
       CHIP_COUNT: "1"
       NODE_COUNT: "1"
       ASCEND_BENCHMARK_USE_SUDO: ${{ vars.VLLM_ASCEND_HUST_BENCHMARK_USE_SUDO || 'auto' }}
@@ -290,8 +325,9 @@ jobs:
       ALLOW_RANDOM_HF_PUBLISH: ${{ vars.VLLM_ASCEND_HUST_ALLOW_RANDOM_HF_PUBLISH || '0' }}
       SAME_SPEC_BENCHMARK_ENABLED: ${{ vars.VLLM_ASCEND_HUST_SAME_SPEC_BENCHMARK_ENABLED || '1' }}
       PERFGATE_MODE: ${{ vars.VLLM_ASCEND_HUST_PERFGATE_MODE || 'report' }}
-      PERFGATE_SPEC_FILE: ${{ vars.VLLM_ASCEND_HUST_PERFGATE_SPEC_FILE || 'docs/official-baselines/perfgate-ascend-qwen25-3b-910b2.json' }}
+      PERFGATE_SPEC_FILE: ${{ vars.VLLM_ASCEND_HUST_PERFGATE_SPEC_FILE || '' }}
       PERFGATE_BASELINE_BRANCH: ${{ vars.VLLM_ASCEND_HUST_PERFGATE_BASELINE_BRANCH || 'benchmark-baselines' }}
+      MAIN_SAME_SPEC_SPEC_FILE: ${{ vars.VLLM_ASCEND_HUST_MAIN_SAME_SPEC_SPEC_FILE || 'docs/official-baselines/official-ascend-jan-2026-v0180-random-online-qwen25-14b-910b2.json' }}
       SAME_SPEC_SPEC_FILE: ${{ vars.VLLM_ASCEND_HUST_SAME_SPEC_SPEC_FILE || '' }}
       SAME_SPEC_CONSTRAINTS_FILE: ${{ vars.VLLM_ASCEND_HUST_SAME_SPEC_CONSTRAINTS_FILE || '' }}
       SYNC_GITHUB_SNAPSHOTS: ${{ (github.event_name == 'pull_request' || github.event_name == 'issue_comment') && '0' || (vars.VLLM_ASCEND_HUST_SYNC_BENCHMARK_SNAPSHOTS_TO_GITHUB || '0') }}
@@ -467,23 +503,41 @@ jobs:
           ssh-strict: ${{ env.BENCHMARK_CHECKOUT_USE_SSH_443 != '1' }}
           persist-credentials: true
 
-      - name: Resolve same-spec benchmark file
-        shell: bash
-        run: |
-          spec_file="${SAME_SPEC_SPEC_FILE:-}"
-          if [[ -z "$spec_file" ]]; then
-            spec_file="${GITHUB_WORKSPACE}/vllm-hust-benchmark/${PERFGATE_SPEC_FILE}"
-          elif [[ "$spec_file" != /* ]]; then
-            spec_file="${GITHUB_WORKSPACE}/vllm-hust-benchmark/${spec_file}"
-          fi
-          echo "SAME_SPEC_SPEC_FILE=$spec_file" >> "$GITHUB_ENV"
-          echo "Same-spec benchmark file: $spec_file"
-
       - name: Resolve L1/L2 benchmark scenario
         id: resolve-scenario
         shell: bash
         run: |
           python3 .github/workflows/scripts/resolve_ascend_benchmark_scenario.py
+
+      - name: Resolve perfgate same-spec file
+        if: ${{ github.event_name == 'pull_request' || github.event_name == 'issue_comment' }}
+        shell: bash
+        env:
+          VLLM_HUST_BENCHMARK_REPO: ${{ github.workspace }}/vllm-hust-benchmark
+        run: |
+          python3 .github/workflows/scripts/resolve_perfgate_spec_file.py \
+            --benchmark-repo "${VLLM_HUST_BENCHMARK_REPO}" \
+            --scenario "${BENCH_SCENARIO}" \
+            --explicit-chip-model "${HARDWARE_CHIP_MODEL}" \
+            --explicit-same-spec-file ""
+
+      - name: Resolve main same-spec file
+        if: ${{ github.event_name != 'pull_request' && github.event_name != 'issue_comment' }}
+        shell: bash
+        env:
+          VLLM_HUST_BENCHMARK_REPO: ${{ github.workspace }}/vllm-hust-benchmark
+        run: |
+          spec_file="${SAME_SPEC_SPEC_FILE:-$MAIN_SAME_SPEC_SPEC_FILE}"
+          if [[ "$spec_file" = /* ]]; then
+            resolved_spec_file="$spec_file"
+          else
+            resolved_spec_file="${VLLM_HUST_BENCHMARK_REPO}/${spec_file}"
+          fi
+          if [[ ! -f "$resolved_spec_file" ]]; then
+            echo "main same-spec file not found: $resolved_spec_file" >&2
+            exit 2
+          fi
+          echo "SAME_SPEC_SPEC_FILE=$resolved_spec_file" >> "$GITHUB_ENV"
 
       - name: Checkout ascend-runtime-manager repo
         uses: actions/checkout@v6.0.1
@@ -616,8 +670,8 @@ jobs:
           mkdir -p "$HOME" "$XDG_CACHE_HOME" "$XDG_CONFIG_HOME"
           chmod 700 "$HOME"
           source scripts/use_single_ascend_env.sh
-          if ! hust_ascend_manager_run setup --install-python-stack --non-interactive; then
-            echo "[WARN] hust-ascend-manager Python stack reconciliation failed; falling back to explicit pip installs"
+          if ! hust_ascend_manager_run setup --non-interactive; then
+            echo "[WARN] hust-ascend-manager runtime setup failed; continuing with the runner Python stack"
           fi
           export PYTHONPATH="$VLLM_HUST_REPO:$VLLM_HUST_BENCHMARK_REPO/src${PYTHONPATH:+:$PYTHONPATH}"
           echo "PYTHONPATH=$PYTHONPATH" >> "$GITHUB_ENV"
@@ -1081,18 +1135,33 @@ jobs:
         shell: bash
         env:
           PYTHON_BIN: python3
-          PERFGATE_SPEC_FILE: ${{ vars.VLLM_ASCEND_HUST_PERFGATE_SPEC_FILE || 'docs/official-baselines/perfgate-ascend-qwen25-3b-910b2.json' }}
+          PERFGATE_SPEC_FILE: ${{ vars.VLLM_ASCEND_HUST_PERFGATE_SPEC_FILE || '' }}
           PERFGATE_BASELINE_BRANCH: ${{ vars.VLLM_ASCEND_HUST_PERFGATE_BASELINE_BRANCH || 'benchmark-baselines' }}
+          MAIN_BENCH_SCENARIO: ${{ vars.VLLM_ASCEND_HUST_MAIN_BENCHMARK_SCENARIO || 'random-online' }}
+          HARDWARE_CHIP_MODEL: 910B2
         run: |
           set -euo pipefail
           target_sha_short="$(printf '%s' "$GITHUB_SHA" | cut -c1-8)"
           run_id="ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${target_sha_short}"
+          perfgate_spec_file="${PERFGATE_SPEC_FILE:-}"
+          if [[ -z "$perfgate_spec_file" ]]; then
+            export PYTHONPATH="${GITHUB_WORKSPACE}/vllm-hust-benchmark/src${PYTHONPATH:+:$PYTHONPATH}"
+            perfgate_spec_file="$(python3 -m vllm_hust_benchmark.perfgate_specs resolve \
+              --scenario "${MAIN_BENCH_SCENARIO}" \
+              --hardware-chip-model "${HARDWARE_CHIP_MODEL}" \
+              --repo-root "${GITHUB_WORKSPACE}/vllm-hust-benchmark")"
+          fi
+          if [[ "$perfgate_spec_file" = /* ]]; then
+            same_spec_spec_file="$perfgate_spec_file"
+          else
+            same_spec_spec_file="${GITHUB_WORKSPACE}/vllm-hust-benchmark/${perfgate_spec_file}"
+          fi
           {
             echo "RUN_ID=$run_id"
             echo "RESULT_ROOT=${GITHUB_WORKSPACE}/.benchmarks/ci/$run_id"
-            echo "SAME_SPEC_SPEC_FILE=${GITHUB_WORKSPACE}/vllm-hust-benchmark/${PERFGATE_SPEC_FILE}"
+            echo "SAME_SPEC_SPEC_FILE=${same_spec_spec_file}"
           } >> "$GITHUB_ENV"
           RUN_ID="$run_id" \
             RESULT_ROOT="${GITHUB_WORKSPACE}/.benchmarks/ci/$run_id" \
-            SAME_SPEC_SPEC_FILE="${GITHUB_WORKSPACE}/vllm-hust-benchmark/${PERFGATE_SPEC_FILE}" \
+            SAME_SPEC_SPEC_FILE="${same_spec_spec_file}" \
             bash .github/workflows/scripts/perfgate_store_baseline.sh
