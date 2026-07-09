@@ -281,7 +281,8 @@ jobs:
     env:
       BENCHMARK_CHECKOUT_USE_SSH_443: ${{ secrets.VLLM_ASCEND_HUST_BENCHMARK_SSH_KEY != '' && '1' || '0' }}
       DEFAULT_SYSTEM_ASCEND_BENCHMARK_ROOT_HELPER: /usr/local/bin/run_ascend_benchmark_root_helper.sh
-      COMPILE_CUSTOM_KERNELS: "1"
+      COMPILE_CUSTOM_KERNELS: ${{ vars.VLLM_ASCEND_HUST_COMPILE_CUSTOM_KERNELS || 'auto' }}
+      ASCEND_BENCHMARK_ENFORCE_EAGER: ${{ vars.VLLM_ASCEND_HUST_BENCHMARK_ENFORCE_EAGER || '0' }}
       HF_HUB_DISABLE_TELEMETRY: "1"
       HF_ENDPOINT: ${{ vars.HF_ENDPOINT || 'https://hf-mirror.com' }}
       HF_HOME: ${{ github.workspace }}/../.hf-cache
@@ -289,12 +290,15 @@ jobs:
       TRANSFORMERS_CACHE: ${{ github.workspace }}/../.hf-cache/transformers
       CURRENT_VLLM_CACHE_ROOT: ${{ github.workspace }}/../.hf-cache/vllm
       SAME_SPEC_READY_TIMEOUT_SECONDS: ${{ vars.VLLM_ASCEND_HUST_SAME_SPEC_READY_TIMEOUT_SECONDS || '1800' }}
+      SAME_SPEC_CLIENT_READY_TIMEOUT_SECONDS: ${{ vars.VLLM_ASCEND_HUST_SAME_SPEC_CLIENT_READY_TIMEOUT_SECONDS || '300' }}
       HF_TOKEN: ${{ (github.event_name != 'pull_request' && github.event_name != 'issue_comment') && secrets.HF_TOKEN || '' }}
       HF_REPO_ID: ${{ vars.VLLM_ASCEND_HUST_BENCHMARK_HF_REPO || 'intellistream/vllm-ascend-hust-benchmark-results' }}
       ASCEND_HUST_TARGET: ${{ github.event_name == 'workflow_dispatch' && inputs.ascend_hust_target || format('{0}@{1}', github.repository, github.event_name == 'issue_comment' && needs.issue-comment-command.outputs.pr_head_sha || (github.event_name == 'pull_request' && github.event.pull_request.head.ref || github.ref_name)) }}
       VLLM_HUST_CONDA_ENV: vllm-hust-dev
       VLLM_HUST_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.vllm_hust_ref || vars.VLLM_ASCEND_HUST_VLLM_HUST_REF || 'main' }}
       VLLM_HUST_BENCHMARK_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.benchmark_ref || vars.VLLM_ASCEND_HUST_BENCHMARK_REF || 'main' }}
+      VLLM_HUST_DEV_HUB_REF: ${{ vars.VLLM_ASCEND_HUST_DEV_HUB_REF || 'main' }}
+      HUST_ASCEND_MANAGER_REF: ${{ vars.VLLM_ASCEND_HUST_MANAGER_REF || 'main' }}
       MODEL_NAME: ${{ (github.event_name == 'pull_request' || github.event_name == 'issue_comment') && (github.event_name == 'issue_comment' && needs.issue-comment-command.outputs.model_name || 'Qwen/Qwen2.5-3B-Instruct') || (github.event_name == 'workflow_dispatch' && inputs.model_name || 'Qwen/Qwen2.5-14B-Instruct') }}
       SOC_VERSION: ascend910b2
       BENCH_SCENARIO: ${{ github.event_name == 'issue_comment' && needs.issue-comment-command.outputs.benchmark_scenario || (github.event_name == 'workflow_dispatch' && inputs.benchmark_scenario || (github.event_name == 'pull_request' && vars.VLLM_ASCEND_HUST_PR_BENCHMARK_SCENARIO) || (github.event_name == 'push' && vars.VLLM_ASCEND_HUST_MAIN_BENCHMARK_SCENARIO) || 'random-online') }}
@@ -327,6 +331,7 @@ jobs:
       PERFGATE_MODE: ${{ vars.VLLM_ASCEND_HUST_PERFGATE_MODE || 'report' }}
       PERFGATE_SPEC_FILE: ${{ vars.VLLM_ASCEND_HUST_PERFGATE_SPEC_FILE || '' }}
       PERFGATE_BASELINE_BRANCH: ${{ vars.VLLM_ASCEND_HUST_PERFGATE_BASELINE_BRANCH || 'benchmark-baselines' }}
+      PERFGATE_STAGE2_DEV_HUB_QUICKSTART_CONDA: ${{ vars.VLLM_ASCEND_HUST_STAGE2_DEV_HUB_QUICKSTART_CONDA || '0' }}
       MAIN_SAME_SPEC_SPEC_FILE: ${{ vars.VLLM_ASCEND_HUST_MAIN_SAME_SPEC_SPEC_FILE || 'docs/official-baselines/official-ascend-jan-2026-v0180-random-online-qwen25-14b-910b2.json' }}
       SAME_SPEC_SPEC_FILE: ${{ vars.VLLM_ASCEND_HUST_SAME_SPEC_SPEC_FILE || '' }}
       SAME_SPEC_CONSTRAINTS_FILE: ${{ vars.VLLM_ASCEND_HUST_SAME_SPEC_CONSTRAINTS_FILE || '' }}
@@ -342,6 +347,37 @@ jobs:
       HUST_ASCEND_MANAGER_REPO: ${{ github.workspace }}/ascend-runtime-manager
 
     steps:
+      - name: Mask benchmark credentials
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import os
+
+          names = (
+              "HF_TOKEN",
+              "HF_API_TOKEN",
+              "HUGGINGFACE_HUB_TOKEN",
+              "HUGGING_FACE_HUB_TOKEN",
+              "BENCHMARK_REPO_GH_TOKEN",
+              "BENCHMARK_REPO_SSH_KEY",
+              "GH_TOKEN",
+              "GITHUB_TOKEN",
+              "OPENAI_API_KEY",
+          )
+
+          def escape(value: str) -> str:
+              return value.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+
+          for name in names:
+              value = os.environ.get(name, "")
+              if not value:
+                  continue
+              print(f"::add-mask::{escape(value)}")
+              for line in value.splitlines():
+                  if line:
+                      print(f"::add-mask::{escape(line)}")
+          PY
+
       - name: Pre-clean stale checkout state
         shell: bash
         run: |
@@ -543,7 +579,18 @@ jobs:
         uses: actions/checkout@v6.0.1
         with:
           repository: vLLM-HUST/ascend-runtime-manager
+          ref: ${{ env.HUST_ASCEND_MANAGER_REF }}
           path: ascend-runtime-manager
+          ssh-key: ${{ secrets.VLLM_ASCEND_HUST_BENCHMARK_SSH_KEY }}
+          ssh-strict: ${{ env.BENCHMARK_CHECKOUT_USE_SSH_443 != '1' }}
+          persist-credentials: false
+
+      - name: Checkout dev-hub repo
+        uses: actions/checkout@v6.0.1
+        with:
+          repository: vLLM-HUST/vllm-hust-dev-hub
+          ref: ${{ env.VLLM_HUST_DEV_HUB_REF }}
+          path: vllm-hust-dev-hub
           ssh-key: ${{ secrets.VLLM_ASCEND_HUST_BENCHMARK_SSH_KEY }}
           ssh-strict: ${{ env.BENCHMARK_CHECKOUT_USE_SSH_443 != '1' }}
           persist-credentials: false
@@ -663,16 +710,21 @@ jobs:
         env:
           VLLM_HUST_REPO: ${{ github.workspace }}/vllm-hust
           VLLM_HUST_BENCHMARK_REPO: ${{ github.workspace }}/vllm-hust-benchmark
+          VLLM_HUST_DEV_HUB_REPO: ${{ github.workspace }}/vllm-hust-dev-hub
           HOME: ${{ env.CI_HOME }}
           XDG_CACHE_HOME: ${{ env.CI_HOME }}/.cache
           XDG_CONFIG_HOME: ${{ env.CI_HOME }}/.config
         run: |
+          set -euo pipefail
           mkdir -p "$HOME" "$XDG_CACHE_HOME" "$XDG_CONFIG_HOME"
           chmod 700 "$HOME"
+          bash .github/workflows/scripts/install_ascend_benchmark_with_dev_hub.sh
+          source scripts/hust_ascend_manager_helper.sh
+          PYTHON_BIN="$(hust_resolve_python_bin)"
+          export VLLM_HUST_PYTHON_BIN="$PYTHON_BIN"
+          echo "VLLM_HUST_PYTHON_BIN=$VLLM_HUST_PYTHON_BIN" >> "$GITHUB_ENV"
           source scripts/use_single_ascend_env.sh
-          if ! hust_ascend_manager_run setup --non-interactive; then
-            echo "[WARN] hust-ascend-manager runtime setup failed; continuing with the runner Python stack"
-          fi
+
           export PYTHONPATH="$VLLM_HUST_REPO:$VLLM_HUST_BENCHMARK_REPO/src${PYTHONPATH:+:$PYTHONPATH}"
           echo "PYTHONPATH=$PYTHONPATH" >> "$GITHUB_ENV"
           torch_constraints="$RUNNER_TEMP/ascend-torch-constraints.txt"
@@ -691,6 +743,8 @@ jobs:
           hust_run_pip install "numpy<2.0.0" scipy attrs decorator psutil
           hust_run_pip install -c "$torch_constraints" -r "$VLLM_HUST_REPO/requirements/common.txt"
           PYTHON_BIN="$(hust_resolve_python_bin)"
+          export VLLM_HUST_PYTHON_BIN="$PYTHON_BIN"
+          echo "VLLM_HUST_PYTHON_BIN=$VLLM_HUST_PYTHON_BIN" >> "$GITHUB_ENV"
           echo "PYTHON_BIN=$PYTHON_BIN" >> "$GITHUB_ENV"
           "$PYTHON_BIN" - <<'PY'
           import decorator
@@ -707,7 +761,6 @@ jobs:
           print(f"torch={torch.__version__}")
           print(f"torch_npu={torch_npu.__version__}")
           PY
-          bash scripts/install_local_ascend_plugin.sh "$GITHUB_WORKSPACE"
           hust_run_pip install -e "${VLLM_HUST_BENCHMARK_REPO}[publish]" jsonschema
           hust_run_pip install "huggingface_hub>=0.20"
 
@@ -749,6 +802,7 @@ jobs:
           VLLM_HUST_REPO: ${{ github.workspace }}/vllm-hust
           VLLM_ASCEND_HUST_REPO: ${{ github.workspace }}
           VLLM_HUST_BENCHMARK_REPO: ${{ github.workspace }}/vllm-hust-benchmark
+          VLLM_HUST_DEV_HUB_REPO: ${{ github.workspace }}/vllm-hust-dev-hub
           VLLM_HUST_WEBSITE_REPO: ${{ github.workspace }}/vllm-hust-website
           CI_STATE_ROOT: ${{ env.CI_STATE_ROOT }}
           BENCHMARK_RESULTS_ROOT: ${{ env.BENCHMARK_RESULTS_ROOT }}

@@ -14,11 +14,26 @@ _resolve_hust_ascend_manager_conda_python() {
   local conda_bin
   local conda_root
   local candidate_prefix
+  local ci_home
   local resolved_prefix
 
   if [[ -n "${env_prefix}" && -x "${env_prefix}/bin/python" ]]; then
     printf '%s\n' "${env_prefix}/bin/python"
     return 0
+  fi
+
+  ci_home="${CI_HOME:-}"
+  if [[ -n "${ci_home}" ]]; then
+    for candidate_prefix in \
+      "${ci_home}/miniconda3/envs/${env_name}" \
+      "${ci_home}/anaconda3/envs/${env_name}" \
+      "${ci_home}/mambaforge/envs/${env_name}" \
+      "${ci_home}/miniforge3/envs/${env_name}"; do
+      if [[ -x "${candidate_prefix}/bin/python" ]]; then
+        printf '%s\n' "${candidate_prefix}/bin/python"
+        return 0
+      fi
+    done
   fi
 
   current_user_name="$(id -un 2>/dev/null || printf '%s' "${USER:-}")"
