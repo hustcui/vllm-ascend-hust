@@ -8,7 +8,7 @@ from vllm.distributed import get_tensor_model_parallel_world_size, get_tp_group,
 from vllm.logger import logger
 
 from vllm_ascend.compilation.passes.noop_elimination import NoOpEliminationPass
-from vllm_ascend.utils import is_moe_model
+from vllm_ascend.utils import is_add_rms_norm_bias_custom_op_available, is_moe_model
 
 SP_MIN_TOKEN_NUM_DEFAULT = 1000
 
@@ -196,6 +196,11 @@ class SequenceParallelismPass(VllmInductorPass):
 
         self.patterns: PatternMatcherPass = PatternMatcherPass(pass_name="npu_sequence_parallelism_pass")
         self.noop_cleanup = NoOpEliminationPass(config)
+        self.min_tokens = get_sp_min_token_num(config)
+
+        if not is_add_rms_norm_bias_custom_op_available():
+            logger.debug("SequenceParallelismPass disabled: AddRmsNormBias custom op unavailable")
+            return
 
         for epsilon in [1e-5, 1e-6]:
             MiddleAllReduceRMSNormPattern(config, epsilon).register(self.patterns)
@@ -203,8 +208,6 @@ class SequenceParallelismPass(VllmInductorPass):
             LastAllReduceRMSNormPattern(config, epsilon).register(self.patterns)
 
             Qwen3VLMiddleAllReduceRMSNormPattern(config, epsilon).register(self.patterns)
-
-        self.min_tokens = get_sp_min_token_num(config)
 
     def __call__(self, graph: torch.fx.Graph):
         self.begin()

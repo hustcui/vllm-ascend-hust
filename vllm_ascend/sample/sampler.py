@@ -7,6 +7,7 @@ from vllm.v1.sample.metadata import SamplingMetadata
 from vllm.v1.sample.ops.topk_topp_sampler import TopKTopPSampler
 from vllm.v1.sample.sampler import Sampler
 
+import vllm_ascend.envs as envs_ascend
 from vllm_ascend.ascend_config import get_ascend_config
 from vllm_ascend.sample.penalties import apply_all_penalties
 from vllm_ascend.utils import AscendDeviceType, get_ascend_device_type, global_stream, npu_stream_switch
@@ -14,6 +15,8 @@ from vllm_ascend.utils import AscendDeviceType, get_ascend_device_type, global_s
 DEFAULT_LOGPROBS_MODE = "raw_logprobs"
 logger = init_logger(__name__)
 _MISSING_TOP_K_TOP_P_OP_WARNED = False
+_BROKEN_TOP_K_TOP_P_OP_WARNED = False
+_DISABLE_TOP_K_TOP_P_CUSTOM_OP = False
 
 _SAMPLING_EPS = 1e-5
 
@@ -298,26 +301,54 @@ def _apply_top_k_top_p_ascendc(
 
 
 def _has_ascend_top_k_top_p_op() -> bool:
+    if _DISABLE_TOP_K_TOP_P_CUSTOM_OP:
+        return False
+    if envs_ascend.VLLM_ASCEND_DISABLE_TOP_K_TOP_P_CUSTOM_OP:
+        return False
+
     ascend_namespace = getattr(torch.ops, "_C_ascend", None)
     return hasattr(ascend_namespace, "npu_apply_top_k_top_p")
+
+
+def _warn_top_k_top_p_fallback(reason: str) -> None:
+    global _MISSING_TOP_K_TOP_P_OP_WARNED
+
+    if _MISSING_TOP_K_TOP_P_OP_WARNED:
+        return
+    logger.warning(
+        "Custom op npu_apply_top_k_top_p is unavailable (%s); "
+        "falling back to the pytorch implementation.",
+        reason,
+    )
+    _MISSING_TOP_K_TOP_P_OP_WARNED = True
 
 
 def apply_top_k_top_p(
     logits: torch.Tensor,
     k: torch.Tensor,
     p: torch.Tensor,
+    top_k: int | None = None,
 ) -> torch.Tensor:
-    global _MISSING_TOP_K_TOP_P_OP_WARNED
+    global _BROKEN_TOP_K_TOP_P_OP_WARNED, _DISABLE_TOP_K_TOP_P_CUSTOM_OP
 
     if get_ascend_device_type() not in [AscendDeviceType.A2, AscendDeviceType.A3]:
-        return _apply_top_k_top_p_pytorch(logits, k, p)
+        return _apply_top_k_top_p_pytorch(logits, k, p, top_k)
 
     if _has_ascend_top_k_top_p_op():
-        return _apply_top_k_top_p_ascendc(logits, k, p)
+        try:
+            return _apply_top_k_top_p_ascendc(logits, k, p, top_k)
+        except RuntimeError as exc:
+            if "aclnnApplyTopKTopPCustom" not in str(exc):
+                raise
+            _DISABLE_TOP_K_TOP_P_CUSTOM_OP = True
+            if not _BROKEN_TOP_K_TOP_P_OP_WARNED:
+                logger.warning(
+                    "Custom op npu_apply_top_k_top_p is registered but its "
+                    "underlying aclnn symbols are unavailable; falling back "
+                    "to the pytorch implementation.",
+                    exc_info=True,
+                )
+                _BROKEN_TOP_K_TOP_P_OP_WARNED = True
 
-    if not _MISSING_TOP_K_TOP_P_OP_WARNED:
-        logger.warning(
-            "Custom op npu_apply_top_k_top_p is unavailable; falling back to the pytorch implementation."
-        )
-        _MISSING_TOP_K_TOP_P_OP_WARNED = True
-    return _apply_top_k_top_p_pytorch(logits, k, p)
+    _warn_top_k_top_p_fallback("op is not registered")
+    return _apply_top_k_top_p_pytorch(logits, k, p, top_k)
