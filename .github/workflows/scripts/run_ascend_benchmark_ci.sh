@@ -1390,34 +1390,32 @@ echo "ascend benchmark use sudo: $ASCEND_BENCHMARK_USE_SUDO"
 
 verify_root_helper_matches_repo
 
-case "$BENCH_SCENARIO" in
-  random-online)
-    EFFECTIVE_INPUT_LEN=${BENCH_INPUT_LEN:-$BENCH_RANDOM_INPUT_LEN}
-    EFFECTIVE_OUTPUT_LEN=${BENCH_OUTPUT_LEN:-$BENCH_RANDOM_OUTPUT_LEN}
-    if [[ "$SAME_SPEC_BENCHMARK_ENABLED" == "1" ]]; then
-      EFFECTIVE_CONSTRAINTS_FILE=$SAME_SPEC_CONSTRAINTS_FILE
-    else
+if [[ "$SAME_SPEC_BENCHMARK_ENABLED" == "1" ]]; then
+  EFFECTIVE_INPUT_LEN=${BENCH_INPUT_LEN:-}
+  EFFECTIVE_OUTPUT_LEN=${BENCH_OUTPUT_LEN:-}
+  EFFECTIVE_CONSTRAINTS_FILE=$SAME_SPEC_CONSTRAINTS_FILE
+  bench_args=()
+else
+  case "$BENCH_SCENARIO" in
+    random-online)
+      EFFECTIVE_INPUT_LEN=${BENCH_INPUT_LEN:-$BENCH_RANDOM_INPUT_LEN}
+      EFFECTIVE_OUTPUT_LEN=${BENCH_OUTPUT_LEN:-$BENCH_RANDOM_OUTPUT_LEN}
       EFFECTIVE_CONSTRAINTS_FILE=${BENCH_CONSTRAINTS_FILE:-$VLLM_ASCEND_HUST_REPO/.github/workflows/data/random-online-ci-constraints.json}
-    fi
-    bench_args=(
-      --backend vllm
-      --endpoint /v1/completions
-      --dataset-name random
-      --random-input-len "$BENCH_RANDOM_INPUT_LEN"
-      --random-output-len "$BENCH_RANDOM_OUTPUT_LEN"
-      --random-batch-size "$BENCH_RANDOM_BATCH_SIZE"
-      --num-prompts "$BENCH_NUM_PROMPTS"
-      --request-rate "$BENCH_REQUEST_RATE"
-      --max-concurrency "$BENCH_MAX_CONCURRENCY"
-    )
-    ;;
-  sharegpt-online)
-    EFFECTIVE_INPUT_LEN=${BENCH_INPUT_LEN:-1024}
-    EFFECTIVE_OUTPUT_LEN=${BENCH_OUTPUT_LEN:-256}
-    if [[ "$SAME_SPEC_BENCHMARK_ENABLED" == "1" ]]; then
-      EFFECTIVE_CONSTRAINTS_FILE=$SAME_SPEC_CONSTRAINTS_FILE
-      bench_args=()
-    else
+      bench_args=(
+        --backend vllm
+        --endpoint /v1/completions
+        --dataset-name random
+        --random-input-len "$BENCH_RANDOM_INPUT_LEN"
+        --random-output-len "$BENCH_RANDOM_OUTPUT_LEN"
+        --random-batch-size "$BENCH_RANDOM_BATCH_SIZE"
+        --num-prompts "$BENCH_NUM_PROMPTS"
+        --request-rate "$BENCH_REQUEST_RATE"
+        --max-concurrency "$BENCH_MAX_CONCURRENCY"
+      )
+      ;;
+    sharegpt-online)
+      EFFECTIVE_INPUT_LEN=${BENCH_INPUT_LEN:-1024}
+      EFFECTIVE_OUTPUT_LEN=${BENCH_OUTPUT_LEN:-256}
       if [[ -z "$BENCH_DATASET_PATH" ]]; then
         echo "BENCH_DATASET_PATH is required for sharegpt-online" >&2
         exit 2
@@ -1436,13 +1434,13 @@ case "$BENCH_SCENARIO" in
         --request-rate "$BENCH_REQUEST_RATE"
         --max-concurrency "$BENCH_MAX_CONCURRENCY"
       )
-    fi
-    ;;
-  *)
-    echo "Unsupported BENCH_SCENARIO: $BENCH_SCENARIO" >&2
-    exit 2
-    ;;
-esac
+      ;;
+    *)
+      echo "Unsupported BENCH_SCENARIO without same-spec mode: $BENCH_SCENARIO" >&2
+      exit 2
+      ;;
+  esac
+fi
 
 if [[ "$SAME_SPEC_BENCHMARK_ENABLED" != "1" && "$PUBLISH_TO_HF" == "1" && "$BENCH_SCENARIO" == "random-online" && "$ALLOW_RANDOM_HF_PUBLISH" != "1" ]]; then
   echo "Refusing to publish random-online CI preview to HF without ALLOW_RANDOM_HF_PUBLISH=1" >&2
