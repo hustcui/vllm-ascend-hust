@@ -34,6 +34,7 @@ class TestUtils(TestBase):
         importlib.reload(platform)
         utils.enable_dsa_cp_with_layer_shard.cache_clear()
         utils.enable_dsa_cp_with_o_proj_tp.cache_clear()
+        utils.is_add_rms_norm_bias_custom_op_available.cache_clear()
 
     def test_nd_to_nz_2d(self):
         # can be divided by 16
@@ -110,6 +111,45 @@ class TestUtils(TestBase):
         input_tensor = torch.randn(17, 64)
         output_tensor = utils.aligned_16(input_tensor)
         self.assertEqual(output_tensor.shape[0], 32)
+
+    def test_add_rms_norm_bias_custom_op_can_be_disabled(self):
+        with mock.patch.dict(
+            os.environ,
+            {"VLLM_ASCEND_DISABLE_ADD_RMS_NORM_BIAS_CUSTOM_OP": "1"},
+        ):
+            utils.is_add_rms_norm_bias_custom_op_available.cache_clear()
+            self.assertFalse(utils.is_add_rms_norm_bias_custom_op_available())
+
+    def test_add_rms_norm_bias_custom_op_rejects_missing_libopapi(self):
+        utils.is_add_rms_norm_bias_custom_op_available.cache_clear()
+        with (
+            mock.patch.dict(os.environ, {"VLLM_ASCEND_DISABLE_ADD_RMS_NORM_BIAS_CUSTOM_OP": "0"}),
+            mock.patch("vllm_ascend.utils.ctypes.CDLL", side_effect=OSError("missing")),
+        ):
+            self.assertFalse(utils.is_add_rms_norm_bias_custom_op_available())
+
+    def test_add_rms_norm_bias_custom_op_requires_all_symbols(self):
+        class MissingSymbolLib:
+            aclnnAddRmsNormBias = object()
+
+        utils.is_add_rms_norm_bias_custom_op_available.cache_clear()
+        with (
+            mock.patch.dict(os.environ, {"VLLM_ASCEND_DISABLE_ADD_RMS_NORM_BIAS_CUSTOM_OP": "0"}),
+            mock.patch("vllm_ascend.utils.ctypes.CDLL", return_value=MissingSymbolLib()),
+        ):
+            self.assertFalse(utils.is_add_rms_norm_bias_custom_op_available())
+
+    def test_add_rms_norm_bias_custom_op_accepts_required_symbols(self):
+        class CompleteLib:
+            aclnnAddRmsNormBias = object()
+            aclnnAddRmsNormBiasGetWorkspaceSize = object()
+
+        utils.is_add_rms_norm_bias_custom_op_available.cache_clear()
+        with (
+            mock.patch.dict(os.environ, {"VLLM_ASCEND_DISABLE_ADD_RMS_NORM_BIAS_CUSTOM_OP": "0"}),
+            mock.patch("vllm_ascend.utils.ctypes.CDLL", return_value=CompleteLib()),
+        ):
+            self.assertTrue(utils.is_add_rms_norm_bias_custom_op_available())
 
     @pytest.mark.skip("Skip as register_kernels has NPU SocName checking in CANN 8.5.0.")
     def test_enable_custom_op(self):

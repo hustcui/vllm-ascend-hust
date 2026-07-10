@@ -16,6 +16,8 @@
 # limitations under the License.
 #
 
+import torch
+from vllm.logger import logger
 from torch import fx as fx
 from vllm.compilation.passes.inductor_pass import get_pass_context
 from vllm.compilation.passes.vllm_inductor_pass import VllmInductorPass
@@ -56,10 +58,17 @@ class GraphFusionPassManager:
 
             self.passes.append(AddRMSNormQuantFusionPass(config))
 
-        if self.ascend_compilation_config.get("fuse_qknorm_rope", True):
+        if self.ascend_compilation_config.get("fuse_qknorm_rope", True) and hasattr(
+            torch.ops.vllm, "qkv_rmsnorm_rope"
+        ):
             from .passes.qknorm_rope_fusion_pass import QKNormRopeFusionPass
 
             self.passes.append(QKNormRopeFusionPass(config))
+        elif self.ascend_compilation_config.get("fuse_qknorm_rope", True):
+            logger.warning(
+                "Skipping qknorm_rope fusion because torch.ops.vllm.qkv_rmsnorm_rope "
+                "is not registered in this runtime."
+            )
 
         if self.ascend_compilation_config.get("fuse_allreduce_rms", True):
             from .passes.allreduce_rmsnorm_fusion_pass import MatmulAllReduceAddRMSNormPass

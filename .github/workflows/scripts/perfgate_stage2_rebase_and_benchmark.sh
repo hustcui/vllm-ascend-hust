@@ -91,12 +91,8 @@ if [[ "$rebase_rc" -ne 0 ]]; then
   exit 0
 fi
 
-if [[ -f scripts/install_local_ascend_plugin.sh ]]; then
-  bash scripts/install_local_ascend_plugin.sh "${VLLM_ASCEND_HUST_REPO:-${GITHUB_WORKSPACE:-$PWD}}"
-elif [[ -n "${PYTHON_BIN:-}" ]]; then
-  COMPILE_CUSTOM_KERNELS="${COMPILE_CUSTOM_KERNELS:-1}" \
-    "$PYTHON_BIN" -m pip install -e "${VLLM_ASCEND_HUST_REPO:-${GITHUB_WORKSPACE:-$PWD}}" --no-build-isolation --no-deps
-fi
+DEV_HUB_QUICKSTART_CONDA="${PERFGATE_STAGE2_DEV_HUB_QUICKSTART_CONDA:-0}" \
+  bash .github/workflows/scripts/install_ascend_benchmark_with_dev_hub.sh
 
 run_stage2_benchmark() {
   local max_attempts=${NODE_ENV_RETRY_MAX_ATTEMPTS:-3}

@@ -19,6 +19,7 @@
 
 from __future__ import annotations
 
+import ctypes
 import functools
 import json
 import math
@@ -76,6 +77,10 @@ _ATNN_CALCULATION_STREAM = None
 _CUSTOM_OP_VENDOR_DIR = "custom_transformer"
 _CUSTOM_OP_BASE_DIR = (
     os.path.dirname(__file__) if os.path.isabs(__file__) else os.path.abspath(os.path.dirname(__file__))
+)
+_ADD_RMS_NORM_BIAS_REQUIRED_SYMBOLS = (
+    "aclnnAddRmsNormBias",
+    "aclnnAddRmsNormBiasGetWorkspaceSize",
 )
 
 
@@ -352,6 +357,35 @@ def aligned_16(tensor: torch.Tensor):
     new_tensor[:n] = tensor
 
     return new_tensor
+
+
+@lru_cache(maxsize=1)
+def is_add_rms_norm_bias_custom_op_available() -> bool:
+    if envs_ascend.VLLM_ASCEND_DISABLE_ADD_RMS_NORM_BIAS_CUSTOM_OP:
+        return False
+
+    try:
+        libopapi = ctypes.CDLL("libopapi.so")
+    except OSError as exc:
+        logger.warning_once(
+            "Disable npu_add_rms_norm_bias custom op because libopapi.so "
+            "cannot be loaded: %s",
+            exc,
+        )
+        return False
+
+    missing_symbols = [
+        symbol for symbol in _ADD_RMS_NORM_BIAS_REQUIRED_SYMBOLS if not hasattr(libopapi, symbol)
+    ]
+    if missing_symbols:
+        logger.warning_once(
+            "Disable npu_add_rms_norm_bias custom op because libopapi.so "
+            "misses required symbol(s): %s",
+            ", ".join(missing_symbols),
+        )
+        return False
+
+    return True
 
 
 def enable_custom_op():
@@ -705,16 +739,6 @@ def register_ascend_customop(vllm_config: VllmConfig | None = None):
         AscendVocabParallelEmbedding,
     )
 
-    try:
-        from vllm_ascend.ops.fused_moe.fused_moe import AscendFusedMoE, AscendSharedFusedMoE
-    except ModuleNotFoundError as exc:
-        logger.warning(
-            "Skipping Ascend fused MoE custom op registration because an optional "
-            "upstream dependency is unavailable: %s",
-            exc,
-        )
-        AscendFusedMoE = None
-        AscendSharedFusedMoE = None
     is_moe_model = bool(
         vllm_config is not None
         and vllm_config.model_config is not None
@@ -768,14 +792,24 @@ def register_ascend_customop(vllm_config: VllmConfig | None = None):
         REGISTERED_ASCEND_OPS["GateLinear"] = AscendGateLinear
 
     if is_moe_model:
-        from vllm_ascend.ops.fused_moe.fused_moe import AscendFusedMoE, AscendSharedFusedMoE
-
-        REGISTERED_ASCEND_OPS.update(
-            {
-                "FusedMoE": AscendFusedMoE,
-                "SharedFusedMoE": AscendSharedFusedMoE,
-            }
-        )
+        try:
+            from vllm_ascend.ops.fused_moe.fused_moe import (
+                AscendFusedMoE,
+                AscendSharedFusedMoE,
+            )
+        except ImportError as exc:
+            logger.warning(
+                "Skipping Ascend fused MoE custom op registration because an "
+                "optional upstream dependency is unavailable: %s",
+                exc,
+            )
+        else:
+            REGISTERED_ASCEND_OPS.update(
+                {
+                    "FusedMoE": AscendFusedMoE,
+                    "SharedFusedMoE": AscendSharedFusedMoE,
+                }
+            )
 
     # 310P: override selected ops with 310P implementations (keep minimal changes outside _310p)
     if is_310p():

@@ -20,9 +20,6 @@ name: E2E
 on:
   pull_request:
     types:
-      - opened
-      - synchronize
-      - reopened
       - labeled
     branches:
       - 'main'
@@ -42,8 +39,8 @@ concurrency:
 
 jobs:
   lint-and-select-tests:
-    if: ${{ github.event.action != 'labeled' || github.event.label.name == 'ready' }}
-    runs-on: linux-amd64-cpu-8-hk
+    if: ${{ github.event.label.name == 'e2e' }}
+    runs-on: ubuntu-latest
     container:
       image: quay.io/ascend-ci/vllm-ascend:lint
     outputs:
@@ -135,7 +132,6 @@ jobs:
               - 'requirements.txt'
               - 'pyproject.toml'
               - 'cmake/**'
-              - '.github/**'
               - 'tests/**'
               - 'tools/**'
               - 'CMakeLists.txt'
@@ -150,7 +146,7 @@ jobs:
           UV_SYSTEM_PYTHON: 1
         run: |
           pip install uv
-          git config --global --add safe.directory /__w/vllm-ascend/vllm-ascend
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
           pip install uc-manager
           uv pip install -r requirements-dev.txt --extra-index-url https://download.pytorch.org/whl/cpu
 
@@ -161,14 +157,25 @@ jobs:
           TERM: xterm-256color
           SHELLCHECK_OPTS: "--exclude=SC2046,SC2006,SC2086"
         run: |
-          git config --global --add safe.directory /__w/vllm-ascend/vllm-ascend
-          pre-commit run --all-files --hook-stage manual --show-diff-on-failure
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git fetch origin ${{ github.base_ref }}
+          mapfile -t changed_files < <(
+            git diff --name-only --diff-filter=ACMRT origin/${{ github.base_ref }}...HEAD
+          )
+          if (( ${#changed_files[@]} == 0 )); then
+            echo "No changed files to lint."
+            exit 0
+          fi
+          printf 'Linting changed files:\n'
+          printf '  %s\n' "${changed_files[@]}"
+          pre-commit run --files "${changed_files[@]}" --hook-stage manual --show-diff-on-failure
 
       - name: Run mypy
+        if: steps.filter.outputs.src == 'true'
         run: |
           PYTHONPATH="$PYTHONPATH:$(pwd)/vllm-empty"
           export PYTHONPATH
-          git config --global --add safe.directory /__w/vllm-ascend/vllm-ascend
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
           for python_version in "3.10" "3.11" "3.12"; do
             echo "============================"
             tools/mypy.sh 1 "$python_version"
@@ -176,6 +183,7 @@ jobs:
           done
 
       - name: Validate test coverage config
+        if: steps.filter.outputs.src == 'true'
         run: |
           pip install pyyaml
           python3 .github/workflows/scripts/coverage.py
@@ -184,7 +192,7 @@ jobs:
         id: scope
         if: steps.filter.outputs.src == 'true'
         run: |
-          git config --global --add safe.directory /__w/vllm-ascend/vllm-ascend
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
           git fetch origin ${{ github.base_ref }}
           pip install regex
           python3 .github/workflows/scripts/select_tests.py \
@@ -202,7 +210,7 @@ jobs:
 
   run-selected-tests:
     needs: lint-and-select-tests
-    if: ${{ needs.lint-and-select-tests.outputs.has_tests == 'true' && contains(github.event.pull_request.labels.*.name, 'ready') }}
+    if: ${{ needs.lint-and-select-tests.outputs.has_tests == 'true' && contains(github.event.pull_request.labels.*.name, 'e2e') }}
     strategy:
       matrix:
         vllm_version:

@@ -71,8 +71,12 @@ PY
     ;;
   serve)
     max_model_len_args=()
+    serve_extra_args=()
     if [[ -n "${MAX_MODEL_LEN:-}" ]]; then
       max_model_len_args=(--max-model-len "$MAX_MODEL_LEN")
+    fi
+    if [[ "${ASCEND_BENCHMARK_ENFORCE_EAGER:-0}" == "1" ]]; then
+      serve_extra_args+=(--enforce-eager)
     fi
 
     exec env VLLM_ASCEND_TORCH_PREFLIGHT=0 \
@@ -83,7 +87,7 @@ PY
       --dtype "${DTYPE:?DTYPE must be set}" \
       "${max_model_len_args[@]}" \
       --max-num-seqs "${MAX_NUM_SEQS:?MAX_NUM_SEQS must be set}" \
-      --enforce-eager
+      "${serve_extra_args[@]}"
     ;;
   *)
     echo "Unsupported subcommand: $subcommand" >&2

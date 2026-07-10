@@ -30,8 +30,6 @@ except Exception:
     __upstream_commit__ = None
     __commit_id__ = None
 
-import vllm_ascend.logger  # noqa: F401
-
 _GLOBAL_PATCH_APPLIED = False
 
 
@@ -90,3 +88,9 @@ def register_model():
     from .models import register_model
 
     register_model()
+
+
+# Import logging hooks after entry-point functions are defined.  The logger
+# imports vLLM modules, which may trigger plugin discovery and recursively
+# resolve "vllm_ascend:register" while this module is still initializing.
+import vllm_ascend.logger  # noqa: E402,F401

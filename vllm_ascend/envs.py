@@ -138,6 +138,15 @@ env_variables: dict[str, Callable[[], Any]] = {
     # Control the aclrtMemcpyBatchAsync compile path for KV cache offloading.
     # "1": force enable, "0": force disable, None: auto-detect from CANN headers.
     "VLLM_ASCEND_ENABLE_BATCH_MEMCPY": lambda: os.getenv("VLLM_ASCEND_ENABLE_BATCH_MEMCPY", None),
+    # Disable AddRmsNormBias custom-op dependent fusion passes. This is useful
+    # when the installed libopapi.so does not export the required symbols.
+    "VLLM_ASCEND_DISABLE_ADD_RMS_NORM_BIAS_CUSTOM_OP": lambda: bool(
+        int(os.getenv("VLLM_ASCEND_DISABLE_ADD_RMS_NORM_BIAS_CUSTOM_OP", "0"))
+    ),
+    # Disable the AscendC top-k/top-p custom op and use the PyTorch fallback.
+    "VLLM_ASCEND_DISABLE_TOP_K_TOP_P_CUSTOM_OP": lambda: bool(
+        int(os.getenv("VLLM_ASCEND_DISABLE_TOP_K_TOP_P_CUSTOM_OP", "0"))
+    ),
 
     # -- Sim-LLM: KV reuse optimization ---------------------------------------
     # Whether to enable Sim-LLM KV reuse optimization. When set to 1, the Sim-LLM
