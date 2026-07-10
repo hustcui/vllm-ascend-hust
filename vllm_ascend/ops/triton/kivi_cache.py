@@ -416,7 +416,7 @@ def _kivi_dequant_gather_key_cache_kernel(
         + head_idx * head_size
         + dim_offsets[None, :]
     )
-    tl.store(key_out_ptr + out_offsets, key_deq, mask=key_mask)
+    tl.store(key_out_ptr + out_offsets, key_deq, mask=live_mask[:, None] & dim_mask[None, :])
 
 
 @triton.jit
@@ -499,7 +499,7 @@ def _kivi_dequant_gather_value_cache_kernel(
         + head_idx * head_size
         + dim_offsets[None, :]
     )
-    tl.store(value_out_ptr + out_offsets, value_deq, mask=value_mask)
+    tl.store(value_out_ptr + out_offsets, value_deq, mask=live_mask[:, None] & dim_mask[None, :])
 
 
 def kivi_pack_value_cache(
@@ -609,8 +609,8 @@ def kivi_pack_key_cache(
         num_kv_heads,
         head_size,
         group_size,
-        min(64, triton.next_power_of_2(head_size)),
-        triton.cdiv(head_size, min(64, triton.next_power_of_2(head_size))),
+        min(16, triton.next_power_of_2(head_size)),
+        triton.cdiv(head_size, min(16, triton.next_power_of_2(head_size))),
     )
 
 
@@ -693,9 +693,10 @@ def _launch_kivi_dequant_gather_cache(
     if total_tokens == 0:
         return out
 
-    # Ascend UB is tighter than the original Triton launch assumed here.
-    # Use a more conservative tile to keep dequant+gather kernels compilable.
-    block_dim_size = min(32, triton.next_power_of_2(head_size))
+    # The dequant gather kernels materialize token x dim tiles and are close to
+    # the 910B3 UB limit at 32x32. A 16x16 tile is still simple and reliably
+    # compiles for the Qwen2.5-14B KIVI INT4 path.
+    block_dim_size = min(16, triton.next_power_of_2(head_size))
     grid = (
         triton.cdiv(total_tokens, block_dim_size),
         num_kv_heads,
