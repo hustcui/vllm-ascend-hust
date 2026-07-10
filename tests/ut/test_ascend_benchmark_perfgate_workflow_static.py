@@ -78,6 +78,25 @@ def test_ascend_benchmark_workflow_wires_two_stage_perfgate() -> None:
     assert "Parse Ascend comment command" in workflow
     assert "resolve_ascend_benchmark_scenario.py" in workflow
     assert "github.event_name == 'issue_comment'" in workflow
+    assert "benchmark_scenarios:" in workflow
+    assert "BENCH_SCENARIOS:" in workflow
+    assert "inputs.benchmark_scenarios" in workflow
+    assert "vars.VLLM_ASCEND_HUST_PR_BENCHMARK_SCENARIOS" in workflow
+    assert "vars.VLLM_ASCEND_HUST_MAIN_BENCHMARK_SCENARIOS" in workflow
+    assert "run_ascend_benchmark_scenario_list.sh" in workflow
+    assert "steps.resolve-scenario.outputs.BENCH_SCENARIO_COUNT == '1'" in workflow
+    assert (
+        "(github.event_name == 'pull_request' || github.event_name == 'issue_comment') "
+        "&& steps.resolve-scenario.outputs.BENCH_SCENARIO_COUNT == '1'"
+    ) in workflow
+    assert (
+        "github.event_name != 'pull_request' && github.event_name != 'issue_comment' "
+        "&& steps.resolve-scenario.outputs.BENCH_SCENARIO_COUNT == '1'"
+    ) in workflow
+    assert "vars.VLLM_ASCEND_HUST_MAIN_BENCHMARK_SCENARIOS == ''" in workflow
+    assert "multi_scenario_results.tsv" in workflow
+    assert "Perfgate comparison: `skipped for multi-scenario run" in workflow
+    assert "os.environ.get('BENCH_SCENARIO_COUNT', '1') == '1'" in workflow
     assert "timeout-minutes: 60" in workflow
     assert "VLLM_ASCEND_HUST_PUBLISH_BENCHMARK_ON_PR" not in workflow
     assert "github.event_name == 'pull_request' || github.event_name == 'issue_comment'" in workflow
@@ -109,12 +128,17 @@ def test_benchmark_runner_resolves_same_spec_without_random_online_default() -> 
     assert '--repo-root "$VLLM_HUST_BENCHMARK_REPO"' in runner_script
     assert "official-ascend-jan-2026-v0180-random-online-qwen25-14b-910b2.json" not in runner_script
     assert 'if [[ "$SAME_SPEC_BENCHMARK_ENABLED" == "1" ]]; then' in runner_script
+    same_spec_block = runner_script[
+        runner_script.index('if [[ "$SAME_SPEC_BENCHMARK_ENABLED" == "1" ]]; then') :
+        runner_script.index('else', runner_script.index('if [[ "$SAME_SPEC_BENCHMARK_ENABLED" == "1" ]]; then'))
+    ]
+    assert "EFFECTIVE_CONSTRAINTS_FILE=$SAME_SPEC_CONSTRAINTS_FILE" in same_spec_block
+    assert "bench_args=()" in same_spec_block
     assert (
         'if [[ "$BENCH_SCENARIO" == "random-online" && "$SAME_SPEC_BENCHMARK_ENABLED" == "1" ]]; then'
     ) not in runner_script
-    sharegpt_block = runner_script[runner_script.index("  sharegpt-online)") :]
-    sharegpt_block = sharegpt_block[: sharegpt_block.index("  *)")]
-    assert "EFFECTIVE_CONSTRAINTS_FILE=$SAME_SPEC_CONSTRAINTS_FILE" in sharegpt_block
+    sharegpt_block = runner_script[runner_script.index("    sharegpt-online)") :]
+    sharegpt_block = sharegpt_block[: sharegpt_block.index("    *)")]
     assert "BENCH_DATASET_PATH is required for sharegpt-online" in sharegpt_block
     assert 'CLIENT_READY_CHECK_TIMEOUT_SECONDS="$SAME_SPEC_CLIENT_READY_TIMEOUT_SECONDS"' in runner_script
     assert "print_same_spec_server_log_tail" in runner_script

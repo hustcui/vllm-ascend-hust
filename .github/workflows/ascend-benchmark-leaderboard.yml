@@ -20,6 +20,11 @@ on:
         options:
           - random-online
           - sharegpt-online
+      benchmark_scenarios:
+        description: Comma-separated benchmark scenarios to run in multi-scenario mode
+        required: false
+        type: string
+        default: ""
       publish_to_hf:
         description: Publish benchmark result to HF and refresh website leaderboard
         required: false
@@ -302,6 +307,7 @@ jobs:
       MODEL_NAME: ${{ (github.event_name == 'pull_request' || github.event_name == 'issue_comment') && (github.event_name == 'issue_comment' && needs.issue-comment-command.outputs.model_name || 'Qwen/Qwen2.5-3B-Instruct') || (github.event_name == 'workflow_dispatch' && inputs.model_name || 'Qwen/Qwen2.5-14B-Instruct') }}
       SOC_VERSION: ascend910b2
       BENCH_SCENARIO: ${{ github.event_name == 'issue_comment' && needs.issue-comment-command.outputs.benchmark_scenario || (github.event_name == 'workflow_dispatch' && inputs.benchmark_scenario || (github.event_name == 'pull_request' && vars.VLLM_ASCEND_HUST_PR_BENCHMARK_SCENARIO) || (github.event_name == 'push' && vars.VLLM_ASCEND_HUST_MAIN_BENCHMARK_SCENARIO) || 'random-online') }}
+      BENCH_SCENARIOS: ${{ github.event_name == 'workflow_dispatch' && inputs.benchmark_scenarios || (github.event_name == 'pull_request' && vars.VLLM_ASCEND_HUST_PR_BENCHMARK_SCENARIOS) || (github.event_name == 'push' && vars.VLLM_ASCEND_HUST_MAIN_BENCHMARK_SCENARIOS) || '' }}
       BENCH_DATASET_PATH: ${{ github.event_name == 'issue_comment' && needs.issue-comment-command.outputs.dataset_path || (github.event_name == 'workflow_dispatch' && inputs.dataset_path || (github.event_name == 'pull_request' && vars.VLLM_ASCEND_HUST_PR_BENCHMARK_DATASET_PATH) || (github.event_name == 'push' && vars.VLLM_ASCEND_HUST_MAIN_BENCHMARK_DATASET_PATH) || '') }}
       BENCH_CONSTRAINTS_FILE: ${{ github.event_name == 'issue_comment' && needs.issue-comment-command.outputs.constraints_file || (github.event_name == 'workflow_dispatch' && inputs.constraints_file || (github.event_name == 'pull_request' && vars.VLLM_ASCEND_HUST_PR_BENCHMARK_CONSTRAINTS_FILE) || (github.event_name == 'push' && vars.VLLM_ASCEND_HUST_MAIN_BENCHMARK_CONSTRAINTS_FILE) || '') }}
       MODEL_PARAMETERS: ${{ (github.event_name == 'pull_request' || github.event_name == 'issue_comment') && '3B' || '14B' }}
@@ -542,11 +548,13 @@ jobs:
       - name: Resolve L1/L2 benchmark scenario
         id: resolve-scenario
         shell: bash
+        env:
+          VLLM_HUST_BENCHMARK_REPO: ${{ github.workspace }}/vllm-hust-benchmark
         run: |
           python3 .github/workflows/scripts/resolve_ascend_benchmark_scenario.py
 
       - name: Resolve perfgate same-spec file
-        if: ${{ github.event_name == 'pull_request' || github.event_name == 'issue_comment' }}
+        if: ${{ (github.event_name == 'pull_request' || github.event_name == 'issue_comment') && steps.resolve-scenario.outputs.BENCH_SCENARIO_COUNT == '1' }}
         shell: bash
         env:
           VLLM_HUST_BENCHMARK_REPO: ${{ github.workspace }}/vllm-hust-benchmark
@@ -558,7 +566,7 @@ jobs:
             --explicit-same-spec-file ""
 
       - name: Resolve main same-spec file
-        if: ${{ github.event_name != 'pull_request' && github.event_name != 'issue_comment' }}
+        if: ${{ github.event_name != 'pull_request' && github.event_name != 'issue_comment' && steps.resolve-scenario.outputs.BENCH_SCENARIO_COUNT == '1' }}
         shell: bash
         env:
           VLLM_HUST_BENCHMARK_REPO: ${{ github.workspace }}/vllm-hust-benchmark
@@ -789,7 +797,7 @@ jobs:
           PY
 
       - name: Performance gate - fetch Stage 1 baseline
-        if: ${{ github.event_name == 'pull_request' || github.event_name == 'issue_comment' }}
+        if: ${{ (github.event_name == 'pull_request' || github.event_name == 'issue_comment') && steps.resolve-scenario.outputs.BENCH_SCENARIO_COUNT == '1' }}
         shell: bash
         env:
           PERFGATE_ALLOW_BASELINE_FALLBACK: "0"
@@ -815,11 +823,11 @@ jobs:
           mkdir -p "$(dirname "$benchmark_lock_file")"
           if command -v flock >/dev/null 2>&1; then
             echo "Acquiring Ascend benchmark host lock: $benchmark_lock_file"
-            flock "$benchmark_lock_file" bash -c 'source scripts/use_single_ascend_env.sh && bash .github/workflows/scripts/run_ascend_benchmark_ci.sh'
+            flock "$benchmark_lock_file" bash -c 'source scripts/use_single_ascend_env.sh && bash .github/workflows/scripts/run_ascend_benchmark_scenario_list.sh'
           else
             echo "flock is unavailable; running benchmark without host-level serialization"
             source scripts/use_single_ascend_env.sh
-            bash .github/workflows/scripts/run_ascend_benchmark_ci.sh
+            bash .github/workflows/scripts/run_ascend_benchmark_scenario_list.sh
           fi
           benchmark_exit_code=$?
           set -e
@@ -838,12 +846,12 @@ jobs:
           exit "$benchmark_exit_code"
 
       - name: Performance gate - Stage 1 comparison
-        if: ${{ github.event_name == 'pull_request' || github.event_name == 'issue_comment' }}
+        if: ${{ (github.event_name == 'pull_request' || github.event_name == 'issue_comment') && steps.resolve-scenario.outputs.BENCH_SCENARIO_COUNT == '1' }}
         shell: bash
         run: bash .github/workflows/scripts/perfgate_stage1_compare.sh
 
       - name: Performance gate - Stage 2 trial rebase and benchmark
-        if: ${{ (github.event_name == 'pull_request' || github.event_name == 'issue_comment') && env.PERFGATE_BASELINE_AVAILABLE != '0' && (env.PERFGATE_MODE != 'enforce' || env.PERFGATE_STAGE1_RESULT == 'pass') }}
+        if: ${{ (github.event_name == 'pull_request' || github.event_name == 'issue_comment') && steps.resolve-scenario.outputs.BENCH_SCENARIO_COUNT == '1' && env.PERFGATE_BASELINE_AVAILABLE != '0' && (env.PERFGATE_MODE != 'enforce' || env.PERFGATE_STAGE1_RESULT == 'pass') }}
         shell: bash
         env:
           WORKSPACE_ROOT: ${{ github.workspace }}
@@ -860,12 +868,12 @@ jobs:
           bash .github/workflows/scripts/perfgate_stage2_rebase_and_benchmark.sh
 
       - name: Performance gate - two-stage comparison
-        if: ${{ github.event_name == 'pull_request' || github.event_name == 'issue_comment' }}
+        if: ${{ (github.event_name == 'pull_request' || github.event_name == 'issue_comment') && steps.resolve-scenario.outputs.BENCH_SCENARIO_COUNT == '1' }}
         shell: bash
         run: bash .github/workflows/scripts/perfgate_compare.sh
 
       - name: Sync GitHub leaderboard snapshots
-        if: ${{ success() && env.SYNC_GITHUB_SNAPSHOTS == '1' }}
+        if: ${{ success() && env.SYNC_GITHUB_SNAPSHOTS == '1' && steps.resolve-scenario.outputs.BENCH_SCENARIO_COUNT == '1' }}
         env:
           BENCHMARK_REPO_DIR: ${{ github.workspace }}/vllm-hust-benchmark
           WEBSITE_REPO_DIR: ${{ github.workspace }}/vllm-hust-website
@@ -897,6 +905,7 @@ jobs:
           python3 - <<'PY'
           import json
           import os
+          import sys
           from pathlib import Path
 
           run_id = os.environ.get('RUN_ID')
@@ -923,7 +932,11 @@ jobs:
             publish_modes.append('hf-sync')
           if not publish_modes:
             publish_modes.append('artifact-preview')
-          if os.environ.get('SYNC_GITHUB_SNAPSHOTS') == '1' and benchmark_exit_code == '0':
+          if (
+            os.environ.get('SYNC_GITHUB_SNAPSHOTS') == '1'
+            and os.environ.get('BENCH_SCENARIO_COUNT', '1') == '1'
+            and benchmark_exit_code == '0'
+          ):
             publish_modes.append('github-snapshot')
           publish_mode = '+'.join(publish_modes)
           model_name = os.environ.get('MODEL_NAME', 'unknown')
@@ -943,6 +956,79 @@ jobs:
           benchmark_root_helper = os.environ.get('ASCEND_BENCHMARK_ROOT_HELPER', '').strip() or '/usr/local/bin/run_ascend_benchmark_root_helper.sh'
           perfgate_mode = os.environ.get('PERFGATE_MODE', 'report')
           baseline_source = os.environ.get('PERFGATE_BASELINE_SOURCE') or 'unavailable'
+          multi_scenario_summary = result_root / 'multi_scenario_results.tsv'
+
+          if multi_scenario_summary.is_file():
+            rows = []
+            for line in multi_scenario_summary.read_text(encoding='utf-8').splitlines()[1:]:
+              if not line.strip():
+                continue
+              scenario, scenario_run_id, scenario_result_root, raw_path, submission_dir, exit_code = line.split('\t')
+              raw_metrics = {}
+              raw_file = Path(raw_path)
+              if raw_file.is_file():
+                raw_payload = json.loads(raw_file.read_text(encoding='utf-8'))
+                raw_metrics = {
+                  'request_throughput': raw_payload.get('request_throughput'),
+                  'output_throughput': raw_payload.get('output_throughput'),
+                  'mean_ttft_ms': raw_payload.get('mean_ttft_ms'),
+                  'failed': raw_payload.get('failed'),
+                }
+              leaderboard_file = Path(submission_dir) / 'run_leaderboard.json'
+              same_spec_id = ''
+              if leaderboard_file.is_file():
+                leaderboard_payload = json.loads(leaderboard_file.read_text(encoding='utf-8'))
+                same_spec = leaderboard_payload.get('same_spec') if isinstance(leaderboard_payload, dict) else None
+                if isinstance(same_spec, dict):
+                  same_spec_id = str(same_spec.get('spec_id') or '')
+              rows.append({
+                'scenario': scenario,
+                'run_id': scenario_run_id,
+                'result_root': scenario_result_root,
+                'exit_code': exit_code,
+                'status': 'PASS' if exit_code == '0' else f'FAIL ({exit_code})',
+                'same_spec_id': same_spec_id or 'unknown',
+                **raw_metrics,
+              })
+
+            lines = [
+              '## Ascend Benchmark Summary',
+              f'- Run ID: `{run_id}`',
+              f"- Scenarios: `{', '.join(row['scenario'] for row in rows)}`",
+              f'- Model: `{model_name}`',
+              f'- Base vllm-hust ref: `{vllm_hust_ref}`',
+              f'- Benchmark target repo: `{ascend_hust_repository}`',
+              f'- Benchmark target ref: `{ascend_hust_ref}`',
+              f'- Benchmark target commit: [`{ascend_hust_sha[:8]}`]({ascend_hust_commit_url})',
+              f'- Publish mode: `{publish_mode}`',
+              '- Perfgate comparison: `skipped for multi-scenario run; each scenario benchmark is isolated`',
+              f'- Workflow run: [view run]({run_url})',
+              '',
+              '| Scenario | Status | Output tok/s | Mean TTFT ms | Failed | Same-spec goal | Result root |',
+              '| --- | --- | ---: | ---: | ---: | --- | --- |',
+            ]
+            for row in rows:
+              lines.append(
+                '| {scenario} | {status} | {output_throughput} | {mean_ttft_ms} | {failed} | {same_spec_id} | `{result_root}` |'.format(
+                  scenario=row['scenario'],
+                  status=row['status'],
+                  output_throughput=row.get('output_throughput', 'missing'),
+                  mean_ttft_ms=row.get('mean_ttft_ms', 'missing'),
+                  failed=row.get('failed', 'missing'),
+                  same_spec_id=row['same_spec_id'],
+                  result_root=row['result_root'],
+                )
+              )
+
+            comment_lines = [
+              '<!-- ascend-benchmark-leaderboard-comment -->',
+              '## Ascend Benchmark Result',
+              *lines[1:],
+            ]
+            comment_path.parent.mkdir(parents=True, exist_ok=True)
+            summary_path.write_text("\n".join(lines) + "\n", encoding='utf-8')
+            comment_path.write_text("\n".join(comment_lines) + "\n", encoding='utf-8')
+            sys.exit(0)
 
           lines = [
             '## Ascend Benchmark Summary',
@@ -1152,7 +1238,7 @@ jobs:
 
   store-main-perfgate-baseline:
     name: Store main perfgate baseline
-    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.VLLM_ASCEND_HUST_MAIN_BENCHMARK_SCENARIOS == '' }}
     needs: ascend-benchmark
     runs-on: ubuntu-latest
     permissions:
