@@ -656,8 +656,8 @@ jobs:
           fi
           export PYTHONPATH="$VLLM_HUST_REPO:$VLLM_HUST_BENCHMARK_REPO/src${PYTHONPATH:+:$PYTHONPATH}"
           echo "PYTHONPATH=$PYTHONPATH" >> "$GITHUB_ENV"
-          hust_run_pip install "torch==2.9.0" "torch-npu==2.9.0"
-          hust_run_pip install "numpy<2.0.0" scipy attrs decorator psutil
+	  hust_run_pip install "torch==2.10.0" "torch-npu==2.10.0"
+	  hust_run_pip install "numpy<2.0.0" scipy attrs decorator psutil
           hust_run_pip install -r "$VLLM_HUST_REPO/requirements/common.txt"
           PYTHON_BIN="$(hust_resolve_python_bin)"
           echo "PYTHON_BIN=$PYTHON_BIN" >> "$GITHUB_ENV"
