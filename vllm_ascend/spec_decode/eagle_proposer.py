@@ -1,11 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-import copy
-from collections.abc import Callable
-from contextlib import AbstractContextManager, contextmanager, nullcontext
-from functools import partial
-from typing import Any
 
-import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -420,7 +414,6 @@ class AscendSpecDecodeBaseProposer(SpecDecodeBaseProposer):
                 query_start_loc_cpu=self.query_start_loc.cpu[: num_reqs + 1],
                 seq_lens_cpu=self.runner.optimistic_seq_lens_cpu,
                 seq_lens=self.runner.seq_lens[:num_reqs],
-                req_ids=self.runner.input_batch.req_ids[:num_reqs],
                 num_reqs=num_reqs,
                 num_actual_tokens=num_tokens,
                 num_input_tokens=num_tokens,
@@ -1579,7 +1572,6 @@ class AscendSpecDecodeBaseProposer(SpecDecodeBaseProposer):
             query_start_loc_cpu=new_query_start_loc_cpu,
             seq_lens=new_seq_lens_cpu.to(device, non_blocking=True),
             seq_lens_cpu=new_seq_lens_cpu,
-            req_ids=common_attn_metadata.req_ids,
             num_computed_tokens_cpu=common_attn_metadata.num_computed_tokens_cpu,
             num_reqs=common_attn_metadata.num_reqs,
             num_actual_tokens=total_num_tokens,
@@ -1659,7 +1651,6 @@ class AscendSpecDecodeBaseProposer(SpecDecodeBaseProposer):
             query_start_loc=common_attn_metadata.query_start_loc,
             query_start_loc_cpu=query_start_loc_cpu,
             seq_lens_cpu=common_attn_metadata.seq_lens_cpu,
-            req_ids=common_attn_metadata.req_ids,
             num_reqs=common_attn_metadata.num_reqs,
             num_actual_tokens=common_attn_metadata.num_actual_tokens if self.pcp_size > 1 else total_num_tokens,
             num_input_tokens=common_attn_metadata.num_input_tokens,
@@ -1804,10 +1795,5 @@ class AscendSpecDecodeBaseProposer(SpecDecodeBaseProposer):
 
 
 class AscendEagleProposer(EagleProposer, AscendSpecDecodeBaseProposer):
-    def __init__(
-        self,
-        vllm_config: VllmConfig,
-        device: torch.device,
-        runner=None,
-    ):
+    def __init__(self, vllm_config: VllmConfig, device: torch.device, runner=None):
         AscendSpecDecodeBaseProposer.__init__(self, vllm_config, device, True, runner=runner)

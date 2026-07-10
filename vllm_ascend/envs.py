@@ -71,6 +71,7 @@ env_variables: dict[str, Callable[[], Any]] = {
     "VLLM_ASCEND_ENABLE_MATMUL_ALLREDUCE": lambda: bool(int(os.getenv("VLLM_ASCEND_ENABLE_MATMUL_ALLREDUCE", "0"))),
     # Whether to enable FlashComm optimization when tensor parallel is enabled.
     # This feature will get better performance when concurrency is large.
+    # DEPRECATED: use additional_config.enable_flashcomm1 instead.
     "VLLM_ASCEND_ENABLE_FLASHCOMM1": lambda: bool(int(os.getenv("VLLM_ASCEND_ENABLE_FLASHCOMM1", "0"))),
     # Whether to enable FLASHCOMM2. Setting it to 0 disables the feature, while setting it to 1 or above enables it.
     # The specific value set will be used as the O-matrix TP group size for flashcomm2.
@@ -89,8 +90,6 @@ env_variables: dict[str, Callable[[], Any]] = {
     # 1: only quant case enable nz;
     # 2: enable nz as long as possible.
     "VLLM_ASCEND_ENABLE_NZ": lambda: int(os.getenv("VLLM_ASCEND_ENABLE_NZ", 1)),
-    # Decide whether we should enable CP parallelism.
-    "VLLM_ASCEND_ENABLE_CONTEXT_PARALLEL": lambda: bool(int(os.getenv("VLLM_ASCEND_ENABLE_CONTEXT_PARALLEL", "0"))),
     # Whether to anbale dynamic EPLB
     "DYNAMIC_EPLB": lambda: os.getenv("DYNAMIC_EPLB", "false").lower(),
     # Whether to enable fused MC2 (`dispatch_gmm_combine_decode` / `dispatch_ffn_combine`).
@@ -101,9 +100,8 @@ env_variables: dict[str, Callable[[], Any]] = {
     # `dispatch_gmm_combine_decode` can be used only for **decode node** moe layer
     # with W8A8. And MTP layer must be W8A8.
     "VLLM_ASCEND_ENABLE_FUSED_MC2": lambda: int(os.getenv("VLLM_ASCEND_ENABLE_FUSED_MC2", "0")),
-    # Whether to enable balance scheduling in the v1 scheduler.
-    # Platform validation: only PD-mixed mode (`kv_role='kv_both'` or no kv_transfer_config).
-    # Not supported in PD-disaggregated mode (`kv_producer` / `kv_consumer` only).
+    # DEPRECATED: VLLM_ASCEND_BALANCE_SCHEDULING env var will be removed in a future release.
+    # Use --additional-config '{"enable_balance_scheduling": true}' instead.
     "VLLM_ASCEND_BALANCE_SCHEDULING": lambda: bool(int(os.getenv("VLLM_ASCEND_BALANCE_SCHEDULING", "0"))),
     # Whether to enable utility-based victim selection in scheduler preemption.
     "VLLM_ASCEND_ENABLE_UTILITY_VICTIM_SELECTION": lambda: bool(
@@ -140,6 +138,82 @@ env_variables: dict[str, Callable[[], Any]] = {
     # Control the aclrtMemcpyBatchAsync compile path for KV cache offloading.
     # "1": force enable, "0": force disable, None: auto-detect from CANN headers.
     "VLLM_ASCEND_ENABLE_BATCH_MEMCPY": lambda: os.getenv("VLLM_ASCEND_ENABLE_BATCH_MEMCPY", None),
+    # Disable AddRmsNormBias custom-op dependent fusion passes. This is useful
+    # when the installed libopapi.so does not export the required symbols.
+    "VLLM_ASCEND_DISABLE_ADD_RMS_NORM_BIAS_CUSTOM_OP": lambda: bool(
+        int(os.getenv("VLLM_ASCEND_DISABLE_ADD_RMS_NORM_BIAS_CUSTOM_OP", "0"))
+    ),
+    # Disable the AscendC top-k/top-p custom op and use the PyTorch fallback.
+    "VLLM_ASCEND_DISABLE_TOP_K_TOP_P_CUSTOM_OP": lambda: bool(
+        int(os.getenv("VLLM_ASCEND_DISABLE_TOP_K_TOP_P_CUSTOM_OP", "0"))
+    ),
+
+    # -- Sim-LLM: KV reuse optimization ---------------------------------------
+    # Whether to enable Sim-LLM KV reuse optimization. When set to 1, the Sim-LLM
+    # patch wraps NPUModelRunner.execute_model() at worker init time.
+    # 0: disabled (default), 1: enabled.
+    "VLLM_ASCEND_SIMLLM_ENABLED": lambda: bool(int(os.getenv("VLLM_ASCEND_SIMLLM_ENABLED", "0"))),
+
+    # Cosine similarity threshold for KV reuse match. Embeddings with cosine
+    # similarity >= this value are considered a match. Paper default 0.8.
+    # Valid range: [0.0, 1.0]. Higher values = stricter matching, fewer KV reuses.
+    "VLLM_ASCEND_SIMLLM_COSINE_THRESHOLD": lambda: float(
+        os.getenv("VLLM_ASCEND_SIMLLM_COSINE_THRESHOLD", "0.8")
+    ),
+
+    # Number of bits for SimHash LSH projection. More bits = fewer collisions
+    # but larger hash storage. Paper default 64 (fits in a single int64).
+    # Valid range: [16, 256]. Recommended: 32, 64, or 128.
+    "VLLM_ASCEND_SIMLLM_LSH_NUM_BITS": lambda: int(
+        os.getenv("VLLM_ASCEND_SIMLLM_LSH_NUM_BITS", "64")
+    ),
+
+    # Batch size threshold for switching from exhaustive cosine to LSH bucket
+    # merge strategy. Below this threshold: exact cosine per candidate.
+    # At or above: LSH bucket membership with KV merging. Default 32.
+    "VLLM_ASCEND_SIMLLM_LSH_BATCH_THRESHOLD": lambda: int(
+        os.getenv("VLLM_ASCEND_SIMLLM_LSH_BATCH_THRESHOLD", "32")
+    ),
+
+    # Maximum number of cached tasks in KV_Manager. When exceeded, the
+    # least-recently-accessed task is evicted (O(1) via OrderedDict).
+    # Default 1024. Increase for higher reuse rates on diverse workloads.
+    "VLLM_ASCEND_SIMLLM_KV_CACHE_SIZE": lambda: int(
+        os.getenv("VLLM_ASCEND_SIMLLM_KV_CACHE_SIZE", "1024")
+    ),
+
+    # Number of bottom (early) transformer layers whose KV is retained in the
+    # sandwich config for unmatched tasks. Default 3 (layers 0, 1, 2).
+    "VLLM_ASCEND_SIMLLM_SANDWICH_BOTTOM": lambda: int(
+        os.getenv("VLLM_ASCEND_SIMLLM_SANDWICH_BOTTOM", "3")
+    ),
+
+    # Number of top (late) transformer layers whose KV is retained in the
+    # sandwich config for unmatched tasks. Default 3 (layers L-3 .. L-1).
+    # Total KV retention = (bottom + top) / num_layers.
+    "VLLM_ASCEND_SIMLLM_SANDWICH_TOP": lambda: int(
+        os.getenv("VLLM_ASCEND_SIMLLM_SANDWICH_TOP", "3")
+    ),
+
+    # Pooling strategy for task embedding extraction from hidden states.
+    # Options: "mean" (mean pooling over sequence), "last" (last token only),
+    # "cls" (first token / CLS token). Default "mean".
+    "VLLM_ASCEND_SIMLLM_EMBEDDING_POOLING": lambda: os.getenv(
+        "VLLM_ASCEND_SIMLLM_EMBEDDING_POOLING", "mean"
+    ),
+
+    # Batch match ratio threshold for deferral logic. If the fraction of matched
+    # tasks in a batch exceeds this value, unmatched tasks are deferred to the
+    # next scheduling cycle. Valid range: [0.0, 1.0]. Default 0.5.
+    "VLLM_ASCEND_SIMLLM_DEFERRAL_RATIO": lambda: float(
+        os.getenv("VLLM_ASCEND_SIMLLM_DEFERRAL_RATIO", "0.5")
+    ),
+
+    # Maximum number of times a task can be deferred before being force-processed
+    # regardless of match status. Guards against starvation. Default 3.
+    "VLLM_ASCEND_SIMLLM_MAX_DEFERRALS": lambda: int(
+        os.getenv("VLLM_ASCEND_SIMLLM_MAX_DEFERRALS", "3")
+    ),
 }
 
 # end-env-vars-definition

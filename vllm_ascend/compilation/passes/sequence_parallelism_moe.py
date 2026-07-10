@@ -10,6 +10,7 @@ from vllm_ascend.compilation.passes.sequence_parallelism import (
     _SequenceParallelPatternHelper,
     get_sp_min_token_num,
 )
+from vllm_ascend.utils import is_add_rms_norm_bias_custom_op_available
 
 
 class MiddleLayerAllgatherAddRMSNormPattern(_SequenceParallelPatternHelper):
@@ -175,10 +176,13 @@ class SequenceParallelismMoePass(VllmInductorPass):
 
         self.patterns: PatternMatcherPass = PatternMatcherPass(pass_name="npu_sequence_parallelism_allgather_ep_pass")
 
-        for epsilon in [1e-5, 1e-6]:
-            MiddleLayerAllgatherAddRMSNormPattern(config, epsilon).register(self.patterns)
-            LastLayerAllgatherRMSNormPattern(config, epsilon).register(self.patterns)
-            Qwen3VLMiddleLayerAllgatherAddRMSNormPattern(config, epsilon).register(self.patterns)
+        if is_add_rms_norm_bias_custom_op_available():
+            for epsilon in [1e-5, 1e-6]:
+                MiddleLayerAllgatherAddRMSNormPattern(config, epsilon).register(self.patterns)
+                LastLayerAllgatherRMSNormPattern(config, epsilon).register(self.patterns)
+                Qwen3VLMiddleLayerAllgatherAddRMSNormPattern(config, epsilon).register(self.patterns)
+        else:
+            logger.debug("SequenceParallelismMoePass RMSNorm patterns disabled: AddRmsNormBias custom op unavailable")
 
         AllGatherChunkNoOpPattern(config).register(self.patterns)
 

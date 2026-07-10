@@ -120,6 +120,38 @@ this Json will be structured and parsed into server parameters and client parame
 
 ### Run benchmarks
 
+#### Use trusted GitHub Actions workflow
+
+For trusted Ascend runners, use the `Ascend Benchmark Leaderboard` workflow and
+its `workflow_dispatch` form. The default values preserve the existing FP16
+same-spec benchmark path:
+
+| Input | Default | Notes |
+| --- | --- | --- |
+| `ascend_hust_target` | `vLLM-HUST/vllm-ascend-hust@main` | Target plugin repo/ref to test. |
+| `vllm_hust_ref` | `main` | Paired `vllm-hust` runtime ref. |
+| `benchmark_ref` | `main` | Paired `vllm-hust-benchmark` runner/export ref. Use a feature branch only for branch validation. |
+| `model_name` | `Qwen/Qwen2.5-14B-Instruct` | Hugging Face model id or local model path. |
+| `model_precision` | `FP16` | Leaderboard model precision metadata. |
+| `model_quantization` | empty | Leave empty for unquantized models. |
+| `dtype` | `float16` | Use `auto` for Ascend quantized/modelslim models. |
+| `hardware_chip_model` | `910B3` | Override to `910B2` when running on 910B2 hardware. |
+
+To run the W8A8 quantized model benchmark after the workflow changes are merged,
+keep repo refs on `main` and override only the model-specific fields:
+
+```text
+model_name=aly16/Qwen2.5-14B-W8A8
+model_precision=INT8
+model_quantization=W8A8
+dtype=auto
+hardware_chip_model=910B2
+```
+
+Do not put a branch name such as `ws/quantized-model-leaderboard` in
+`model_name`; use `benchmark_ref` for the benchmark runner branch when testing
+unmerged benchmark changes.
+
 #### Use benchmark script
 
 The provided scripts automatically execute performance tests for serving, throughput, and latency. To start the benchmarking process, run command in the vllm-ascend root directory:
@@ -132,12 +164,11 @@ Once the script completes, you can find the results in the benchmarks/results fo
 
 ```shell
 .
-|-- serving_qwen2_5_7B_tp1_qps_1.json
-|-- serving_qwen2_5_7B_tp1_qps_16.json
-|-- serving_qwen2_5_7B_tp1_qps_4.json
-|-- serving_qwen2_5_7B_tp1_qps_inf.json
-|-- latency_qwen2_5_7B_tp1.json
-|-- throughput_qwen2_5_7B_tp1.json
+|-- serving_qwen2_5_7Bvl_tp1_qps_1.json
+|-- serving_qwen2_5_7Bvl_tp1_qps_16.json
+|-- serving_qwen2_5_7Bvl_tp1_qps_4.json
+|-- serving_qwen2_5_7Bvl_tp1_qps_inf.json
+|-- throughput_qwen2_5_7Bvl_tp1.json
 ```
 
 These files contain detailed benchmarking results for further analysis.

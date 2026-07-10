@@ -31,8 +31,9 @@ BENCH_DATASET_PATH=${BENCH_DATASET_PATH:-}
 BENCH_CONSTRAINTS_FILE=${BENCH_CONSTRAINTS_FILE:-}
 ALLOW_RANDOM_HF_PUBLISH=${ALLOW_RANDOM_HF_PUBLISH:-0}
 SAME_SPEC_BENCHMARK_ENABLED=${SAME_SPEC_BENCHMARK_ENABLED:-1}
-SAME_SPEC_SPEC_FILE=${SAME_SPEC_SPEC_FILE:-$VLLM_HUST_BENCHMARK_REPO/docs/official-baselines/official-ascend-jan-2026-v0110-random-online-qwen25-14b-910b3.json}
+SAME_SPEC_SPEC_FILE=${SAME_SPEC_SPEC_FILE:-}
 SAME_SPEC_CONSTRAINTS_FILE=${SAME_SPEC_CONSTRAINTS_FILE:-$VLLM_HUST_BENCHMARK_REPO/docs/official-baselines/official-ascend-constraints.stub.json}
+SAME_SPEC_PR_PREVIEW_COMPAT=${SAME_SPEC_PR_PREVIEW_COMPAT:-1}
 
 MODEL_NAME=${MODEL_NAME:-Qwen/Qwen2.5-14B-Instruct}
 MODEL_PARAMETERS=${MODEL_PARAMETERS:-14B}
@@ -40,7 +41,7 @@ MODEL_PRECISION=${MODEL_PRECISION:-FP16}
 HOST=${HOST:-127.0.0.1}
 PORT=${PORT:-}
 DTYPE=${DTYPE:-float16}
-MAX_MODEL_LEN=${MAX_MODEL_LEN:-1024}
+MAX_MODEL_LEN=${MAX_MODEL_LEN:-}
 MAX_NUM_SEQS=${MAX_NUM_SEQS:-1}
 BENCH_NUM_PROMPTS=${BENCH_NUM_PROMPTS:-200}
 BENCH_RANDOM_INPUT_LEN=${BENCH_RANDOM_INPUT_LEN:-1024}
@@ -51,11 +52,31 @@ BENCH_MAX_CONCURRENCY=${BENCH_MAX_CONCURRENCY:-4}
 BENCH_INPUT_LEN=${BENCH_INPUT_LEN:-}
 BENCH_OUTPUT_LEN=${BENCH_OUTPUT_LEN:-}
 HARDWARE_VENDOR=${HARDWARE_VENDOR:-Huawei}
-HARDWARE_CHIP_MODEL=${HARDWARE_CHIP_MODEL:-910B3}
+HARDWARE_CHIP_MODEL=${HARDWARE_CHIP_MODEL:-910B2}
 CHIP_COUNT=${CHIP_COUNT:-1}
 NODE_COUNT=${NODE_COUNT:-1}
 PUBLISH_TO_HF=${PUBLISH_TO_HF:-0}
+PUBLISH_TO_BENCHMARK_REPO=${PUBLISH_TO_BENCHMARK_REPO:-0}
 HF_REPO_ID=${HF_REPO_ID:-}
+VLLM_HUST_BENCHMARK_REF=${VLLM_HUST_BENCHMARK_REF:-}
+
+validate_benchmark_inputs() {
+  if [[ -n "$VLLM_HUST_BENCHMARK_REF" && "$MODEL_NAME" == "$VLLM_HUST_BENCHMARK_REF" ]]; then
+    echo "Invalid benchmark workflow inputs: model_name equals benchmark_ref ($MODEL_NAME)." >&2
+    echo "Use model_name for the model repository/path (for example: aly16/Qwen2.5-14B-W8A8)." >&2
+    echo "Use benchmark_ref for the vllm-hust-benchmark branch (for example: ws/quantized-model-leaderboard)." >&2
+    exit 2
+  fi
+
+  if [[ "$MODEL_NAME" == ws/quantized-* || "$MODEL_NAME" == ws/*leaderboard* ]]; then
+    echo "Invalid benchmark workflow inputs: model_name looks like a git branch/ref: $MODEL_NAME" >&2
+    echo "Expected model_name to be a Hugging Face model id or local model path." >&2
+    echo "Did you mean to put '$MODEL_NAME' in benchmark_ref instead?" >&2
+    exit 2
+  fi
+}
+
+validate_benchmark_inputs
 
 # shellcheck source=/dev/null
 source "${VLLM_ASCEND_HUST_REPO}/scripts/hust_ascend_manager_helper.sh"
@@ -74,8 +95,12 @@ export CI_STATE_ROOT BENCHMARK_RESULTS_ROOT CI_HOME HOME XDG_CACHE_HOME XDG_CONF
 export PYTHONPATH="${VLLM_HUST_REPO}:${VLLM_HUST_BENCHMARK_REPO}/src${PYTHONPATH:+:${PYTHONPATH}}"
 VLLM_CLI=("${PYTHON_BIN}" -m vllm.entrypoints.cli.main)
 VLLM_SERVE=("${PYTHON_BIN}" -m vllm.entrypoints.openai.api_server)
+ASCEND_BENCHMARK_ENFORCE_EAGER=${ASCEND_BENCHMARK_ENFORCE_EAGER:-0}
 SERVER_READY_TIMEOUT_SECONDS=${SERVER_READY_TIMEOUT_SECONDS:-600}
 SERVER_READY_POLL_SECONDS=${SERVER_READY_POLL_SECONDS:-2}
+CHAT_SMOKE_TIMEOUT_SECONDS=${CHAT_SMOKE_TIMEOUT_SECONDS:-120}
+CHAT_SMOKE_POLL_SECONDS=${CHAT_SMOKE_POLL_SECONDS:-5}
+CHAT_SMOKE_REQUEST_TIMEOUT_SECONDS=${CHAT_SMOKE_REQUEST_TIMEOUT_SECONDS:-15}
 SERVER_START_RETRIES=${SERVER_START_RETRIES:-8}
 SERVER_START_RETRY_DELAY_SECONDS=${SERVER_START_RETRY_DELAY_SECONDS:-10}
 ASCEND_RUNTIME_READY_TIMEOUT_SECONDS=${ASCEND_RUNTIME_READY_TIMEOUT_SECONDS:-30}
@@ -83,7 +108,45 @@ ASCEND_RUNTIME_READY_POLL_SECONDS=${ASCEND_RUNTIME_READY_POLL_SECONDS:-10}
 RESOURCE_BUSY_EXIT_CODE=${RESOURCE_BUSY_EXIT_CODE:-75}
 SUDO_AUTH_EXIT_CODE=${SUDO_AUTH_EXIT_CODE:-76}
 INVALID_BENCHMARK_RESULT_EXIT_CODE=${INVALID_BENCHMARK_RESULT_EXIT_CODE:-77}
+NODE_ENV_FAILURE_EXIT_CODE=${NODE_ENV_FAILURE_EXIT_CODE:-86}
 ASCEND_BENCHMARK_USE_SUDO=${ASCEND_BENCHMARK_USE_SUDO:-0}
+SAME_SPEC_READY_TIMEOUT_SECONDS=${SAME_SPEC_READY_TIMEOUT_SECONDS:-$SERVER_READY_TIMEOUT_SECONDS}
+SAME_SPEC_CLIENT_READY_TIMEOUT_SECONDS=${SAME_SPEC_CLIENT_READY_TIMEOUT_SECONDS:-300}
+CURRENT_VLLM_CACHE_ROOT=${CURRENT_VLLM_CACHE_ROOT:-$CI_RUNTIME_ROOT/current-ascend-same-spec-cache}
+
+normalize_benchmark_spec_path() {
+  local spec_file=${1:-}
+  if [[ -z "$spec_file" ]]; then
+    return 1
+  fi
+  if [[ "$spec_file" = /* ]]; then
+    printf '%s\n' "$spec_file"
+  else
+    printf '%s\n' "$VLLM_HUST_BENCHMARK_REPO/$spec_file"
+  fi
+}
+
+resolve_same_spec_spec_file() {
+  local resolved_spec_file
+  if [[ -n "${SAME_SPEC_SPEC_FILE:-}" ]]; then
+    SAME_SPEC_SPEC_FILE=$(normalize_benchmark_spec_path "$SAME_SPEC_SPEC_FILE")
+    export SAME_SPEC_SPEC_FILE
+    return 0
+  fi
+
+  if ! resolved_spec_file=$("$PYTHON_BIN" -m vllm_hust_benchmark.perfgate_specs resolve \
+    --scenario "$BENCH_SCENARIO" \
+    --hardware-chip-model "$HARDWARE_CHIP_MODEL" \
+    --repo-root "$VLLM_HUST_BENCHMARK_REPO"); then
+    echo "Could not resolve same-spec benchmark spec for ${BENCH_SCENARIO}/${HARDWARE_CHIP_MODEL}" >&2
+    return 2
+  fi
+
+  SAME_SPEC_SPEC_FILE=$(normalize_benchmark_spec_path "$resolved_spec_file")
+  export SAME_SPEC_SPEC_FILE
+  echo "Resolved same-spec benchmark spec file: $SAME_SPEC_SPEC_FILE"
+}
+
 DEFAULT_SYSTEM_ASCEND_BENCHMARK_ROOT_HELPER=${DEFAULT_SYSTEM_ASCEND_BENCHMARK_ROOT_HELPER:-/usr/local/bin/run_ascend_benchmark_root_helper.sh}
 REPO_ASCEND_BENCHMARK_ROOT_HELPER=$VLLM_ASCEND_HUST_REPO/.github/workflows/scripts/run_ascend_benchmark_root_helper.sh
 REPO_ASCEND_BENCHMARK_ROOT_HELPER_INSTALL_SCRIPT=$VLLM_ASCEND_HUST_REPO/scripts/install_ascend_benchmark_root_helper.sh
@@ -96,12 +159,22 @@ else
   ASCEND_BENCHMARK_ROOT_HELPER=$REPO_ASCEND_BENCHMARK_ROOT_HELPER
 fi
 
+if [[ "$ASCEND_BENCHMARK_USE_SUDO" == "auto" ]]; then
+  if command -v sudo >/dev/null 2>&1 && [[ -x "$ASCEND_BENCHMARK_ROOT_HELPER" ]]; then
+    ASCEND_BENCHMARK_USE_SUDO=1
+    echo "Ascend benchmark sudo mode: enabled via auto detection ($ASCEND_BENCHMARK_ROOT_HELPER)"
+  else
+    ASCEND_BENCHMARK_USE_SUDO=0
+    echo "Ascend benchmark sudo mode: disabled via auto detection; sudo or root helper is unavailable"
+  fi
+fi
+
 server_pid=""
 server_group_pid=""
 cleanup_ran=0
 
 find_orphaned_engine_pids() {
-  python - <<'PY'
+  "$PYTHON_BIN" - <<'PY'
 import os
 
 
@@ -180,6 +253,7 @@ kill_matching_pids() {
 SUDO_PRESERVE_ENV_VARS=(
   ASCEND_AICPU_PATH
   ASCEND_BENCHMARK_USE_SUDO
+  ASCEND_BENCHMARK_ENFORCE_EAGER
   ASCEND_HOME_PATH
   ASCEND_OPP_PATH
   ASCEND_RT_VISIBLE_DEVICES
@@ -202,6 +276,9 @@ SUDO_PRESERVE_ENV_VARS=(
   BENCH_MAX_CONCURRENCY
   BENCH_NUM_PROMPTS
   BENCH_OUTPUT_LEN
+  BENCHMARK_REPO_GH_TOKEN
+  BENCHMARK_REPO_SLUG
+  BENCHMARK_REPO_SSH_KEY
   BENCH_RANDOM_BATCH_SIZE
   BENCH_RANDOM_INPUT_LEN
   BENCH_RANDOM_OUTPUT_LEN
@@ -209,14 +286,21 @@ SUDO_PRESERVE_ENV_VARS=(
   BENCH_SCENARIO
   CHIP_COUNT
   CI_HOME
+  CLIENT_READY_CHECK_TIMEOUT_SECONDS
   CONSTRAINTS_FILE
   CMAKE_PREFIX_PATH
   CURRENT_CLIENT_PORT
   CURRENT_DATA_SOURCE
+  CURRENT_DTYPE
   CURRENT_GIT_COMMIT
   CURRENT_GITHUB_REF
   CURRENT_GITHUB_REPOSITORY
+  CURRENT_HARDWARE_CHIP_MODEL
+  CURRENT_MODEL_NAME
+  CURRENT_MODEL_PARAMETERS
   CURRENT_MODEL_PATH
+  CURRENT_MODEL_PRECISION
+  CURRENT_MODEL_QUANTIZATION
   CURRENT_PLUGIN_ENGINE
   CURRENT_PLUGIN_GIT_COMMIT
   CURRENT_PLUGIN_GITHUB_REF
@@ -242,15 +326,20 @@ SUDO_PRESERVE_ENV_VARS=(
   MODEL_NAME
   MODEL_PARAMETERS
   MODEL_PRECISION
+  MODEL_QUANTIZATION
   NODE_COUNT
   PATH
   PORT
+  PUBLISH_TO_BENCHMARK_REPO
   PYTHON_BIN
   PYTHONPATH
   RESULT_DIR
   RESULT_ROOT
   RUN_ID
   SAME_SPEC_CONSTRAINTS_FILE
+  SAME_SPEC_CLIENT_READY_TIMEOUT_SECONDS
+  SAME_SPEC_PR_PREVIEW_COMPAT
+  SAME_SPEC_READY_TIMEOUT_SECONDS
   SAME_SPEC_SPEC_FILE
   SERVER_LOG
   TMPDIR
@@ -459,6 +548,19 @@ same_spec_server_log_indicates_resource_busy() {
   [[ -f "$same_spec_server_log" ]] && grep -qE 'Resource_Busy\(EL0005\)|aclInit, error code is 507899|The resources are busy' "$same_spec_server_log"
 }
 
+print_same_spec_server_log_tail() {
+  local same_spec_server_log=$RESULT_ROOT/server.stdout.log
+
+  if [[ ! -f "$same_spec_server_log" ]]; then
+    echo "same-spec server log not found: $same_spec_server_log" >&2
+    return 0
+  fi
+
+  echo "---- same-spec server log tail: $same_spec_server_log ----" >&2
+  tail -n 120 "$same_spec_server_log" >&2 || true
+  echo "---- end same-spec server log tail ----" >&2
+}
+
 server_log_indicates_resource_busy() {
   [[ -f "$SERVER_LOG" ]] && grep -qE 'Resource_Busy\(EL0005\)|aclInit, error code is 507899|The resources are busy' "$SERVER_LOG"
 }
@@ -468,7 +570,11 @@ runtime_ready_log_indicates_resource_busy() {
 }
 
 runtime_ready_log_indicates_sudo_auth_failure() {
-  [[ -f "$RUNTIME_READY_LOG" ]] && grep -qE 'sudo: (a password is required|a terminal is required|sorry, you must have a tty|is not allowed to execute)' "$RUNTIME_READY_LOG"
+  [[ -f "$RUNTIME_READY_LOG" ]] && grep -qE 'sudo: (a password is required|a terminal is required|sorry, you must have a tty|is not allowed to execute|command not found)' "$RUNTIME_READY_LOG"
+}
+
+runtime_ready_log_indicates_node_env_failure() {
+  [[ -f "$RUNTIME_READY_LOG" ]] && grep -qE "ASCEND_HOME_PATH environment variable is not set|ModuleNotFoundError: No module named 'tbe'|Environment_Error_Import_Python_Module_Failed|Failed to init tbe|GEInitialize failed|OpCompileProcessor init failed" "$RUNTIME_READY_LOG"
 }
 
 cleanup_previous_ci_processes() {
@@ -559,6 +665,12 @@ PY
       return "$SUDO_AUTH_EXIT_CODE"
     fi
 
+    if runtime_ready_log_indicates_node_env_failure; then
+      echo "Detected Ascend node environment failure during runtime readiness check." >&2
+      echo "CANN/TBE runtime is not available in the benchmark process environment; check set_env.sh, ASCEND_HOME_PATH, and the Python path containing the tbe module." >&2
+      return "$NODE_ENV_FAILURE_EXIT_CODE"
+    fi
+
     if [[ "$runtime_attempt" -eq "$max_attempts" ]]; then
       if runtime_ready_log_indicates_resource_busy; then
         return "$RESOURCE_BUSY_EXIT_CODE"
@@ -589,6 +701,15 @@ resolve_npu_smi_bin() {
 }
 
 start_server() {
+  local max_model_len_args=()
+  local serve_extra_args=()
+  if [[ -n "$MAX_MODEL_LEN" ]]; then
+    max_model_len_args=(--max-model-len "$MAX_MODEL_LEN")
+  fi
+  if [[ "$ASCEND_BENCHMARK_ENFORCE_EAGER" == "1" ]]; then
+    serve_extra_args+=(--enforce-eager)
+  fi
+
   if command -v setsid >/dev/null 2>&1; then
     if [[ "$ASCEND_BENCHMARK_USE_SUDO" == "1" ]]; then
       local preserve_list
@@ -605,9 +726,9 @@ start_server() {
         --host "$HOST" \
         --port "$PORT" \
         --dtype "$DTYPE" \
-        --max-model-len "$MAX_MODEL_LEN" \
+        "${max_model_len_args[@]}" \
         --max-num-seqs "$MAX_NUM_SEQS" \
-        --enforce-eager >"$SERVER_LOG" 2>&1 &
+        "${serve_extra_args[@]}" >"$SERVER_LOG" 2>&1 &
     fi
     server_pid=$!
     server_group_pid=$server_pid
@@ -622,20 +743,149 @@ start_server() {
         --host "$HOST" \
         --port "$PORT" \
         --dtype "$DTYPE" \
-        --max-model-len "$MAX_MODEL_LEN" \
+        "${max_model_len_args[@]}" \
         --max-num-seqs "$MAX_NUM_SEQS" \
-        --enforce-eager >"$SERVER_LOG" 2>&1 &
+        "${serve_extra_args[@]}" >"$SERVER_LOG" 2>&1 &
     fi
     server_pid=$!
     printf '%s\n' "$server_pid" >"$SERVER_PID_MARKER"
   fi
 }
 
+run_completions_smoke() {
+  local request_timeout="${1:-$CHAT_SMOKE_REQUEST_TIMEOUT_SECONDS}"
+
+  "$PYTHON_BIN" - "$HOST" "$PORT" "$MODEL_NAME" "$RESULT_ROOT/completions_smoke.json" "$request_timeout" <<'PY'
+import json
+import sys
+import urllib.error
+import urllib.request
+
+host, port, model, output_path, request_timeout = sys.argv[1:6]
+url = f"http://{host}:{port}/v1/completions"
+payload = {
+    "model": model,
+    "prompt": "Reply with ok.",
+    "max_tokens": 2,
+    "temperature": 0,
+}
+request = urllib.request.Request(
+    url,
+    data=json.dumps(payload).encode("utf-8"),
+    headers={"Content-Type": "application/json"},
+    method="POST",
+)
+
+try:
+    with urllib.request.urlopen(request, timeout=float(request_timeout)) as response:
+        body = response.read().decode("utf-8", errors="replace")
+except urllib.error.HTTPError as exc:
+    body = exc.read().decode("utf-8", errors="replace")
+    print(
+        f"completions smoke returned HTTP {exc.code}; "
+        f"response prefix: {body[:500]}",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+except Exception as exc:
+    print(f"completions smoke request failed: {exc}", file=sys.stderr)
+    raise SystemExit(1)
+
+try:
+    data = json.loads(body)
+except json.JSONDecodeError as exc:
+    print(f"completions smoke returned invalid JSON: {exc}", file=sys.stderr)
+    raise SystemExit(1)
+
+choices = data.get("choices")
+if not isinstance(choices, list) or not choices:
+    print("completions smoke returned no choices", file=sys.stderr)
+    raise SystemExit(1)
+
+text = choices[0].get("text")
+
+usage = data.get("usage")
+completion_tokens = usage.get("completion_tokens") if isinstance(usage, dict) else None
+has_text = isinstance(text, str) and bool(text.strip())
+has_completion_tokens = isinstance(completion_tokens, int) and completion_tokens > 0
+if not has_text and not has_completion_tokens:
+    print(
+        "completions smoke did not observe generated text or completion tokens",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+
+with open(output_path, "w", encoding="utf-8") as f:
+    json.dump(
+        {
+            "id": data.get("id"),
+            "model": data.get("model"),
+            "finish_reason": choices[0].get("finish_reason"),
+            "text_length": len(str(text)),
+            "completion_tokens": completion_tokens,
+        },
+        f,
+        ensure_ascii=True,
+        indent=2,
+    )
+
+print("completions smoke succeeded")
+PY
+}
+
+wait_for_completions_smoke() {
+  local deadline
+  local remaining
+  local request_timeout
+  local sleep_seconds
+
+  deadline=$(($(date +%s) + CHAT_SMOKE_TIMEOUT_SECONDS))
+
+  while true; do
+    remaining=$((deadline - $(date +%s)))
+    if (( remaining <= 0 )); then
+      break
+    fi
+
+    request_timeout="$CHAT_SMOKE_REQUEST_TIMEOUT_SECONDS"
+    if (( request_timeout > remaining )); then
+      request_timeout="$remaining"
+    fi
+    if (( request_timeout < 1 )); then
+      request_timeout=1
+    fi
+
+    if run_completions_smoke "$request_timeout"; then
+      return 0
+    fi
+
+    if ! kill -0 "$server_pid" 2>/dev/null; then
+      echo "vLLM server exited while waiting for completions smoke"
+      return 1
+    fi
+
+    remaining=$((deadline - $(date +%s)))
+    if (( remaining <= 0 )); then
+      break
+    fi
+    sleep_seconds="$CHAT_SMOKE_POLL_SECONDS"
+    if (( sleep_seconds > remaining )); then
+      sleep_seconds="$remaining"
+    fi
+    sleep "$sleep_seconds"
+  done
+
+  echo "Timed out waiting for completions smoke after ${CHAT_SMOKE_TIMEOUT_SECONDS}s"
+  return 1
+}
+
 run_same_spec_current_benchmark() {
   local same_spec_runner=$VLLM_HUST_BENCHMARK_REPO/scripts/run-current-ascend-same-spec.sh
   local same_spec_raw_result=$RESULT_ROOT/raw_benchmark_result.json
   local same_spec_submission_dir=$RESULT_ROOT/submission
+  local effective_same_spec_file=$SAME_SPEC_SPEC_FILE
   local current_vllm_hust_commit
+  local same_spec_exit_code=0
 
   if [[ ! -f "$same_spec_runner" ]]; then
     echo "same-spec benchmark runner not found: $same_spec_runner" >&2
@@ -654,14 +904,60 @@ run_same_spec_current_benchmark() {
   rm -f "$same_spec_raw_result" "$RAW_RESULT_FILE"
   rm -rf "$same_spec_submission_dir" "$SUBMISSION_DIR"
 
+  prepare_same_spec_pr_preview_compat_file() {
+    local output_file=$RESULT_ROOT/pr-preview-same-spec.compat.json
+
+    "$PYTHON_BIN" - "$SAME_SPEC_SPEC_FILE" "$output_file" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+source = Path(sys.argv[1])
+target = Path(sys.argv[2])
+payload = json.loads(source.read_text(encoding="utf-8"))
+
+server_parameters = dict(payload.get("server_parameters") or {})
+client_parameters = dict(payload.get("client_parameters") or {})
+
+# PR preview runs on self-hosted Ascend runners where the shared same-spec
+# defaults can exercise unstable plugin paths before the CI signal is useful.
+server_parameters["no_enable_chunked_prefill"] = True
+server_parameters["no_enable_prefix_caching"] = True
+client_parameters.setdefault("temperature", 0)
+client_parameters["max_concurrency"] = 1
+client_parameters["request_rate"] = 1
+
+payload["server_parameters"] = server_parameters
+payload["client_parameters"] = client_parameters
+
+target.parent.mkdir(parents=True, exist_ok=True)
+target.write_text(
+    json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
+    encoding="utf-8",
+)
+print(target)
+PY
+  }
+
+  if [[ "$SAME_SPEC_PR_PREVIEW_COMPAT" == "1" && ( "${GITHUB_EVENT_NAME:-}" == "pull_request" || "${GITHUB_EVENT_NAME:-}" == "issue_comment" ) ]]; then
+    effective_same_spec_file=$(prepare_same_spec_pr_preview_compat_file)
+    echo "Using PR preview same-spec compatibility overlay: $effective_same_spec_file"
+  fi
+
   if [[ "$ASCEND_BENCHMARK_USE_SUDO" == "1" ]]; then
     VLLM_HUST_WORKSPACE_ROOT="$WORKSPACE_ROOT" \
       CURRENT_RUNTIME_CWD=/tmp \
       CURRENT_RUNTIME_PYTHON="$PYTHON_BIN" \
+      CURRENT_MODEL_NAME="$MODEL_NAME" \
       CURRENT_MODEL_PATH="$MODEL_NAME" \
+      CURRENT_MODEL_PARAMETERS="$MODEL_PARAMETERS" \
+      CURRENT_MODEL_PRECISION="$MODEL_PRECISION" \
+      CURRENT_MODEL_QUANTIZATION="$MODEL_QUANTIZATION" \
+      CURRENT_HARDWARE_CHIP_MODEL="$HARDWARE_CHIP_MODEL" \
+      CURRENT_DTYPE="$DTYPE" \
       CURRENT_VLLM_HUST_REPO="$VLLM_HUST_REPO" \
       CURRENT_VLLM_ASCEND_HUST_REPO="$VLLM_ASCEND_HUST_REPO" \
-      CURRENT_VLLM_CACHE_ROOT="$CI_RUNTIME_ROOT/current-ascend-same-spec-cache" \
+      CURRENT_VLLM_CACHE_ROOT="$CURRENT_VLLM_CACHE_ROOT" \
       CURRENT_GITHUB_REPOSITORY="vLLM-HUST/vllm-hust" \
       CURRENT_GITHUB_REF="$VLLM_HUST_REF" \
       CURRENT_GIT_COMMIT="$current_vllm_hust_commit" \
@@ -675,17 +971,25 @@ run_same_spec_current_benchmark() {
       RUN_ID="$RUN_ID" \
       CURRENT_SERVER_PORT="$PORT" \
       CURRENT_CLIENT_PORT="$PORT" \
+      READY_TIMEOUT_SECONDS="$SAME_SPEC_READY_TIMEOUT_SECONDS" \
+      CLIENT_READY_CHECK_TIMEOUT_SECONDS="$SAME_SPEC_CLIENT_READY_TIMEOUT_SECONDS" \
       CONSTRAINTS_FILE="$SAME_SPEC_CONSTRAINTS_FILE" \
-      run_ascend_root_helper same-spec "$same_spec_runner" "$SAME_SPEC_SPEC_FILE"
+      run_ascend_root_helper same-spec "$same_spec_runner" "$effective_same_spec_file" || same_spec_exit_code=$?
   else
     env \
       VLLM_HUST_WORKSPACE_ROOT="$WORKSPACE_ROOT" \
       CURRENT_RUNTIME_CWD=/tmp \
       CURRENT_RUNTIME_PYTHON="$PYTHON_BIN" \
+      CURRENT_MODEL_NAME="$MODEL_NAME" \
       CURRENT_MODEL_PATH="$MODEL_NAME" \
+      CURRENT_MODEL_PARAMETERS="$MODEL_PARAMETERS" \
+      CURRENT_MODEL_PRECISION="$MODEL_PRECISION" \
+      CURRENT_MODEL_QUANTIZATION="$MODEL_QUANTIZATION" \
+      CURRENT_HARDWARE_CHIP_MODEL="$HARDWARE_CHIP_MODEL" \
+      CURRENT_DTYPE="$DTYPE" \
       CURRENT_VLLM_HUST_REPO="$VLLM_HUST_REPO" \
       CURRENT_VLLM_ASCEND_HUST_REPO="$VLLM_ASCEND_HUST_REPO" \
-      CURRENT_VLLM_CACHE_ROOT="$CI_RUNTIME_ROOT/current-ascend-same-spec-cache" \
+      CURRENT_VLLM_CACHE_ROOT="$CURRENT_VLLM_CACHE_ROOT" \
       CURRENT_GITHUB_REPOSITORY="vLLM-HUST/vllm-hust" \
       CURRENT_GITHUB_REF="$VLLM_HUST_REF" \
       CURRENT_GIT_COMMIT="$current_vllm_hust_commit" \
@@ -699,8 +1003,15 @@ run_same_spec_current_benchmark() {
       RUN_ID="$RUN_ID" \
       CURRENT_SERVER_PORT="$PORT" \
       CURRENT_CLIENT_PORT="$PORT" \
+      READY_TIMEOUT_SECONDS="$SAME_SPEC_READY_TIMEOUT_SECONDS" \
+      CLIENT_READY_CHECK_TIMEOUT_SECONDS="$SAME_SPEC_CLIENT_READY_TIMEOUT_SECONDS" \
       CONSTRAINTS_FILE="$SAME_SPEC_CONSTRAINTS_FILE" \
-      bash "$same_spec_runner" "$SAME_SPEC_SPEC_FILE"
+      bash "$same_spec_runner" "$effective_same_spec_file" || same_spec_exit_code=$?
+  fi
+
+  if [[ "$same_spec_exit_code" -ne 0 ]]; then
+    print_same_spec_server_log_tail
+    return "$same_spec_exit_code"
   fi
 
   if [[ ! -f "$same_spec_raw_result" ]]; then
@@ -714,6 +1025,7 @@ run_same_spec_current_benchmark() {
   local validation_status=0
   validate_benchmark_result_file "$same_spec_raw_result" || validation_status=$?
   if [[ "$validation_status" -ne 0 ]]; then
+    print_same_spec_server_log_tail
     return "$validation_status"
   fi
 
@@ -759,6 +1071,32 @@ if completed == 0 and failed > 0:
 
 print(f"validated benchmark result: completed={completed}, failed={failed}, total_input={total}")
 PY
+}
+
+sync_benchmark_publication_to_github() {
+  local publisher_script=${BENCHMARK_PUBLICATION_SYNC_SCRIPT:-$VLLM_ASCEND_HUST_REPO/.github/workflows/scripts/sync_benchmark_snapshots_to_github.sh}
+
+  if [[ "$PUBLISH_TO_BENCHMARK_REPO" != "1" ]]; then
+    return 0
+  fi
+
+  if [[ ! -x "$publisher_script" ]]; then
+    echo "benchmark publication sync script is missing or not executable: $publisher_script" >&2
+    return 2
+  fi
+
+  BENCHMARK_REPO_DIR="$VLLM_HUST_BENCHMARK_REPO" \
+  WEBSITE_REPO_DIR="$VLLM_HUST_WEBSITE_REPO" \
+  CURRENT_SUBMISSION_DIR="$SUBMISSION_DIR" \
+  VLLM_HUST_REPO_DIR="$VLLM_HUST_REPO" \
+  LOCAL_SNAPSHOT_OUTPUT_DIR="$AGGREGATE_OUTPUT_DIR" \
+  PYTHON_BIN="$PYTHON_BIN" \
+  BENCHMARK_REPO_SLUG="${BENCHMARK_REPO_SLUG:-vLLM-HUST/vllm-hust-benchmark}" \
+  BENCHMARK_REPO_GH_TOKEN="${BENCHMARK_REPO_GH_TOKEN:-}" \
+  BENCHMARK_REPO_SSH_KEY="${BENCHMARK_REPO_SSH_KEY:-}" \
+  SNAPSHOT_COMMIT_MESSAGE="chore(data): sync vllm-ascend benchmark publication $RUN_ID" \
+  RUN_ID="$RUN_ID" \
+  "$publisher_script"
 }
 
 allocate_local_port() {
@@ -1045,6 +1383,7 @@ echo "run id: $RUN_ID"
 echo "result root: $RESULT_ROOT"
 echo "benchmark port: $PORT"
 echo "benchmark scenario: $BENCH_SCENARIO"
+echo "publish to benchmark repo: $PUBLISH_TO_BENCHMARK_REPO"
 echo "publish to hf: $PUBLISH_TO_HF"
 echo "same-spec benchmark enabled: $SAME_SPEC_BENCHMARK_ENABLED"
 echo "ascend benchmark use sudo: $ASCEND_BENCHMARK_USE_SUDO"
@@ -1073,26 +1412,31 @@ case "$BENCH_SCENARIO" in
     )
     ;;
   sharegpt-online)
-    if [[ -z "$BENCH_DATASET_PATH" ]]; then
-      echo "BENCH_DATASET_PATH is required for sharegpt-online" >&2
-      exit 2
-    fi
-    if [[ -z "$BENCH_CONSTRAINTS_FILE" ]]; then
-      echo "BENCH_CONSTRAINTS_FILE is required for sharegpt-online" >&2
-      exit 2
-    fi
     EFFECTIVE_INPUT_LEN=${BENCH_INPUT_LEN:-1024}
     EFFECTIVE_OUTPUT_LEN=${BENCH_OUTPUT_LEN:-256}
-    EFFECTIVE_CONSTRAINTS_FILE="$BENCH_CONSTRAINTS_FILE"
-    bench_args=(
-      --backend vllm
-      --endpoint /v1/completions
-      --dataset-name sharegpt
-      --dataset-path "$BENCH_DATASET_PATH"
-      --num-prompts "$BENCH_NUM_PROMPTS"
-      --request-rate "$BENCH_REQUEST_RATE"
-      --max-concurrency "$BENCH_MAX_CONCURRENCY"
-    )
+    if [[ "$SAME_SPEC_BENCHMARK_ENABLED" == "1" ]]; then
+      EFFECTIVE_CONSTRAINTS_FILE=$SAME_SPEC_CONSTRAINTS_FILE
+      bench_args=()
+    else
+      if [[ -z "$BENCH_DATASET_PATH" ]]; then
+        echo "BENCH_DATASET_PATH is required for sharegpt-online" >&2
+        exit 2
+      fi
+      if [[ -z "$BENCH_CONSTRAINTS_FILE" ]]; then
+        echo "BENCH_CONSTRAINTS_FILE is required for sharegpt-online" >&2
+        exit 2
+      fi
+      EFFECTIVE_CONSTRAINTS_FILE="$BENCH_CONSTRAINTS_FILE"
+      bench_args=(
+        --backend vllm
+        --endpoint /v1/completions
+        --dataset-name sharegpt
+        --dataset-path "$BENCH_DATASET_PATH"
+        --num-prompts "$BENCH_NUM_PROMPTS"
+        --request-rate "$BENCH_REQUEST_RATE"
+        --max-concurrency "$BENCH_MAX_CONCURRENCY"
+      )
+    fi
     ;;
   *)
     echo "Unsupported BENCH_SCENARIO: $BENCH_SCENARIO" >&2
@@ -1110,7 +1454,8 @@ if [[ ! -f "$EFFECTIVE_CONSTRAINTS_FILE" ]]; then
   exit 2
 fi
 
-if [[ "$BENCH_SCENARIO" == "random-online" && "$SAME_SPEC_BENCHMARK_ENABLED" == "1" ]]; then
+if [[ "$SAME_SPEC_BENCHMARK_ENABLED" == "1" ]]; then
+  resolve_same_spec_spec_file
   for start_attempt in $(seq 1 "$SERVER_START_RETRIES"); do
     if [[ "$CHIP_COUNT" == "1" ]]; then
       configure_single_card_ascend_device "$start_attempt"
@@ -1125,6 +1470,10 @@ if [[ "$BENCH_SCENARIO" == "random-online" && "$SAME_SPEC_BENCHMARK_ENABLED" == 
     if [[ "$runtime_ready_status" -ne 0 ]]; then
       echo "Ascend runtime did not become ready after ${ASCEND_RUNTIME_READY_TIMEOUT_SECONDS}s before same-spec benchmark startup"
       if [[ "$runtime_ready_status" -eq "$SUDO_AUTH_EXIT_CODE" ]]; then
+        exit "$runtime_ready_status"
+      fi
+      if [[ "$runtime_ready_status" -eq "$NODE_ENV_FAILURE_EXIT_CODE" ]]; then
+        echo "Detected Ascend node environment failure during same-spec runtime readiness; not retrying across devices."
         exit "$runtime_ready_status"
       fi
       if [[ "$start_attempt" -lt "$SERVER_START_RETRIES" ]]; then
@@ -1179,6 +1528,10 @@ else
       if [[ "$runtime_ready_status" -eq "$SUDO_AUTH_EXIT_CODE" ]]; then
         exit "$runtime_ready_status"
       fi
+      if [[ "$runtime_ready_status" -eq "$NODE_ENV_FAILURE_EXIT_CODE" ]]; then
+        echo "Detected Ascend node environment failure during runtime readiness; not retrying server startup across devices."
+        exit "$runtime_ready_status"
+      fi
       if [[ "$start_attempt" -lt "$SERVER_START_RETRIES" ]]; then
         echo "Retrying server start after runtime readiness failure in ${SERVER_START_RETRY_DELAY_SECONDS}s (attempt ${start_attempt}/${SERVER_START_RETRIES})"
         sleep "$SERVER_START_RETRY_DELAY_SECONDS"
@@ -1195,8 +1548,24 @@ else
 
     for attempt in $(seq 1 "$server_ready_max_attempts"); do
       if curl -fsS "http://$HOST:$PORT/v1/models" >/dev/null; then
-        server_ready=1
-        break 2
+        if wait_for_completions_smoke; then
+          server_ready=1
+          break 2
+        fi
+        echo "vLLM server models endpoint is ready, but completions smoke failed"
+        cat "$SERVER_LOG"
+        if server_log_indicates_resource_busy; then
+          if [[ "$start_attempt" -lt "$SERVER_START_RETRIES" ]]; then
+            echo "Detected transient Ascend resource busy state after completions smoke failure; retrying server start in ${SERVER_START_RETRY_DELAY_SECONDS}s (attempt ${start_attempt}/${SERVER_START_RETRIES})"
+            cleanup
+            sleep "$SERVER_START_RETRY_DELAY_SECONDS"
+            break
+          fi
+
+          echo "Detected transient Ascend resource busy state after exhausting ${SERVER_START_RETRIES} start attempt(s)"
+          exit "$RESOURCE_BUSY_EXIT_CODE"
+        fi
+        exit 1
       fi
 
       if ! kill -0 "$server_pid" 2>/dev/null; then
@@ -1277,7 +1646,7 @@ PY
     --benchmark-result-file "$RAW_RESULT_FILE" \
     --constraints-file "$EFFECTIVE_CONSTRAINTS_FILE" \
     --run-id "$RUN_ID" \
-    --engine vllm-ascend-hust \
+    --engine vllm-hust \
     --engine-version "$ENGINE_VERSION" \
     --model-name "$MODEL_NAME" \
     --model-parameters "$MODEL_PARAMETERS" \
@@ -1301,6 +1670,10 @@ PY
     --submissions-dir "$SUBMISSIONS_ROOT"
 fi
 
+if [[ "$PUBLISH_TO_BENCHMARK_REPO" == "1" ]]; then
+  sync_benchmark_publication_to_github
+fi
+
 if [[ "$PUBLISH_TO_HF" == "1" ]]; then
   if [[ -z "$HF_REPO_ID" ]]; then
     echo "HF_REPO_ID must be set when PUBLISH_TO_HF=1" >&2
@@ -1314,7 +1687,7 @@ if [[ "$PUBLISH_TO_HF" == "1" ]]; then
     --submissions-prefix submissions-auto \
     --commit-message "chore: sync vllm-hust benchmark from vllm-ascend-hust $RUN_ID (${ASCEND_HUST_TARGET_REPOSITORY}@${ASCEND_HUST_TARGET_REF}:${ASCEND_HUST_TARGET_SHA_SHORT})" \
     --execute
-else
+elif [[ "$PUBLISH_TO_BENCHMARK_REPO" != "1" ]]; then
   "${PYTHON_BIN}" -m vllm_hust_benchmark.cli publish-website \
     --source-dir "$SUBMISSIONS_ROOT" \
     --output-dir "$AGGREGATE_OUTPUT_DIR" \

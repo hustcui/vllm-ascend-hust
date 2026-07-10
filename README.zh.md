@@ -1,110 +1,221 @@
+<!-- markdownlint-disable MD013 MD033 MD041 -->
+
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/vllm-project/vllm-ascend/main/docs/source/logos/vllm-ascend-logo-text-dark.png">
-    <img alt="vllm-ascend" src="https://raw.githubusercontent.com/vllm-project/vllm-ascend/main/docs/source/logos/vllm-ascend-logo-text-light.png" width=55%>
+    <img alt="vLLM Ascend logo" src="https://raw.githubusercontent.com/vllm-project/vllm-ascend/main/docs/source/logos/vllm-ascend-logo-text-light.png" width="420">
   </picture>
 </p>
 
 <h3 align="center">
-vLLM Ascend Plugin
+与 vLLM-HUST 配套维护的 Ascend/NPU 插件 fork
 </h3>
 
 <p align="center">
-| <a href="https://www.hiascend.com/en/"><b>关于昇腾</b></a> | <a href="https://docs.vllm.ai/projects/ascend/en/latest/"><b>官方文档</b></a> | <a href="https://slack.vllm.ai"><b>#sig-ascend</b></a> | <a href="https://discuss.vllm.ai/c/hardware-support/vllm-ascend-support"><b>用户论坛</b></a> | <a href="https://tinyurl.com/vllm-ascend-meeting"><b>社区例会</b></a> |
+| <a href="https://www.hiascend.com/"><b>关于 Ascend</b></a> |
+<a href="https://docs.vllm.ai/projects/ascend/zh-cn/latest/"><b>上游 Ascend 文档</b></a> |
+<a href="https://github.com/vllm-project/vllm-ascend"><b>上游 vLLM Ascend</b></a> |
+<a href="https://github.com/vLLM-HUST/vllm-hust"><b>HUST 核心 fork</b></a> |
+<a href="README.md"><b>English</b></a> |
 </p>
 
-<p align="center">
-<a href="README.md"><b>English</b></a> | <a><b>中文</b></a>
-</p>
+# vLLM-Ascend-HUST
 
----
-*最新消息* 🔥
+`vLLM-Ascend-HUST` 是 HUST 维护的
+[`vllm-project/vllm-ascend`](https://github.com/vllm-project/vllm-ascend)
+后端插件 fork。它必须和
+[`vllm-hust`](https://github.com/vLLM-HUST/vllm-hust) 这个核心 vLLM fork
+成对使用、成对测试、成对发布。
 
-- [2026/05] 我们发布了新的正式版本 [v0.18.0](https://github.com/vllm-project/vllm-ascend/releases/tag/v0.18.0)! 请按照[官方指南](https://docs.vllm.ai/projects/ascend/en/v0.18.0/)开始在Ascend上部署vLLM Ascend Plugin。
-- [2026/02] 我们发布了新的正式版本 [v0.13.0](https://github.com/vllm-project/vllm-ascend/releases/tag/v0.13.0)! 请按照[官方指南](https://docs.vllm.ai/projects/ascend/en/v0.13.0/)开始在Ascend上部署vLLM Ascend Plugin。
-- [2025/12] 我们发布了新的正式版本 [v0.11.0](https://github.com/vllm-project/vllm-ascend/releases/tag/v0.11.0)! 请按照[官方指南](https://docs.vllm.ai/projects/ascend/en/v0.11.0/)开始在Ascend上部署vLLM Ascend Plugin。
-- [2025/09] 我们发布了新的正式版本 [v0.9.1](https://github.com/vllm-project/vllm-ascend/releases/tag/v0.9.1)! 请按照[官方指南](https://docs.vllm.ai/projects/ascend/en/v0.9.1/tutorials/large_scale_ep.html)开始在Ascend上部署大型专家并行 (EP)。
-- [2025/08] 我们与vLLM和腾讯合作举办了[vLLM北京Meetup](https://mp.weixin.qq.com/s/7n8OYNrCC_I9SJaybHA_-Q)，！请在[这里](https://drive.google.com/drive/folders/1Pid6NSFLU43DZRi0EaTcPgXsAzDvbBqF)找到演讲材料。
-- [2025/06] [用户案例](https://docs.vllm.ai/projects/ascend/en/latest/community/user_stories/index.html)现已上线！展示了LLaMA-Factory/verl/TRL/GPUStack等用户案例，展示了vLLM Ascend如何帮助昇腾用户在模型微调、评估、强化学习 (RL) 以及部署等场景中提升体验。
-- [2025/06] [贡献者](https://docs.vllm.ai/projects/ascend/en/latest/community/contributors.html)页面现已上线！所有的贡献都值得被记录，感谢所有的贡献者。
-- [2025/05] 我们发布了首个正式版本 [v0.7.3](https://github.com/vllm-project/vllm-ascend/releases/tag/v0.7.3)！我们与 vLLM 社区合作发布了一篇博客文章，分享了我们的实践：[Introducing vLLM Hardware Plugin, Best Practice from Ascend NPU](https://blog.vllm.ai/2025/05/12/hardware-plugin.html)。
-- [2025/03] 我们和vLLM团队举办了[vLLM Beijing Meetup](https://mp.weixin.qq.com/s/CGDuMoB301Uytnrkc2oyjg)! 你可以在[这里](https://drive.google.com/drive/folders/1Pid6NSFLU43DZRi0EaTcPgXsAzDvbBqF)找到演讲材料.
-- [2025/02] vLLM社区正式创建了[vllm-project/vllm-ascend](https://github.com/vllm-project/vllm-ascend)仓库，让vLLM可以无缝运行在Ascend NPU。
-- [2024/12] 我们正在与 vLLM 社区合作，以支持 [[RFC]: Hardware pluggable](https://github.com/vllm-project/vllm/issues/11162).
+本仓库保留上游 vLLM Ascend 插件身份，同时承载 HUST Ascend/NPU 实验所需的本地
+补丁、脚本、自定义 kernel 和托管服务集成。
 
----
+## 来自上游 vLLM Ascend 的能力
 
-## 总览
+上游 `vllm-ascend` 项目为 vLLM 提供 Ascend 后端插件，主要包括：
 
-vLLM 昇腾插件 (`vllm-ascend`) 是一个由社区维护的让vLLM在Ascend NPU无缝运行的后端插件。
+- NPU 平台注册和设备集成
+- Ascend 硬件上的模型执行支持
+- 自定义算子和 kernel 集成路径
+- worker、attention、sampling、分布式运行时适配
+- 在 Ascend 设备上运行 vLLM 的官方文档
+- vLLM Ascend SIG 社区支持
 
-此插件是 vLLM 社区中支持昇腾后端的推荐方式。它遵循[[RFC]: Hardware pluggable](https://github.com/vllm-project/vllm/issues/11162)所述原则：通过解耦的方式提供了vLLM对Ascend NPU的支持。
+通用 Ascend 插件使用说明请优先参考上游文档：
+<https://docs.vllm.ai/projects/ascend/zh-cn/latest/>。
 
-使用 vLLM 昇腾插件，可以让类Transformer、混合专家(MOE)、嵌入、多模态等流行的大语言模型在 Ascend NPU 上无缝运行。
+## HUST 额外维护什么
 
-## 关于本分支
+HUST 侧改动主要服务本地科研实验和托管 NPU 服务流程：
 
-本仓库由 [vLLM-HUST](https://github.com/vLLM-HUST) 维护，专注于 **vLLM Ascend 后端的算子级优化**。工作内容包括：
+- 和 `vllm-hust` 的成对兼容。
+- 模型加载、工具调用解析、采样、调度、worker 行为等 Ascend 侧补丁。
+- 本地自定义 kernel 编译开关和 kernel 开发辅助脚本。
+- 单 NPU 本地测试环境脚本。
+- 和 dev-hub `manage.sh` 托管服务流程配套的运行时 glue code。
+- 上游 merge/version metadata，用来持续暴露 fork drift。
 
-- 自定义 Ascend 算子（CANN/TIK）的开发和优化
-- Attention、MoE 等关键算子的性能调优
-- 与华为昇腾硬件特性的深度集成
+插件应尽量保持清晰。核心 vLLM 行为放在 `vllm-hust`；Ascend-only 运行时行为放在
+本仓库。
 
-## 准备
+## 仓库结构
 
-- 硬件：Atlas 800I A2 Inference系列、Atlas A2 Training系列、Atlas 800I A3 Inference系列、Atlas A3 Training系列、Atlas 300I Duo（实验性支持）
-- 操作系统：Linux
-- 软件：
-    - Python >= 3.10, < 3.12
-    - CANN == 8.5.1 (Ascend HDK 版本参考[这里](https://www.hiascend.com/document/detail/zh/canncommercial/83RC2/releasenote/releasenote_0000.html))
-    - PyTorch == 2.9.0, torch-npu == 2.9.0
-    - vLLM (与vllm-ascend版本一致)
+| 路径 | 作用 |
+| --- | --- |
+| `vllm_ascend/` | Python 插件包和 Ascend 运行时补丁。 |
+| `csrc/` | 可选 C/C++/kernel 源码和第三方 kernel 依赖。 |
+| `scripts/` | 本地安装、Ascend 环境和调试辅助脚本。 |
+| `tests/` | 插件侧测试和 smoke 覆盖。 |
+| `upstream_version.json` | 当前上游锚点和 HUST 版本基线。 |
+| `AGENTS.md` | AI 辅助改动必须遵守的工作流规则。 |
 
-## 开始使用
+## 配套 HUST 仓库
 
-推荐您使用以下版本快速开始使用：
+| 仓库 | 作用 |
+| --- | --- |
+| [`vllm-hust`](https://github.com/vLLM-HUST/vllm-hust) | 核心 vLLM fork。 |
+| [`vllm-ascend-hust`](https://github.com/vLLM-HUST/vllm-ascend-hust) | Ascend/NPU 插件 fork。 |
+| [`vllm-hust-dev-hub`](https://github.com/vLLM-HUST/vllm-hust-dev-hub) | 多仓开发工作区、托管服务脚本和 NPU smoke test 入口。 |
+| [`vllm-hust-benchmark`](https://github.com/vLLM-HUST/vllm-hust-benchmark) | Benchmark 编排和结果导出。 |
+| [`vllm-hust-perf-analyzer`](https://github.com/vLLM-HUST/vllm-hust-perf-analyzer) | 离线 profiler timeline 分析。 |
 
-| Version    | Release type | Doc                                  |
-|------------|--------------|--------------------------------------|
-|v0.19.1rc1| 最新RC版本 |请查看[快速开始](https://docs.vllm.ai/projects/ascend/en/latest/quick_start.html)和[安装指南](https://docs.vllm.ai/projects/ascend/en/latest/installation.html)了解更多|
-|v0.18.0| 最新正式/稳定版本 |[快速开始](https://docs.vllm.ai/projects/ascend/en/v0.18.0/quick_start.html) and [安装指南](https://docs.vllm.ai/projects/ascend/en/v0.18.0/installation.html)了解更多|
+不要随意把这个插件装到不匹配的 vLLM checkout 上。这样容易掩盖 ABI、API 或运行时
+契约的不一致。除非分支说明另有要求，否则两个 HUST 仓库都应使用配套的 `main`。
 
-## 贡献
+## 版本规则
 
-请参考[CONTRIBUTING](https://docs.vllm.ai/projects/ascend/en/latest/developer_guide/contribution/index.html)文档了解更多关于开发环境搭建、功能测试以及 PR 提交规范的信息。
+本仓库和 `vllm-hust` 使用同一套上游锚定版本规则：
 
-我们欢迎并重视任何形式的贡献与合作：
+```text
+<上游 release>.post1.dev<HUST-only commit 数>+g<短 sha>
+```
 
-- 请通过[Issue](https://github.com/vllm-project/vllm-ascend/issues)来告知我们您遇到的任何Bug。
-- 请通过[用户论坛](https://discuss.vllm.ai/c/hardware-support/vllm-ascend-support)来交流使用问题和寻求帮助。
+`upstream_version.json` 是版本锚点来源：
 
-## 分支策略
+- `upstream_commit`：已经包含进 fork commit graph 的精确上游提交。
+- `upstream_version`：上游兼容版本号；如果上游处于 rc，就保留 rc 后缀。
+- `release_version`：去掉 rc 后缀后的上游 release 行。
 
-vllm-ascend有主干分支和开发分支。
+每次完成上游同步后，都要确认 fork 对上游 behind 为 0：
 
-- **main**: 主干分支，与vLLM的主干分支对应，并通过昇腾CI持续进行质量看护。
-- **releases/vX.Y.Z**: 开发分支，随vLLM部分新版本发布而创建，比如`releases/v0.13.0`是vllm-ascend针对vLLM `v0.13.0` 版本的开发分支。
+```bash
+git fetch upstream main
+git rev-list --left-right --count origin/main...upstream/main
+# <HUST-only commits>  0
+```
 
-下面是维护中的分支：
+左侧数字是 HUST-only delta；右侧数字应该是 `0`。
 
-| 分支              | 状态         | 备注                  |
-|------------------|--------------|----------------------|
-| main             | Maintained   | 基于vLLM main分支和vLLM最新版本（v0.18.0）CI看护   |
-| v0.7.1-dev       | Unmaintained | 不再维护 |
-| v0.7.3-dev       | Unmaintained | 只允许Bug修复，不会再发布新版本 |
-| v0.9.1-dev       | Unmaintained | 只允许Bug修复，不会再发布新版本 |
-| v0.11.0-dev      | Unmaintained | 只允许Bug修复，不会再发布新版本 |
-| releases/v0.13.0 | Maintained   | 基于vLLM v0.13.0版本CI看护 |
-| releases/v0.18.0 | Maintained   | 基于vLLM v0.18.0版本CI看护 |
-| rfc/feature-name | Maintained   | 为协作创建的[特性分支](https://docs.vllm.ai/projects/ascend/en/latest/community/versioning_policy.html#feature-branches) |
+## 开发安装
 
-请参阅[版本策略](https://docs.vllm.ai/projects/ascend/en/latest/community/versioning_policy.html)了解更多详细信息。
+统一使用 `uv` 和配套 `vllm-hust` 的虚拟环境。不要使用系统 `python3` 或裸 `pip`。
 
-## 社区例会
+先安装核心 fork：
 
-- vLLM Ascend 每周社区例会: <https://tinyurl.com/vllm-ascend-meeting>
-- 每周三下午，15:00 - 16:00 (UTC+8, [查看您的时区](https://dateful.com/convert/gmt8?t=15))
+```bash
+cd /path/to/vllm-hust
+uv venv --python 3.12
+source .venv/bin/activate
+VLLM_USE_PRECOMPILED=1 uv pip install -e . --torch-backend=auto
+```
 
-## 许可证
+再安装 Ascend 插件：
 
-Apache 许可证 2.0，如 [LICENSE](./LICENSE) 文件中所示。
+```bash
+cd /path/to/vllm-ascend-hust
+COMPILE_CUSTOM_KERNELS=0 uv pip install -e . --no-deps
+```
+
+在 HUST 本地机器上，优先使用仓库自带安装脚本：
+
+```bash
+cd /path/to/vllm-ascend-hust
+bash scripts/install_local_ascend_plugin.sh /path/to/vllm-ascend-hust
+```
+
+如果当前改动涉及自定义 kernel，再根据本机 Ascend/CANN 环境设置对应编译变量。
+
+## Ascend 环境
+
+单设备本地测试可以先加载脚本：
+
+```bash
+cd /path/to/vllm-ascend-hust
+source scripts/use_single_ascend_env.sh /usr/local/Ascend/ascend-toolkit/latest
+```
+
+然后确认插件能和配套 vLLM checkout 一起导入：
+
+```bash
+VLLM_PLUGINS=ascend \
+VLLM_TARGET_DEVICE=npu \
+.venv/bin/python -c "import vllm, vllm_ascend; print(vllm.__version__)"
+```
+
+在共享机器上只能使用分配给当前任务的设备。当前 HUST smoke workflow 默认只允许使用
+NPU 1，除非操作者明确指定其他设备。
+
+## 托管 NPU Smoke Test
+
+接近生产服务的测试必须通过 dev-hub 启动：
+
+```bash
+cd /path/to/vllm-hust-dev-hub
+./manage.sh status
+./manage.sh restart
+./manage.sh health --json
+```
+
+这样可以保证环境变量、设备选择、端口、日志和清理流程都和 HUST 实验服务一致。
+
+## 校验清单
+
+README-only 改动：
+
+```bash
+git diff --check -- README.md README.zh.md
+```
+
+插件 Python 改动：
+
+```bash
+.venv/bin/python -m py_compile path/to/file.py
+pre-commit run --files path/to/file.py
+```
+
+上游 merge：
+
+```bash
+git diff --name-only --diff-filter=U
+git rev-list --left-right --count origin/main...upstream/main
+git submodule status --recursive
+```
+
+涉及 NPU 运行时的改动，还要通过 dev-hub 的 `manage.sh` 在 NPU 1 上做 smoke test。
+
+## 上游同步流程
+
+1. fetch upstream，从 `origin/main` 拉出 staging 分支。
+2. 优先把 `upstream/main` 真实 merge 进 staging 分支。
+3. 解决冲突时，Ascend-only delta 留在本仓库；核心行为尽量放回 `vllm-hust`。
+4. 更新 `upstream_version.json` 和派生包版本。
+5. 校验导入、语法、submodule 和 NPU smoke 行为。
+6. 合并 staging PR 后拉取 `main`，确认对上游 behind 为 0。
+
+日常同步尽量不要继续堆 cherry-pick/backport；能真实 merge upstream graph 时就真实
+merge。
+
+## 文档与社区
+
+- 上游 vLLM Ascend 文档：<https://docs.vllm.ai/projects/ascend/zh-cn/latest/>
+- 上游 vLLM Ascend 仓库：<https://github.com/vllm-project/vllm-ascend>
+- 上游 vLLM 仓库：<https://github.com/vllm-project/vllm>
+- HUST 核心 fork：<https://github.com/vLLM-HUST/vllm-hust>
+- HUST 组织：<https://github.com/vLLM-HUST>
+- HUST agent 工作流：[`AGENTS.md`](AGENTS.md)
+
+English documentation is available in [`README.md`](README.md).
+
+## License
+
+本仓库继承上游 vLLM Ascend 的许可协议。详情见 [`LICENSE`](LICENSE) 和上游声明。

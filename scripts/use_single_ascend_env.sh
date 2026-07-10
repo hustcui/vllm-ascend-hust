@@ -23,10 +23,18 @@ if ! hust_ascend_manager_available; then
 fi
 
 ASCEND_ROOT_ARG="${1:-}"
+manager_env=""
+manager_env_status=0
 if [[ -n "${ASCEND_ROOT_ARG}" ]]; then
-  eval "$(hust_ascend_manager_run env --shell --ascend-root "${ASCEND_ROOT_ARG}")"
+  manager_env="$(hust_ascend_manager_run env --shell --ascend-root "${ASCEND_ROOT_ARG}")" || manager_env_status=$?
 else
-  eval "$(hust_ascend_manager_run env --shell)"
+  manager_env="$(hust_ascend_manager_run env --shell)" || manager_env_status=$?
+fi
+
+if [[ "${manager_env_status}" -eq 0 ]]; then
+  eval "${manager_env}"
+else
+  echo "[WARN] hust-ascend-manager env failed; falling back to local CANN set_env.sh discovery." >&2
 fi
 
 if [[ -n "${HUST_ATB_SET_ENV:-}" && -f "${HUST_ATB_SET_ENV}" ]]; then
@@ -34,6 +42,75 @@ if [[ -n "${HUST_ATB_SET_ENV:-}" && -f "${HUST_ATB_SET_ENV}" ]]; then
   source "${HUST_ATB_SET_ENV}" --cxx_abi=1
   set -u
 fi
+
+cann_tbe_python_bin() {
+  local python_bin="${PYTHON_BIN:-}"
+
+  if [[ -n "${python_bin}" && -x "${python_bin}" ]]; then
+    printf '%s\n' "${python_bin}"
+    return 0
+  fi
+
+  hust_resolve_python_bin
+}
+
+python_can_import_tbe() {
+  local python_bin
+  python_bin="$(cann_tbe_python_bin 2>/dev/null)" || return 1
+
+  "${python_bin}" - <<'PY' >/dev/null 2>&1
+import tbe  # noqa: F401
+PY
+}
+
+source_cann_set_env_if_present() {
+  local set_env_file="$1"
+  local source_status
+
+  if [[ -z "${set_env_file}" || ! -f "${set_env_file}" ]]; then
+    return 1
+  fi
+
+  echo "[INFO] Sourcing CANN environment: ${set_env_file}"
+  source_status=0
+  set +u
+  # shellcheck source=/dev/null
+  source "${set_env_file}" || source_status=$?
+  set -u
+  return "${source_status}"
+}
+
+ensure_cann_tbe_env() {
+  local candidate
+  local candidates=(
+    "${ASCEND_HOME_PATH:-}/set_env.sh"
+    "${ASCEND_TOOLKIT_HOME:-}/set_env.sh"
+    "${ASCEND_TOOLKIT_LATEST_HOME:-}/set_env.sh"
+    "${CONDA_PREFIX:-}/Ascend/cann/set_env.sh"
+    /usr/local/Ascend/cann-*/set_env.sh
+    "/usr/local/Ascend/ascend-toolkit/latest/set_env.sh"
+    "/usr/local/Ascend/ascend-toolkit/set_env.sh"
+  )
+
+  if [[ -n "${ASCEND_HOME_PATH:-}" && -n "${ASCEND_OPP_PATH:-}" ]] && python_can_import_tbe; then
+    return 0
+  fi
+
+  for candidate in "${candidates[@]}"; do
+    if source_cann_set_env_if_present "${candidate}" && [[ -n "${ASCEND_HOME_PATH:-}" && -n "${ASCEND_OPP_PATH:-}" ]] && python_can_import_tbe; then
+      return 0
+    fi
+  done
+
+  echo "[ERROR] CANN TBE Python module is unavailable to the benchmark Python." >&2
+  echo "[ERROR] ASCEND_HOME_PATH=${ASCEND_HOME_PATH:-<unset>}" >&2
+  echo "[ERROR] ASCEND_OPP_PATH=${ASCEND_OPP_PATH:-<unset>}" >&2
+  echo "[ERROR] PYTHON_BIN=$(cann_tbe_python_bin 2>/dev/null || printf '<unresolved>')" >&2
+  echo "[ERROR] Source the correct CANN set_env.sh or install the CANN TBE component before running Ascend benchmarks." >&2
+  return 1
+}
+
+ensure_cann_tbe_env || return 1
 
 normalize_visible_devices() {
   local raw_value="${1:-}"

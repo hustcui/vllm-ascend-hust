@@ -24,6 +24,7 @@ This document provides instructions for contributors to the vLLM Ascend project.
     - [Model Runner Changes](#model-runner-changes)
 - [Commit Messages and Pull Requests](#commit-messages-and-pull-requests)
     - [Commit Message Format](#commit-message-format)
+    - [HUST Upstream-Sync Versioning](#hust-upstream-sync-versioning)
 - [Review Checklist](#review-checklist)
     - [Code Quality](#code-quality)
     - [Testing](#testing-1)
@@ -101,7 +102,7 @@ pytest -sv tests/ut/ops/test_prepare_finalize.py
 pytest -sv tests/ut/ops/test_prepare_finalize.py::test_prepare_inputs
 
 # Run NPU-specific tests (requires NPU hardware)
-pytest -sv tests/e2e/singlecard/test_piecewise_res_consistency.py
+pytest -sv tests/e2e/pull_request/one_card/aclgraph/test_aclgraph_accuracy.py::test_default_full_and_piecewise_res_consistency
 ```
 
 **Requirement**: Run all tests locally before requesting review. Verify tests pass on NPU hardware for NPU-specific changes.
@@ -289,6 +290,16 @@ Signed-off-by: Your Name <your.email@example.com>
 ```
 
 **Valid Types**: `feat`, `fix`, `perf`, `refactor`, `test`, `docs`, `chore`
+
+### HUST Upstream-Sync Versioning
+
+When merging `upstream/main` into `vLLM-Ascend-HUST/main`, update
+`upstream_version.json` in the same change and keep the fork behind upstream by
+zero commits. The package version must be derived from the upstream anchor plus
+the HUST-only commit count, using PEP 440 form
+`<release_version>.post1.dev<N>+g<sha>`. See
+`docs/source/community/versioning_policy.md` for the exact metadata fields and
+validation commands.
 
 **Good Examples:**
 
