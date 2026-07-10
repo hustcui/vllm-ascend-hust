@@ -8,7 +8,7 @@ from vllm.logger import logger
 from vllm.model_executor.models import ModelRegistry
 from vllm.model_executor.models.config import MambaModelConfig
 from vllm.utils.math_utils import cdiv
-from vllm.utils.torch_utils import STR_DTYPE_TO_TORCH_DTYPE
+from vllm.utils.torch_utils import get_kv_cache_torch_dtype
 from vllm.v1.kv_cache_interface import FullAttentionSpec, MambaSpec
 
 
@@ -32,10 +32,10 @@ def verify_and_update_config(cls, vllm_config) -> None:
     model_config = vllm_config.model_config
     parallel_config = vllm_config.parallel_config
 
-    if cache_config.cache_dtype == "auto":
-        kv_cache_dtype = model_config.dtype
-    else:
-        kv_cache_dtype = STR_DTYPE_TO_TORCH_DTYPE[cache_config.cache_dtype]
+    kv_cache_dtype = get_kv_cache_torch_dtype(
+        cache_config.cache_dtype,
+        model_config.dtype,
+    )
 
     # get attention page size (for 1 token)
     if model_config.use_mla:

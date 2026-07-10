@@ -306,6 +306,7 @@ class NPUModelRunner(GPUModelRunner):
 
         self.input_batch = AscendInputBatch(
             req_ids=req_ids,
+            finished_req_ids=set(scheduler_output.finished_req_ids),
             num_reqs=num_reqs,
             num_reqs_after_padding=num_reqs_padded,
             idx_mapping=idx_mapping,

@@ -64,6 +64,7 @@ from vllm.v1.kv_cache_interface import (
     MambaSpec,
     MLAAttentionSpec,
     UniformTypeKVCacheSpecs,
+    KIVIInt4FullAttentionSpec,
 )
 from vllm.v1.outputs import (
     EMPTY_MODEL_RUNNER_OUTPUT,
@@ -1729,6 +1730,7 @@ class NPUModelRunner(GPUModelRunner):
                     num_scheduled_tokens=scheduler_output.num_scheduled_tokens,
                     num_scheduled_tokens_np=num_scheduled_tokens_np,
                     cascade_attn_prefix_lens=cascade_attn_prefix_lens,
+                    finished_req_ids=set(scheduler_output.finished_req_ids),
                 )
 
             (
@@ -2458,6 +2460,7 @@ class NPUModelRunner(GPUModelRunner):
         num_scheduled_tokens: dict[str, int] | None = None,
         num_scheduled_tokens_np: np.ndarray | None = None,
         cascade_attn_prefix_lens: list[list[int]] | None = None,
+        finished_req_ids: set[str] | None = None,
     ) -> tuple[PerLayerAttnMetadata, CommonAttentionMetadata | None]:
         """
         :return: tuple[attn_metadata, spec_decode_common_attn_metadata]
@@ -2562,6 +2565,12 @@ class NPUModelRunner(GPUModelRunner):
             num_computed_tokens_cpu = None
             seq_lens_cpu_metadata = self.optimistic_seq_lens_cpu[:num_reqs_padded]
 
+        req_ids = list(self.input_batch.req_ids)
+        if len(req_ids) < num_reqs_padded:
+            req_ids.extend(
+                f"__pad_req_{idx}" for idx in range(len(req_ids), num_reqs_padded)
+            )
+
         cm_base = AscendCommonAttentionMetadata(
             query_start_loc=self.query_start_loc.gpu[: num_reqs_padded + 1],
             query_start_loc_cpu=self.query_start_loc.cpu[: num_reqs_padded + 1],
@@ -2582,6 +2591,8 @@ class NPUModelRunner(GPUModelRunner):
             num_input_tokens=num_tokens_padded,
             actual_seq_lengths_q=self.actual_seq_lengths_q,
             positions=self.positions,
+            req_ids=req_ids[:num_reqs_padded],
+            finished_req_ids=finished_req_ids,
             attn_state=self.attn_state,
             decode_token_per_req=self.decode_token_per_req,
             prefill_context_parallel_metadata=self.long_seq_metadata,
@@ -3190,7 +3201,48 @@ class NPUModelRunner(GPUModelRunner):
 
         head_size_v = kv_cache_spec.head_size_v if hasattr(kv_cache_spec, "head_size_v") else kv_cache_spec.head_size
         return kv_cache_spec.head_size, head_size_v
+    
+    def _get_kivi_component_layout(
+        self,
+        spec: KIVIInt4FullAttentionSpec,
+        num_blocks: int,
+    ) -> list[tuple[str, int, torch.dtype, tuple[int, ...]]]:
+        group_size = spec.kivi_group_size
+        pack_factor = 32 // spec.quant_bits  # int4 -> 8 values per int32
 
+        q_dtype = spec.quant_packed_dtype      # torch.int32
+        s_dtype = spec.scale_dtype             # fp16/bf16
+
+        q_bytes = get_dtype_size(q_dtype)
+        s_bytes = get_dtype_size(s_dtype)
+
+        block_size = spec.block_size
+        num_kv_heads = spec.num_kv_heads
+        head_size = spec.head_size
+
+        k_quant_shape = (num_blocks, num_kv_heads, head_size, block_size // pack_factor)
+        k_scale_shape = (num_blocks, num_kv_heads, head_size, block_size // group_size)
+        k_mn_shape = k_scale_shape
+
+        v_quant_shape = (num_blocks, block_size, num_kv_heads, head_size // pack_factor)
+        v_scale_shape = (num_blocks, block_size, num_kv_heads, head_size // group_size)
+        v_mn_shape = v_scale_shape
+
+        def nbytes(shape: tuple[int, ...], dtype: torch.dtype) -> int:
+            numel = 1
+            for x in shape:
+                numel *= x
+            return numel * get_dtype_size(dtype)
+
+        return [
+            ("k_quant", nbytes(k_quant_shape, q_dtype), q_dtype, k_quant_shape),
+            ("k_scale", nbytes(k_scale_shape, s_dtype), s_dtype, k_scale_shape),
+            ("k_mn",    nbytes(k_mn_shape, s_dtype), s_dtype, k_mn_shape),
+            ("v_quant", nbytes(v_quant_shape, q_dtype), q_dtype, v_quant_shape),
+            ("v_scale", nbytes(v_scale_shape, s_dtype), s_dtype, v_scale_shape),
+            ("v_mn",    nbytes(v_mn_shape, s_dtype), s_dtype, v_mn_shape),
+        ]
+        
     def _allocate_kv_cache_tensors(self, kv_cache_config: KVCacheConfig) -> dict[str, torch.Tensor]:
         """
         Initializes the KV cache buffer with the correct size. The buffer needs
@@ -3251,7 +3303,25 @@ class NPUModelRunner(GPUModelRunner):
                     # and rope head dim.
                     current_kv_cache_spec = layer_kv_cache_spec[layer_name]
                     assert isinstance(current_kv_cache_spec, AttentionSpec)
+                    if isinstance(current_kv_cache_spec, KIVIInt4FullAttentionSpec):
+                        assert kv_cache_tensor.size % current_kv_cache_spec.page_size_bytes == 0
+                        num_blocks = kv_cache_tensor.size // current_kv_cache_spec.page_size_bytes
 
+                        layout = self._get_kivi_component_layout(current_kv_cache_spec, num_blocks)
+                        raw_tensors = []
+                        for _, component_nbytes, _, _ in layout:
+                            if self.vllm_config.kv_transfer_config is None:
+                                t = torch.zeros(component_nbytes, dtype=torch.int8, device=self.device)
+                            else:
+                                t = torch.zeros(component_nbytes + alignment, dtype=torch.int8, device=self.device)
+                                t = self._align_memory(t, alignment)[:component_nbytes]
+                            raw_tensors.append(t)
+
+                        for layer_name_inner in kv_cache_tensor.shared_by:
+                            if "attn" in layer_name_inner and "linear_attn" not in layer_name_inner:
+                                kv_cache_raw_tensors[layer_name_inner] = tuple(raw_tensors)
+                        continue
+                    
                     if self.use_sparse:
                         # for deepseek v3.2, we split the kv cache according to the corresponding ratio
                         kv_cache_spec = layer_kv_cache_spec[layer_name]
@@ -3371,6 +3441,50 @@ class NPUModelRunner(GPUModelRunner):
                     # _allocate_kv_cache_tensors; route them to the dedicated
                     # elif branch below before the sparse branch tries to
                     # unpack them as a (k, v, dsa_k[, scale]) tuple.
+                    if isinstance(current_kv_cache_spec, KIVIInt4FullAttentionSpec):
+                        raw_k_quant, raw_k_scale, raw_k_mn, raw_v_quant, raw_v_scale, raw_v_mn = kv_cache_raw_tensors[layer_name]
+
+                        total_nbytes = (
+                            raw_k_quant.numel()
+                            + raw_k_scale.numel()
+                            + raw_k_mn.numel()
+                            + raw_v_quant.numel()
+                            + raw_v_scale.numel()
+                            + raw_v_mn.numel()
+                        )
+                        assert total_nbytes % current_kv_cache_spec.page_size_bytes == 0
+                        num_blocks = total_nbytes // current_kv_cache_spec.page_size_bytes
+                        assert num_blocks >= kv_cache_config.num_blocks
+
+                        layout = self._get_kivi_component_layout(current_kv_cache_spec, num_blocks)
+
+                        k_quant_dtype = current_kv_cache_spec.quant_packed_dtype
+                        scale_dtype = current_kv_cache_spec.scale_dtype
+
+                        _, _, _, k_quant_shape = layout[0]
+                        _, _, _, k_scale_shape = layout[1]
+                        _, _, _, k_mn_shape = layout[2]
+                        _, _, _, v_quant_shape = layout[3]
+                        _, _, _, v_scale_shape = layout[4]
+                        _, _, _, v_mn_shape = layout[5]
+
+                        k_quant_cache = raw_k_quant.view(k_quant_dtype).view(k_quant_shape)
+                        k_scale_cache = raw_k_scale.view(scale_dtype).view(k_scale_shape)
+                        k_mn_cache = raw_k_mn.view(scale_dtype).view(k_mn_shape)
+
+                        v_quant_cache = raw_v_quant.view(k_quant_dtype).view(v_quant_shape)
+                        v_scale_cache = raw_v_scale.view(scale_dtype).view(v_scale_shape)
+                        v_mn_cache = raw_v_mn.view(scale_dtype).view(v_mn_shape)
+
+                        kv_caches[layer_name] = (
+                            k_quant_cache,
+                            k_scale_cache,
+                            k_mn_cache,
+                            v_quant_cache,
+                            v_scale_cache,
+                            v_mn_cache,
+                        )
+                        continue
                     if self.use_sparse and "cache_only_layers" not in layer_name:
                         current_sparse_c8 = kv_cache_spec_uses_sparse_c8(current_kv_cache_spec)
                         if current_sparse_c8:

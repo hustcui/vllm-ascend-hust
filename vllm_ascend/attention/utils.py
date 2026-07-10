@@ -182,6 +182,11 @@ class AscendCommonAttentionMetadata(CommonAttentionMetadata):
     # Total number of tokens including padding, used for padding operations.
     num_input_tokens: int = 0
 
+    # Stable request ids aligned with batch rows.
+    req_ids: list[str] | None = None
+    # Request ids that finished between the previous and current steps.
+    finished_req_ids: set[str] | None = None
+
     # Metadata for Prefill Context Parallelism (PCP) operations.
     prefill_context_parallel_metadata: AscendPrefillContextParallelMetadata | None = None
     kvcomp_metadata: KVCompMetaData | None = None
@@ -212,6 +217,8 @@ class AscendCommonAttentionMetadata(CommonAttentionMetadata):
             attn_state=self.attn_state,
             graph_pad_size=-1,  # It should be -1 when not run in fullgraph mode.
             num_input_tokens=self.num_input_tokens,
+            req_ids=self.req_ids[:num_actual_reqs] if self.req_ids is not None else None,
+            finished_req_ids=self.finished_req_ids,
             prefill_context_parallel_metadata=self.prefill_context_parallel_metadata,
             max_seq_len=self.max_seq_len,
         )

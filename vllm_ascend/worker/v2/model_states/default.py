@@ -72,5 +72,6 @@ class AscendModelState(DefaultModelState):
             seq_lens_np=input_batch.seq_lens_np,
             positions=input_batch.positions,
             attn_state=input_batch.attn_state,
+            finished_req_ids=input_batch.finished_req_ids,
         )
         return self.attn_metadata

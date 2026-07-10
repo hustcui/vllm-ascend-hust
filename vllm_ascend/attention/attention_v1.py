@@ -15,13 +15,16 @@
 # This file is a part of the vllm-ascend project.
 #
 
+import math
 from dataclasses import dataclass
 from enum import Enum
-
+import time
 import torch
+from torch import nn
 import torch_npu
 import vllm.envs as envs_vllm
 from vllm.config import VllmConfig, get_current_vllm_config
+from vllm.logger import logger
 from vllm.distributed import get_tensor_model_parallel_rank, get_tensor_model_parallel_world_size
 from vllm.utils.math_utils import cdiv
 from vllm.v1.attention.backend import (  # type: ignore
@@ -62,6 +65,11 @@ from vllm_ascend.compilation.acl_graph import (
 )
 from vllm_ascend.device.device_op import DeviceOperator
 from vllm_ascend.ops.flashcomm2_oshard_manager import flashcomm2_oshard_manager
+from vllm_ascend.ops.triton.kivi_cache import (
+    kivi_dequant_gather_cache,
+    kivi_pack_key_cache,
+    kivi_pack_value_cache,
+)
 from vllm_ascend.utils import weak_ref_tensors
 from vllm_ascend.worker.kvcomp_utils import KVCompMetaData
 
@@ -112,13 +120,11 @@ class AscendAttentionBackend(AttentionBackend):
         dst_kv_cache: list[torch.Tensor],
         src_to_dst: torch.Tensor,
     ) -> None:
-        src_key_cache, src_value_cache = src_kv_cache[0], src_kv_cache[1]
-        dst_key_cache, dst_value_cache = dst_kv_cache[0], dst_kv_cache[1]
         src_indices = src_to_dst[:, 0]
         dst_indices = src_to_dst[:, 1]
 
-        dst_key_cache[dst_indices] = src_key_cache[src_indices].to(dst_key_cache.device)
-        dst_value_cache[dst_indices] = src_value_cache[src_indices].to(dst_key_cache.device)
+        for src_cache, dst_cache in zip(src_kv_cache, dst_kv_cache):
+            dst_cache[dst_indices] = src_cache[src_indices].to(dst_cache.device)
 
     @staticmethod
     def copy_blocks(
@@ -129,10 +135,8 @@ class AscendAttentionBackend(AttentionBackend):
         dst_indices = src_to_dists[:, 1]
 
         for kv_cache in kv_caches:
-            key_caches = kv_cache[0]
-            value_caches = kv_cache[1]
-            key_caches[dst_indices] = key_caches[src_indices]
-            value_caches[dst_indices] = value_caches[src_indices]
+            for component_cache in kv_cache:
+                component_cache[dst_indices] = component_cache[src_indices]
 
     @staticmethod
     def get_supported_kernel_block_sizes() -> list[int]:
@@ -196,6 +200,10 @@ class AscendMetadata:
     # and 1st slot in block 1, respectively.
     # (num_tokens,)
     slot_mapping: torch.Tensor = None
+    # Stable request ids aligned with batch rows.
+    req_ids: list[str] | None = None
+    # Request ids that finished between the previous and current steps.
+    finished_req_ids: set[str] | None = None
     # pcp
     prefill: AscendMetadataForPrefill | None = None
     # dcp
@@ -321,6 +329,12 @@ class AscendAttentionMetadataBuilder(AttentionMetadataBuilder[AscendMetadata]):
             max_query_len=common_attn_metadata.max_query_len,
             actual_seq_lengths_q=query_start_loc_cpu[1:].tolist(),
             slot_mapping=slot_mapping,
+            req_ids=(
+                list(common_attn_metadata.req_ids[:num_reqs])
+                if getattr(common_attn_metadata, "req_ids", None) is not None
+                else None
+            ),
+            finished_req_ids=getattr(common_attn_metadata, "finished_req_ids", None),
             attn_mask=attn_mask,
             attn_state=attn_state,
             num_prefills=num_prefills,
@@ -387,6 +401,61 @@ class AscendAttentionBackendImpl(AttentionImpl):
         self.num_queries_per_kv = self.num_heads // self.num_kv_heads
         self.key_cache = None
         self.value_cache = None
+        
+        # ★ 新增: INT8 静态 per-channel 量化
+        self.enable_int8 = (kv_cache_dtype == "int8")
+        self._int8_ready = False
+        self._k_inv_scale: torch.Tensor | None = None  # [1, num_kv_heads, head_size]
+        self._v_inv_scale: torch.Tensor | None = None
+        self._k_offset: torch.Tensor | None = None
+        self._v_offset: torch.Tensor | None = None
+        # 反量化参数 (BNSD 格式, 传给 NPU)
+        self._k_aq_scale = None
+        self._k_aq_offset = None
+        self._v_aq_scale = None
+        self._v_aq_offset = None
+        
+        self.enable_kivi = (kv_cache_dtype == "kivi_int4")
+        cache_config = getattr(self.vllm_config, "cache_config", None)
+        kivi_group_size = getattr(cache_config, "kivi_group_size", 128)
+        kivi_residual_length = getattr(cache_config, "kivi_residual_length", 128)
+        self.kivi_group_size = kivi_group_size if isinstance(kivi_group_size, int) else 128
+        self.kivi_residual_length = (
+            kivi_residual_length if isinstance(kivi_residual_length, int) else 128
+        )
+        if self.enable_kivi and self.kivi_residual_length % self.kivi_group_size != 0:
+            raise ValueError(
+                "KIVI INT4 requires kivi_residual_length "
+                f"({self.kivi_residual_length}) to be divisible by "
+                f"kivi_group_size ({self.kivi_group_size})."
+            )
+        self.kivi_bits = 4
+        self.k_quant_cache = None
+        self.k_scale_cache = None
+        self.k_mn_cache = None
+        self.v_quant_cache = None
+        self.v_scale_cache = None
+        self.v_mn_cache = None
+        # KIVI keeps the most recent residual window in full precision on NPU,
+        # while older tokens are packed into the paged int4 history cache.
+        self.kivi_residual_key_cache: torch.Tensor | None = None
+        self.kivi_residual_value_cache: torch.Tensor | None = None
+        self.kivi_residual_key_slot_ids: torch.Tensor | None = None
+        self.kivi_residual_value_slot_ids: torch.Tensor | None = None
+        scheduler_config = getattr(self.vllm_config, "scheduler_config", None)
+        max_num_seqs = getattr(scheduler_config, "max_num_seqs", 128)
+        self.kivi_max_num_seqs = (
+            max_num_seqs if isinstance(max_num_seqs, int) and max_num_seqs > 0 else 128
+        )
+        self.kivi_residual_req_to_row: dict[str, int] = {}
+        self.kivi_residual_row_to_req: list[str | None] = []
+        self.kivi_residual_free_rows: list[int] = []
+        self.kivi_residual_key_start: list[int] = []
+        self.kivi_residual_key_len: list[int] = []
+        self.kivi_residual_value_start: list[int] = []
+        self.kivi_residual_value_len: list[int] = []
+        
+        # 只在首次计算
         self.is_kv_producer = (
             self.vllm_config.kv_transfer_config is not None and self.vllm_config.kv_transfer_config.is_kv_producer
         )
@@ -397,6 +466,47 @@ class AscendAttentionBackendImpl(AttentionImpl):
         self.layerIndex = 0
         self.enable_hamming_sparse = is_enable_hamming_sparse()
 
+        # KIVI diagnostic counters
+        self._kivi_step = 0
+        self._kivi_decode_fast_count = 0
+        self._kivi_dense_attn_count = 0
+        self._kivi_skip_count = 0
+
+    def _bind_kivi_cache(self, kv_cache):
+        if kv_cache is None:
+            return
+        if not isinstance(kv_cache, (list, tuple)):
+            raise RuntimeError(
+                f"KIVI INT4 kv_cache must be a 6-tuple, got {type(kv_cache)}."
+            )
+        if len(kv_cache) == 0:
+            return
+        if not isinstance(kv_cache, (list, tuple)) or len(kv_cache) != 6:
+            raise RuntimeError(
+                "KIVI INT4 kv_cache must be a 6-tuple: "
+                "(k_quant, k_scale, k_mn, v_quant, v_scale, v_mn)."
+            )
+        (
+            self.k_quant_cache,
+            self.k_scale_cache,
+            self.k_mn_cache,
+            self.v_quant_cache,
+            self.v_scale_cache,
+            self.v_mn_cache,
+        ) = kv_cache
+        self._ensure_kivi_residual_buffers()
+    
+    def _bind_dense_kv_cache(self, kv_cache) -> None:
+        if not isinstance(kv_cache, (list, tuple)) or len(kv_cache) < 2:
+            raise RuntimeError(f"Dense kv_cache must have at least 2 tensors, got {type(kv_cache)}")
+        self.key_cache, self.value_cache = kv_cache[0], kv_cache[1]
+
+    def _bind_kv_cache(self, kv_cache) -> None:
+        if self.enable_kivi:
+            self._bind_kivi_cache(kv_cache)
+        else:
+            self._bind_dense_kv_cache(kv_cache)
+    
     @staticmethod
     def update_graph_params(
         update_stream,
@@ -607,6 +717,23 @@ class AscendAttentionBackendImpl(AttentionImpl):
         attn_mask = attn_metadata.attn_mask
         sparse_mode = 3 if attn_metadata.causal else 0
         extra_args = {}
+        
+        # ★ INT8 反量化
+        if self.enable_int8 and self._int8_ready:
+            extra_args = {
+                "key_antiquant_scale": self._k_aq_scale,
+                "key_antiquant_offset": self._k_aq_offset,
+                "value_antiquant_scale": self._v_aq_scale,
+                "value_antiquant_offset": self._v_aq_offset,
+                "key_antiquant_mode": 0,
+                "value_antiquant_mode": 0,
+            }
+            input_layout = "BNSD"
+            query = query.unsqueeze(2)
+            output = output.unsqueeze(2)
+            attn_mask = None
+            sparse_mode = 0  
+              
         if self.enable_c8_quant:
             extra_args = {
                 "key_antiquant_scale": layer._c8_k_aq_scale,
@@ -771,20 +898,24 @@ class AscendAttentionBackendImpl(AttentionImpl):
         # Only initialize/require cache for modes that actually use it
         if attn_metadata.attn_state != AscendAttentionState.PrefillNoCache:
             # Initialize cache from kv_cache if not already set (for DecodeOnly mode)
-            if self.key_cache is None and kv_cache is not None:
-                if (
-                    isinstance(kv_cache, torch.Tensor)
-                    and kv_cache.dim() > 0
-                    and kv_cache.shape[0] == 2
-                    or isinstance(kv_cache, (list, tuple))
-                    and len(kv_cache) >= 2
-                ):
-                    self.key_cache, self.value_cache = kv_cache[0], kv_cache[1]
+            if kv_cache is not None:
+                if self.enable_kivi:
+                    if self.k_quant_cache is None:
+                        self._bind_kivi_cache(kv_cache)
+                else:
+                    if self.key_cache is None:
+                        self._bind_dense_kv_cache(kv_cache)
 
-            if self.key_cache is None:
-                raise RuntimeError(
-                    f"key_cache is None in _get_fia_params for mode {attn_metadata.attn_state}. kv_cache={kv_cache}"
-                )
+            if self.enable_kivi:
+                if self.k_quant_cache is None:
+                    raise RuntimeError(
+                        f"KIVI cache is None in _get_fia_params for mode {attn_metadata.attn_state}. kv_cache={kv_cache}"
+                    )
+            else:
+                if self.key_cache is None:
+                    raise RuntimeError(
+                        f"key_cache is None in _get_fia_params for mode {attn_metadata.attn_state}. kv_cache={kv_cache}"
+                    )
 
         if attn_metadata.attn_state == AscendAttentionState.PrefillNoCache:
             block_size = 128
@@ -883,6 +1014,8 @@ class AscendAttentionBackendImpl(AttentionImpl):
         key, value, block_size, block_table, actual_seq_lengths_kv = self._get_fia_params(
             key, value, attn_metadata, kv_cache
         )
+        
+            
         if self.enable_hamming_sparse and attn_metadata.attn_state != AscendAttentionState.DecodeOnly:
             reshape_and_cache_kvcomp(attn_metadata.kvcomp_metadata, self.layerIndex, passed_key)
         elif self.enable_hamming_sparse:
@@ -912,11 +1045,11 @@ class AscendAttentionBackendImpl(AttentionImpl):
                 value,
                 num_query_heads=self.num_heads,
                 num_key_value_heads=self.num_kv_heads,
-                input_layout="TND",
+                input_layout= "TND",
                 pre_tokens=self.sliding_window if self.sliding_window is not None else SWA_INT_MAX,
                 next_tokens=0,
-                atten_mask=attn_metadata.attn_mask,
-                sparse_mode=sparse_mode,
+                atten_mask=attn_metadata.attn_mask ,
+                sparse_mode= sparse_mode,
                 softmax_scale=self.scale,
                 block_table=block_table,
                 block_size=block_size,
@@ -954,7 +1087,7 @@ class AscendAttentionBackendImpl(AttentionImpl):
                     num_key_value_heads=self.num_kv_heads,
                     num_heads=self.num_heads,
                     scale=self.scale,
-                    sparse_mode=3,
+                    sparse_mode=3,   
                 )
 
             attn_output = attn_output.view(num_tokens, self.num_heads, self.head_size)
@@ -1013,9 +1146,21 @@ class AscendAttentionBackendImpl(AttentionImpl):
         if self.attn_type in (AttentionType.ENCODER_ONLY):
             return
 
-        if self.key_cache is None:
-            self.key_cache, self.value_cache = kv_cache[0], kv_cache[1]
+        if self.enable_kivi:
+            self._bind_kivi_cache(kv_cache)
+            self._write_kivi_cache(key, value, slot_mapping, None, [key.shape[0]])
+            return
 
+        if self.key_cache is None:
+            self._bind_dense_kv_cache(kv_cache)
+            
+        # ★ 量化：key/value fp16 → int8
+        if self.enable_int8:
+            if not self._int8_ready:
+                self._calc_int8_scales(key, value)
+            key = self._quantize_kv_to_int8(key)        # ← 你的量化算法
+            value = self._quantize_kv_to_int8(value)  # ← 你的量化算法
+                
         DeviceOperator.reshape_and_cache(
             key=key,
             value=value,
@@ -1037,7 +1182,7 @@ class AscendAttentionBackendImpl(AttentionImpl):
             if self.is_kv_producer:
                 attn_metadata.reshape_cache_event = torch.npu.Event()
             if self.key_cache is None:
-                self.key_cache, self.value_cache = kv_cache[0], kv_cache[1]
+                self._bind_dense_kv_cache(kv_cache)
             slots = attn_metadata.slot_mapping
             encoder_decoder = self.attn_type == AttentionType.ENCODER_DECODER
             DeviceOperator.reshape_and_cache(
@@ -1108,7 +1253,26 @@ class AscendAttentionBackendImpl(AttentionImpl):
         num_tokens = query.shape[0]
         if attn_metadata is None:
             return output.fill_(0)
-
+        
+        #torch.npu.synchronize()
+        #t0 = time.perf_counter()
+        
+         # KIVI INT4 uses a 6-tensor cache layout, not ordinary (k_cache, v_cache).
+        # It must bypass the dense KV cache binding and reshape_and_cache path.
+        if self.enable_kivi:
+            if self.sliding_window is not None:
+                raise NotImplementedError(
+                    "KIVI INT4 residual cache does not support sliding window yet."
+                )
+            self._bind_kivi_cache(kv_cache)
+            return self._forward_kivi_attention(
+                query,
+                key,
+                value,
+                attn_metadata,
+                output,
+                kv_cache,
+            )
         # Initialize key_cache and value_cache from kv_cache if not already set.
         # This is needed for DecodeOnly mode where key/value are None but we still
         # need access to the cache for attention computation.
@@ -1121,25 +1285,1553 @@ class AscendAttentionBackendImpl(AttentionImpl):
                 and len(kv_cache) >= 2
             ):
                 self.key_cache, self.value_cache = kv_cache[0], kv_cache[1]
-
+        
         output_padded = None
+        # ── 保存 fp16 副本 + 量化写入 cache ──
+        float_key, float_value = None, None
         if key is not None and value is not None:
             output_padded = output
+            if attn_metadata.attn_state != AscendAttentionState.DecodeOnly:
+                float_key, float_value = key, value
+
+            if self.enable_int8:
+                if not self._int8_ready:
+                    self._calc_int8_scales(key, value)
+                key = self._quantize_kv_to_int8(
+                    key, self._k_inv_scale, self._k_offset
+                )
+                value = self._quantize_kv_to_int8(
+                    value, self._v_inv_scale, self._v_offset
+                )
+
             query, key, value, output_padded = self.reshape_and_cache(
                 query, key, value, kv_cache, attn_metadata, output
             )
+        
         # pooling model branch
         if attn_metadata.model_runner_type == "pooling" and not attn_metadata.causal:
             attn_output = self._forward_encoder_attention(query, key, value, attn_metadata, output)
             output[:num_tokens] = attn_output[:num_tokens]
             return output
+         # ── INT8 dispatch ──
+        if self.enable_int8 and self._int8_ready:
+            if attn_metadata.attn_state == AscendAttentionState.DecodeOnly:
+                output = self._forward_int8_decode(query, attn_metadata, output)
+            elif attn_metadata.attn_state == AscendAttentionState.ChunkedPrefill:
+                output = self._forward_int8_chunked_prefill(
+                    query, float_key, float_value, attn_metadata, output
+                )
+            else:
+                output = self._forward_int8_prefill(
+                    query,
+                    float_key if float_key is not None else key,
+                    float_value if float_value is not None else value,
+                    attn_metadata, output,
+                )
+          # torch.npu.synchronize()
+          #  elapsed_ms = (time.perf_counter() - t0) * 1000
+          #  print(f"attn layer={layer.layer_name} elapsed_ms={elapsed_ms:.3f}")    
+            return output
+
+
+        # ── 非 INT8 ──
+        #output_padded = output if (key is not None and value is not None) else None
         if output_padded is not None:
-            attn_output = self.forward_impl(query, key, value, kv_cache, attn_metadata, output_padded)
+            attn_output = self.forward_impl(
+                query, key, value, kv_cache, attn_metadata, output_padded
+            )
         else:
-            attn_output = self.forward_impl(query, key, value, kv_cache, attn_metadata, output)
+            attn_output = self.forward_impl(
+                query, key, value, kv_cache, attn_metadata, output
+            )
         output[:num_tokens] = attn_output[:num_tokens]
+        #torch.npu.synchronize()
+        #elapsed_ms = (time.perf_counter() - t0) * 1000
+        #print(f"attn layer={layer.layer_name} elapsed_ms={elapsed_ms:.3f}")
+        return output
+    
+     # ★ 以下是新增方法
+      # ═══════════════════════════════════════════════════════════════
+    # ★ KIVI INT4 量化: 按原始 KIVI 的“量化历史区 + 全精度 residual 区”计算 attention
+    def _forward_kivi_attention(
+        self,
+        query: torch.Tensor,
+        key: torch.Tensor | None,
+        value: torch.Tensor | None,
+        attn_metadata: AscendMetadata,
+        output: torch.Tensor,
+        kv_cache=None,
+    ) -> torch.Tensor:
+        self._bind_kivi_cache(kv_cache)
+
+        actual_seq_qlen = attn_metadata.actual_seq_lengths_q
+        if attn_metadata.attn_state == AscendAttentionState.DecodeOnly:
+            actual_seq_qlen = list(range(1, len(attn_metadata.seq_lens_list) + 1))
+        num_tokens = int(actual_seq_qlen[-1])
+        query = query[:num_tokens]
+
+        finished_req_ids = attn_metadata.finished_req_ids
+        if finished_req_ids:
+            # Reclaim per-request residual rows before this step writes new K/V.
+            self._release_finished_kivi_residual_rows(
+                {str(req_id) for req_id in finished_req_ids}
+            )
+
+        if attn_metadata.attn_state == AscendAttentionState.PrefillNoCache:
+            if key is None or value is None:
+                raise RuntimeError("KIVI PrefillNoCache requires dense key/value.")
+            num_actual_tokens = min(
+                getattr(attn_metadata, "num_actual_tokens", key.shape[0]),
+                key.shape[0],
+            )
+            self._write_kivi_prefill_cache(
+                key[:num_actual_tokens],
+                value[:num_actual_tokens],
+                attn_metadata.slot_mapping[:num_actual_tokens],
+                attn_metadata.req_ids,
+                attn_metadata.actual_seq_lengths_q,
+            )
+            return self._forward_kivi_prefill_fia(
+                query=query,
+                key=key,
+                value=value,
+                attn_metadata=attn_metadata,
+                output=output,
+            )
+        else:
+            if (
+                attn_metadata.attn_state == AscendAttentionState.ChunkedPrefill
+                and not self._is_kivi_chunked_prefill_all_new(attn_metadata)
+            ):
+                raise RuntimeError(
+                    "KIVI ChunkedPrefill does not support prefill requests "
+                    "with historical KV cache. Only decode rows plus all-new "
+                    "prefill prompts are supported."
+                )
+            seq_lens = attn_metadata.seq_lens_list
+            if attn_metadata.attn_state == AscendAttentionState.DecodeOnly:
+                if key is not None and value is not None:
+                    num_actual_tokens = min(
+                        getattr(attn_metadata, "num_actual_tokens", key.shape[0]),
+                        key.shape[0],
+                    )
+                    if num_actual_tokens > 0:
+                        self._write_kivi_cache(
+                            key[:num_actual_tokens],
+                            value[:num_actual_tokens],
+                            attn_metadata.slot_mapping[:num_actual_tokens],
+                            attn_metadata.req_ids,
+                            list(range(1, len(seq_lens) + 1)),
+                        )
+                self._sync_kivi_residual_windows(
+                    attn_metadata.block_tables,
+                    seq_lens,
+                    attn_metadata.req_ids,
+                    attn_metadata.finished_req_ids,
+                )
+               
+                return  self._forward_kivi_paged_decode_attention(
+                    query,
+                    attn_metadata.block_tables,
+                    seq_lens,
+                    attn_metadata.req_ids,
+                    output,
+                )
+            if attn_metadata.attn_state == AscendAttentionState.ChunkedPrefill:
+                if key is not None and value is not None:
+                    num_actual_tokens = min(
+                        getattr(attn_metadata, "num_actual_tokens", key.shape[0]),
+                        key.shape[0],
+                    )
+                    if num_actual_tokens > 0:
+                        slot_mapping = attn_metadata.slot_mapping[:num_actual_tokens]
+                        key_to_write = key[:num_actual_tokens]
+                        value_to_write = value[:num_actual_tokens]
+                        req_ids = attn_metadata.req_ids
+                        num_decode = min(attn_metadata.num_decode_tokens,
+                                         num_actual_tokens)
+                        num_decodes = attn_metadata.num_decodes
+
+                        if num_decode > 0:
+                            decode_req_ids = None if req_ids is None else req_ids[:num_decodes]
+                            self._write_kivi_cache(
+                                key_to_write[:num_decode],
+                                value_to_write[:num_decode],
+                                slot_mapping[:num_decode],
+                                decode_req_ids,
+                                list(range(1, num_decodes + 1)),
+                            )
+
+                        if num_decode < num_actual_tokens:
+                            prefill_req_ids = None if req_ids is None else req_ids[num_decodes:]
+                            prefill_seq_qlen = [
+                                int(attn_metadata.actual_seq_lengths_q[i]) - num_decode
+                                for i in range(
+                                    num_decodes,
+                                    len(attn_metadata.actual_seq_lengths_q),
+                                )
+                            ]
+                            self._write_kivi_prefill_cache(
+                                key_to_write[num_decode:num_actual_tokens],
+                                value_to_write[num_decode:num_actual_tokens],
+                                slot_mapping[num_decode:num_actual_tokens],
+                                prefill_req_ids,
+                                prefill_seq_qlen,
+                            )
+                self._sync_kivi_residual_windows(
+                    attn_metadata.block_tables,
+                    seq_lens,
+                    attn_metadata.req_ids,
+                    attn_metadata.finished_req_ids,
+                )
+                return self._forward_kivi_chunked_prefill(
+                    query=query,
+                    key=key,
+                    value=value,
+                    attn_metadata=attn_metadata,
+                    output=output,
+                )
+            if key is not None and value is not None:
+                num_actual_tokens = min(
+                    getattr(attn_metadata, "num_actual_tokens", key.shape[0]),
+                    key.shape[0],
+                )
+                if num_actual_tokens > 0:
+                    self._write_kivi_cache(
+                        key[:num_actual_tokens],
+                        value[:num_actual_tokens],
+                        attn_metadata.slot_mapping[:num_actual_tokens],
+                        attn_metadata.req_ids,
+                        attn_metadata.actual_seq_lengths_q,
+                    )
+            self._sync_kivi_residual_windows(
+                attn_metadata.block_tables,
+                seq_lens,
+                attn_metadata.req_ids,
+                attn_metadata.finished_req_ids,
+            )
+            dense_key, dense_value = self._gather_dequant_kivi_paged_cache(
+                attn_metadata.block_tables,
+                seq_lens,
+                query.dtype,
+                attn_metadata.req_ids,
+            )
+
+        return self._forward_kivi_dense_attention(
+            query=query,
+            key=dense_key,
+            value=dense_value,
+            seq_lens=seq_lens,
+            actual_seq_qlen=actual_seq_qlen,
+            causal=attn_metadata.causal,
+            output=output,
+        )
+
+    def _repeat_kv(self, tensor: torch.Tensor) -> torch.Tensor:
+        if self.num_queries_per_kv == 1:
+            return tensor
+        return tensor.repeat_interleave(self.num_queries_per_kv, dim=1)
+
+    def _build_kivi_causal_mask(
+        self,
+        q_len: int,
+        kv_seq_len: int,
+        dtype: torch.dtype,
+        device: torch.device,
+    ) -> torch.Tensor:
+        q_pos = torch.arange(
+            kv_seq_len - q_len, kv_seq_len, dtype=torch.long, device=device
+        )
+        kv_pos = torch.arange(kv_seq_len, dtype=torch.long, device=device)
+        mask = kv_pos.unsqueeze(0) > q_pos.unsqueeze(1)
+        neg_inf = torch.finfo(dtype).min
+        return torch.where(
+            mask,
+            torch.full((), neg_inf, dtype=dtype, device=device),
+            torch.zeros((), dtype=dtype, device=device),
+        ).unsqueeze(0)
+    
+    def _check_kivi_cache_bound(self) -> None:
+        if (
+            self.k_quant_cache is None
+            or self.k_scale_cache is None
+            or self.k_mn_cache is None
+            or self.v_quant_cache is None
+            or self.v_scale_cache is None
+            or self.v_mn_cache is None
+        ):
+            raise RuntimeError("KIVI cache tensors are not bound.")
+
+    def _ensure_kivi_residual_buffers(self) -> None:
+        if self.kivi_residual_key_cache is not None:
+            return
+
+        self._check_kivi_cache_bound()
+        num_rows = self.kivi_max_num_seqs
+        residual_slots = self.kivi_residual_length
+        device = self.k_quant_cache.device
+
+        self.kivi_residual_key_cache = torch.empty(
+            (num_rows, residual_slots, self.num_kv_heads, self.head_size),
+            dtype=self.k_scale_cache.dtype,
+            device=device,
+        )
+        self.kivi_residual_value_cache = torch.empty(
+            (num_rows, residual_slots, self.num_kv_heads, self.head_size),
+            dtype=self.v_scale_cache.dtype,
+            device=device,
+        )
+        self.kivi_residual_key_slot_ids = torch.full(
+            (num_rows, residual_slots),
+            -1,
+            dtype=torch.long,
+            device=device,
+        )
+        self.kivi_residual_value_slot_ids = torch.full(
+            (num_rows, residual_slots),
+            -1,
+            dtype=torch.long,
+            device=device,
+        )
+        self.kivi_residual_req_to_row = {}
+        self.kivi_residual_row_to_req = [None] * num_rows
+        self.kivi_residual_free_rows = list(range(num_rows - 1, -1, -1))
+        self.kivi_residual_key_start = [0] * num_rows
+        self.kivi_residual_key_len = [0] * num_rows
+        self.kivi_residual_value_start = [0] * num_rows
+        self.kivi_residual_value_len = [0] * num_rows
+
+    def _get_kivi_req_keys(
+        self,
+        req_ids: list[str] | None,
+        num_reqs: int,
+    ) -> list[str]:
+        if req_ids is not None and len(req_ids) >= num_reqs:
+            return [str(req_id) for req_id in req_ids[:num_reqs]]
+        return [f"__kivi_batch_row_{idx}" for idx in range(num_reqs)]
+
+    def _get_kivi_residual_row(
+        self,
+        req_key: str,
+        *,
+        create: bool,
+    ) -> int | None:
+        self._ensure_kivi_residual_buffers()
+        row_idx = self.kivi_residual_req_to_row.get(req_key)
+        if row_idx is not None or not create:
+            return row_idx
+
+        if not self.kivi_residual_free_rows:
+            raise RuntimeError(
+                "KIVI residual rows are exhausted. "
+                f"max_num_seqs={self.kivi_max_num_seqs}, req_id={req_key}."
+            )
+
+        row_idx = self.kivi_residual_free_rows.pop()
+        self.kivi_residual_req_to_row[req_key] = row_idx
+        self.kivi_residual_row_to_req[row_idx] = req_key
+        return row_idx
+
+    def _release_kivi_residual_row(
+        self,
+        req_key: str,
+    ) -> None:
+        row_idx = self.kivi_residual_req_to_row.pop(req_key, None)
+        if row_idx is None:
+            return
+
+        self.kivi_residual_row_to_req[row_idx] = None
+        if self.kivi_residual_key_slot_ids is not None:
+            self.kivi_residual_key_slot_ids[row_idx].fill_(-1)
+        if self.kivi_residual_value_slot_ids is not None:
+            self.kivi_residual_value_slot_ids[row_idx].fill_(-1)
+        self.kivi_residual_key_start[row_idx] = 0
+        self.kivi_residual_key_len[row_idx] = 0
+        self.kivi_residual_value_start[row_idx] = 0
+        self.kivi_residual_value_len[row_idx] = 0
+        self.kivi_residual_free_rows.append(row_idx)
+
+    def _release_finished_kivi_residual_rows(
+        self,
+        finished_req_keys: set[str],
+    ) -> None:
+        for req_key in finished_req_keys:
+            self._release_kivi_residual_row(req_key)
+
+    def _get_kivi_residual_buffers(
+        self,
+        *,
+        is_key: bool,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        self._ensure_kivi_residual_buffers()
+        slot_ids = self.kivi_residual_key_slot_ids if is_key else self.kivi_residual_value_slot_ids
+        cache = self.kivi_residual_key_cache if is_key else self.kivi_residual_value_cache
+        assert slot_ids is not None and cache is not None
+        return slot_ids, cache
+
+    def _get_kivi_residual_state(
+        self,
+        *,
+        is_key: bool,
+    ) -> tuple[list[int], list[int]]:
+        self._ensure_kivi_residual_buffers()
+        if is_key:
+            return self.kivi_residual_key_start, self.kivi_residual_key_len
+        return self.kivi_residual_value_start, self.kivi_residual_value_len
+
+    def _get_kivi_residual_lanes(
+        self,
+        row_idx: int,
+        *,
+        is_key: bool,
+    ) -> list[int]:
+        starts, lengths = self._get_kivi_residual_state(is_key=is_key)
+        length = lengths[row_idx]
+        if length <= 0:
+            return []
+        start = starts[row_idx]
+        cap = self.kivi_residual_length
+        end = start + length
+        if end <= cap:
+            return list(range(start, end))
+        return list(range(start, cap)) + list(range(0, end % cap))
+
+    def _collect_kivi_residual_window(
+        self,
+        req_key: str,
+        *,
+        is_key: bool,
+        target_dtype: torch.dtype | None = None,
+        target_device: torch.device | None = None,
+    ) -> tuple[list[int], torch.Tensor | None]:
+        slot_ids, cache = self._get_kivi_residual_buffers(is_key=is_key)
+        row_idx = self._get_kivi_residual_row(req_key, create=False)
+        if row_idx is None:
+            return [], None
+        lanes = self._get_kivi_residual_lanes(row_idx, is_key=is_key)
+        if not lanes:
+            return [], None
+        lane_tensor = torch.tensor(lanes, dtype=torch.long, device=cache.device)
+        slot_tensor = slot_ids[row_idx].index_select(0, lane_tensor)
+        tensors = cache[row_idx].index_select(0, lane_tensor)
+        if target_dtype is not None or target_device is not None:
+            if target_dtype is None:
+                target_dtype = tensors.dtype
+            if target_device is None:
+                target_device = tensors.device
+            tensors = tensors.to(device=target_device, dtype=target_dtype)
+        return [int(slot) for slot in slot_tensor.tolist()], tensors
+
+    def _set_kivi_residual_window(
+        self,
+        req_key: str,
+        slots: list[int],
+        tensors: torch.Tensor | None,
+        *,
+        is_key: bool,
+    ) -> None:
+        row_idx = self._get_kivi_residual_row(req_key, create=bool(slots))
+        if row_idx is None:
+            return
+        slot_ids, cache = self._get_kivi_residual_buffers(is_key=is_key)
+        starts, lengths = self._get_kivi_residual_state(is_key=is_key)
+        slot_ids[row_idx].fill_(-1)
+        starts[row_idx] = 0
+        lengths[row_idx] = len(slots)
+        if not slots:
+            return
+        if len(slots) > self.kivi_residual_length:
+            raise RuntimeError(
+                f"KIVI residual window exceeds capacity: {len(slots)} > {self.kivi_residual_length}."
+            )
+        if tensors is None:
+            raise RuntimeError("KIVI residual tensors are required when resetting a non-empty window.")
+        slot_tensor = torch.tensor(slots, dtype=torch.long, device=slot_ids.device)
+        slot_ids[row_idx, :len(slots)] = slot_tensor
+        cache[row_idx, :len(slots)] = tensors.to(device=cache.device, dtype=cache.dtype).contiguous()
+
+    def _get_kivi_residual_tail(
+        self,
+        req_key: str,
+        *,
+        is_key: bool,
+        target_dtype: torch.dtype,
+        target_device: torch.device,
+    ) -> torch.Tensor | None:
+        _, tensors = self._collect_kivi_residual_window(
+            req_key,
+            is_key=is_key,
+            target_dtype=target_dtype,
+            target_device=target_device,
+        )
+        return tensors
+
+    def _flush_kivi_residual_prefix(
+        self,
+        req_key: str,
+        *,
+        is_key: bool,
+        count: int,
+    ) -> None:
+        row_idx = self._get_kivi_residual_row(req_key, create=False)
+        if row_idx is None:
+            return
+        slot_ids, cache = self._get_kivi_residual_buffers(is_key=is_key)
+        starts, lengths = self._get_kivi_residual_state(is_key=is_key)
+        length = lengths[row_idx]
+        if length <= 0:
+            return
+        count = min(count, length)
+        lanes = self._get_kivi_residual_lanes(row_idx, is_key=is_key)[:count]
+        if not lanes:
+            return
+        lane_tensor = torch.tensor(lanes, dtype=torch.long, device=cache.device)
+        slot_tensor = slot_ids[row_idx].index_select(0, lane_tensor)
+        tensors = cache[row_idx].index_select(0, lane_tensor).contiguous()
+        if is_key:
+            self._write_kivi_key_quant_cache(tensors, slot_tensor)
+        else:
+            self._write_kivi_value_quant_cache(tensors, slot_tensor)
+        slot_ids[row_idx, lane_tensor] = -1
+        lengths[row_idx] = length - count
+        if lengths[row_idx] == 0:
+            starts[row_idx] = 0
+        else:
+            starts[row_idx] = (starts[row_idx] + count) % self.kivi_residual_length
+
+    def _get_kivi_block_size(self) -> int:
+        self._check_kivi_cache_bound()
+        return self.k_quant_cache.shape[-1] * 8
+
+    def _store_kivi_residual_entries(
+        self,
+        values: torch.Tensor,
+        slots: torch.Tensor,
+        *,
+        req_key: str,
+        is_key: bool,
+    ) -> None:
+        if values.numel() == 0 or slots.numel() == 0:
+            return
+
+        slot_ids, cache = self._get_kivi_residual_buffers(is_key=is_key)
+        starts, lengths = self._get_kivi_residual_state(is_key=is_key)
+        values = values.to(cache.dtype).contiguous()
+        slots = slots.to(torch.long).contiguous()
+        row_idx = self._get_kivi_residual_row(req_key, create=True)
+        assert row_idx is not None
+
+        for idx in range(int(slots.shape[0])):
+            slot = int(slots[idx].item())
+            match = (slot_ids[row_idx] == slot).nonzero(as_tuple=False)
+            if match.numel() > 0:
+                lane = int(match[0].item())
+                cache[row_idx, lane] = values[idx]
+                continue
+
+            while lengths[row_idx] >= self.kivi_residual_length:
+                self._flush_kivi_residual_prefix(
+                    req_key,
+                    is_key=is_key,
+                    count=self.kivi_residual_length if is_key else 1,
+                )
+
+            tail = (starts[row_idx] + lengths[row_idx]) % self.kivi_residual_length
+            slot_ids[row_idx, tail] = slot
+            cache[row_idx, tail] = values[idx]
+            lengths[row_idx] += 1
+
+    def _lookup_kivi_residual_tensor(
+        self,
+        slot: int,
+        *,
+        req_key: str,
+        is_key: bool,
+        target_dtype: torch.dtype,
+        target_device: torch.device | None = None,
+    ) -> torch.Tensor | None:
+        slot_ids, cache = self._get_kivi_residual_buffers(is_key=is_key)
+        row_idx = self._get_kivi_residual_row(req_key, create=False)
+        if row_idx is None:
+            return None
+        slot_row = slot_ids[row_idx]
+        match = (slot_row == slot).nonzero(as_tuple=False)
+        if match.numel() == 0:
+            return None
+
+        lane = int(match[0].item())
+        tensor = cache[row_idx, lane]
+        if target_device is None:
+            target_device = tensor.device
+        return tensor.to(device=target_device, dtype=target_dtype)
+
+    def _gather_kivi_residual_tensors(
+        self,
+        slots: list[int],
+        *,
+        req_key: str,
+        is_key: bool,
+    ) -> torch.Tensor:
+        if not slots:
+            raise RuntimeError("KIVI residual gather expects a non-empty slot list.")
+
+        target_dtype = self.k_scale_cache.dtype if is_key else self.v_scale_cache.dtype
+        tensors = []
+        cache_name = "key" if is_key else "value"
+        for slot in slots:
+            tensor = self._lookup_kivi_residual_tensor(
+                int(slot),
+                req_key=req_key,
+                is_key=is_key,
+                target_dtype=target_dtype,
+            )
+            if tensor is None:
+                raise RuntimeError(
+                    f"KIVI {cache_name} residual tensor for slot {slot} is missing before flush."
+                )
+            tensors.append(tensor)
+        return torch.stack(tensors, dim=0)
+
+    def _has_kivi_residual_entry(
+        self,
+        slot: int,
+        *,
+        req_key: str,
+        is_key: bool,
+    ) -> bool:
+        slot_ids, _ = self._get_kivi_residual_buffers(is_key=is_key)
+        row_idx = self._get_kivi_residual_row(req_key, create=False)
+        if row_idx is None:
+            return False
+        return bool((slot_ids[row_idx] == slot).any().item())
+
+    def _clear_kivi_residual_entries(
+        self,
+        slots: list[int],
+        *,
+        req_key: str,
+        is_key: bool,
+    ) -> None:
+        if not slots:
+            return
+        current_slots, current_tensors = self._collect_kivi_residual_window(req_key, is_key=is_key)
+        if not current_slots or current_tensors is None:
+            return
+        drop = {int(slot) for slot in slots}
+        keep_indices = [idx for idx, slot in enumerate(current_slots) if slot not in drop]
+        if len(keep_indices) == len(current_slots):
+            return
+        if not keep_indices:
+            self._set_kivi_residual_window(req_key, [], None, is_key=is_key)
+            return
+        keep_tensor = current_tensors.index_select(
+            0,
+            torch.tensor(keep_indices, dtype=torch.long, device=current_tensors.device),
+        )
+        keep_slots = [current_slots[idx] for idx in keep_indices]
+        self._set_kivi_residual_window(req_key, keep_slots, keep_tensor, is_key=is_key)
+
+    def _clear_stale_kivi_residual_entries(
+        self,
+        req_key: str,
+        live_slots: set[int],
+        *,
+        is_key: bool,
+    ) -> None:
+        current_slots, current_tensors = self._collect_kivi_residual_window(req_key, is_key=is_key)
+        if not current_slots or current_tensors is None:
+            return
+        keep_indices = [idx for idx, slot in enumerate(current_slots) if int(slot) in live_slots]
+        if len(keep_indices) == len(current_slots):
+            return
+        if not keep_indices:
+            self._set_kivi_residual_window(req_key, [], None, is_key=is_key)
+            return
+        keep_tensor = current_tensors.index_select(
+            0,
+            torch.tensor(keep_indices, dtype=torch.long, device=current_tensors.device),
+        )
+        keep_slots = [current_slots[idx] for idx in keep_indices]
+        self._set_kivi_residual_window(req_key, keep_slots, keep_tensor, is_key=is_key)
+
+    def _write_kivi_cache(
+        self,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        slot_mapping: torch.Tensor,
+        req_ids: list[str] | None,
+        actual_seq_qlen: list[int] | torch.Tensor,
+    ) -> None:
+        if key is None or value is None or slot_mapping is None:
+            return
+
+        if isinstance(actual_seq_qlen, torch.Tensor):
+            actual_seq_qlen = actual_seq_qlen.tolist()
+
+        if not actual_seq_qlen:
+            return
+
+        req_keys = self._get_kivi_req_keys(req_ids, len(actual_seq_qlen))
+        max_tokens = int(slot_mapping.shape[0])
+        prev_q_end = 0
+        for req_idx, q_end in enumerate(actual_seq_qlen):
+            q_end = min(int(q_end), max_tokens)
+            if prev_q_end >= max_tokens:
+                break
+            if q_end <= prev_q_end:
+                prev_q_end = q_end
+                continue
+
+            req_slots = slot_mapping[prev_q_end:q_end]
+            valid = req_slots >= 0
+            if bool(valid.any()):
+                req_key = req_keys[req_idx]
+                self._store_kivi_residual_entries(
+                    key[prev_q_end:q_end][valid].detach(),
+                    req_slots[valid].to(torch.long),
+                    req_key=req_key,
+                    is_key=True,
+                )
+                self._store_kivi_residual_entries(
+                    value[prev_q_end:q_end][valid].detach(),
+                    req_slots[valid].to(torch.long),
+                    req_key=req_key,
+                    is_key=False,
+                )
+            prev_q_end = q_end
+
+    def _write_kivi_prefill_cache(
+        self,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        slot_mapping: torch.Tensor,
+        req_ids: list[str] | None,
+        actual_seq_qlen: list[int] | torch.Tensor,
+    ) -> None:
+        if key is None or value is None or slot_mapping is None:
+            return
+
+        if isinstance(actual_seq_qlen, torch.Tensor):
+            actual_seq_qlen = actual_seq_qlen.tolist()
+
+        if not actual_seq_qlen:
+            return
+
+        req_keys = self._get_kivi_req_keys(req_ids, len(actual_seq_qlen))
+        max_tokens = int(slot_mapping.shape[0])
+        prev_q_end = 0
+        for req_idx, q_end in enumerate(actual_seq_qlen):
+            q_end = min(int(q_end), max_tokens)
+            if prev_q_end >= max_tokens:
+                break
+            if q_end <= prev_q_end:
+                prev_q_end = q_end
+                continue
+
+            req_slots = slot_mapping[prev_q_end:q_end]
+            valid = req_slots >= 0
+            if not bool(valid.any()):
+                prev_q_end = q_end
+                continue
+
+            req_key = req_keys[req_idx]
+            req_key_states = key[prev_q_end:q_end][valid].detach()
+            req_value_states = value[prev_q_end:q_end][valid].detach()
+            req_slots = req_slots[valid].to(torch.long)
+
+            num_valid_tokens = int(req_slots.shape[0])
+            flush_tokens = (
+                num_valid_tokens // self.kivi_residual_length
+            ) * self.kivi_residual_length
+
+            if flush_tokens > 0:
+                flush_slots = req_slots[:flush_tokens].contiguous()
+                self._write_kivi_key_quant_cache(
+                    req_key_states[:flush_tokens].contiguous(),
+                    flush_slots,
+                )
+                self._write_kivi_value_quant_cache(
+                    req_value_states[:flush_tokens].contiguous(),
+                    flush_slots,
+                )
+
+            if flush_tokens < num_valid_tokens:
+                self._store_kivi_residual_entries(
+                    req_key_states[flush_tokens:],
+                    req_slots[flush_tokens:],
+                    req_key=req_key,
+                    is_key=True,
+                )
+                self._store_kivi_residual_entries(
+                    req_value_states[flush_tokens:],
+                    req_slots[flush_tokens:],
+                    req_key=req_key,
+                    is_key=False,
+                )
+            prev_q_end = q_end
+
+    def _get_kivi_ordered_slots(
+        self,
+        block_table: torch.Tensor,
+        seq_lens: list[int],
+    ) -> list[list[int]]:
+        self._check_kivi_cache_bound()
+        block_size = self.k_quant_cache.shape[-1] * 8
+        block_table = block_table.to(torch.long)
+        ordered_slots: list[list[int]] = []
+
+        for req_idx, seq_len in enumerate(seq_lens):
+            req_slots: list[int] = []
+            for pos in range(int(seq_len)):
+                block_pos = pos // block_size
+                block_offset = pos % block_size
+                block_id = int(block_table[req_idx, block_pos].item())
+                if block_id >= 0:
+                    req_slots.append(block_id * block_size + block_offset)
+            ordered_slots.append(req_slots)
+        return ordered_slots
+
+    def _is_aligned_kivi_key_window(self, window_slots: list[int]) -> bool:
+        if not window_slots:
+            return False
+
+        block_size = self.k_quant_cache.shape[-1] * 8
+        group_size = self.kivi_group_size
+        if len(window_slots) % group_size != 0:
+            return False
+
+        for start in range(0, len(window_slots), group_size):
+            group_slots = window_slots[start:start + group_size]
+            if len(group_slots) != group_size:
+                return False
+
+            first_slot = int(group_slots[0])
+            last_slot = int(group_slots[-1])
+            block_idx = first_slot // block_size
+            block_offset = first_slot % block_size
+
+            if block_offset % group_size != 0:
+                return False
+            if last_slot // block_size != block_idx:
+                return False
+
+            expected = list(range(first_slot, first_slot + group_size))
+            if group_slots != expected:
+                return False
+
+        return True
+
+    def _flush_kivi_slots(
+        self,
+        slots: list[int],
+        *,
+        req_key: str,
+        is_key: bool,
+    ) -> None:
+        if not slots:
+            return
+
+        tensors = self._gather_kivi_residual_tensors(
+            slots,
+            req_key=req_key,
+            is_key=is_key,
+        )
+        slot_tensor = torch.tensor(slots, dtype=torch.long, device=tensors.device)
+        if is_key:
+            self._write_kivi_key_quant_cache(tensors, slot_tensor)
+        else:
+            self._write_kivi_value_quant_cache(tensors, slot_tensor)
+        #torch.npu.synchronize()
+        self._clear_kivi_residual_entries(slots, req_key=req_key, is_key=is_key)
+
+    def _flush_kivi_key_batches(self, req_key: str, window_slots: list[int]) -> None:
+        while len(window_slots) >= self.kivi_residual_length:
+            flush_slots = window_slots[:self.kivi_residual_length]
+            if not self._is_aligned_kivi_key_window(flush_slots):
+                break
+            self._flush_kivi_slots(flush_slots, req_key=req_key, is_key=True)
+            del window_slots[:self.kivi_residual_length]
+
+    def _flush_kivi_value_batches(self, req_key: str, window_slots: list[int]) -> None:
+        if len(window_slots) < self.kivi_residual_length:
+            return
+
+        flush_slots = window_slots[:1]
+        self._flush_kivi_slots(flush_slots, req_key=req_key, is_key=False)
+        del window_slots[:1]
+
+    def _sync_kivi_residual_windows(
+        self,
+        block_table: torch.Tensor,
+        seq_lens: list[int],
+        req_ids: list[str] | None,
+        finished_req_ids: set[str] | None = None,
+    ) -> None:
+        req_keys = self._get_kivi_req_keys(req_ids, len(seq_lens))
+        ordered_slots = self._get_kivi_ordered_slots(block_table, seq_lens)
+        if finished_req_ids:
+            self._release_finished_kivi_residual_rows(
+                {str(req_id) for req_id in finished_req_ids}
+            )
+
+        for req_idx, req_slots in enumerate(ordered_slots):
+            req_key = req_keys[req_idx]
+            live_slots = set(req_slots)
+            self._clear_stale_kivi_residual_entries(
+                req_key,
+                live_slots,
+                is_key=True,
+            )
+            self._clear_stale_kivi_residual_entries(
+                req_key,
+                live_slots,
+                is_key=False,
+            )
+
+    def _write_kivi_key_quant_cache(
+        self,
+        key: torch.Tensor,
+        slot_mapping: torch.Tensor,
+    ) -> None:
+        self._check_kivi_cache_bound()
+        if key is None or slot_mapping is None:
+            return
+
+        valid = slot_mapping >= 0
+        if not bool(valid.any()):
+            return
+
+        key = key[valid].to(self.k_scale_cache.dtype).contiguous()
+        slots = slot_mapping[valid].to(torch.long).contiguous()
+
+        if key.shape[-1] != self.head_size:
+            raise RuntimeError(
+                "KIVI INT4 key head_size must match attention head_size "
+                f"({self.head_size}), got {key.shape[-1]}."
+            )
+        if key.shape[0] % self.kivi_group_size != 0:
+            raise RuntimeError(
+                "KIVI key flush must contain whole token groups, got "
+                f"{key.shape[0]} tokens for group_size={self.kivi_group_size}."
+            )
+
+        if self.head_size % 8 != 0:
+            raise RuntimeError(
+                f"KIVI INT4 int32 packing requires head_size ({self.head_size}) "
+                "to be divisible by 8."
+            )
+        if self.kivi_group_size % 8 != 0:
+            raise RuntimeError(
+                "KIVI INT4 key packing requires kivi_group_size "
+                f"({self.kivi_group_size}) to be divisible by 8."
+            )
+
+        block_size = self.k_quant_cache.shape[-1] * 8
+        if block_size % self.kivi_group_size != 0:
+            raise RuntimeError(
+                f"KIVI INT4 key cache requires block_size ({block_size}) to be "
+                f"divisible by kivi_group_size ({self.kivi_group_size})."
+            )
+        if not self._is_aligned_kivi_key_window(slots.tolist()):
+            raise RuntimeError("KIVI key flush requires contiguous aligned token groups.")
+
+        kivi_pack_key_cache(
+            key,
+            slots,
+            self.k_quant_cache,
+            self.k_scale_cache,
+            self.k_mn_cache,
+            self.kivi_group_size,
+        )
+
+    def _write_kivi_value_quant_cache(
+        self,
+        value: torch.Tensor,
+        slot_mapping: torch.Tensor,
+    ) -> None:
+        self._check_kivi_cache_bound()
+        if value is None or slot_mapping is None:
+            return
+
+        valid = slot_mapping >= 0
+        if not bool(valid.any()):
+            return
+
+        value = value[valid].to(self.v_scale_cache.dtype).contiguous()
+        slots = slot_mapping[valid].to(torch.long).contiguous()
+        head_size = value.shape[-1]
+
+        if head_size != self.head_size:
+            raise RuntimeError(
+                "KIVI INT4 value head_size must match attention head_size "
+                f"({self.head_size}), got {head_size}."
+            )
+
+        if head_size % self.kivi_group_size != 0:
+            raise RuntimeError(
+                f"KIVI INT4 value head_size ({head_size}) must be divisible by "
+                f"kivi_group_size ({self.kivi_group_size})."
+            )
+
+        if head_size % 8 != 0:
+            raise RuntimeError(
+                f"KIVI INT4 int32 packing requires head_size ({head_size}) "
+                "to be divisible by 8."
+            )
+        if self.kivi_group_size % 8 != 0:
+            raise RuntimeError(
+                "KIVI INT4 value packing requires kivi_group_size "
+                f"({self.kivi_group_size}) to be divisible by 8."
+            )
+
+        kivi_pack_value_cache(
+            value,
+            slots,
+            self.v_quant_cache,
+            self.v_scale_cache,
+            self.v_mn_cache,
+            self.kivi_group_size,
+        )
+
+
+    def _gather_dequant_kivi_paged_cache(
+        self,
+        block_table: torch.Tensor,
+        seq_lens: list[int],
+        target_dtype: torch.dtype,
+        req_ids: list[str] | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        cache_device = self.k_quant_cache.device
+        batch_size = len(seq_lens)
+        self._ensure_kivi_residual_buffers()
+        block_table = block_table[:batch_size].to(
+            device=cache_device, dtype=torch.long
+        ).contiguous()
+        seq_lens_t = torch.tensor(
+            seq_lens, dtype=torch.long, device=cache_device
+        ).contiguous()
+        req_keys = self._get_kivi_req_keys(req_ids, batch_size)
+        dense_k, dense_v = kivi_dequant_gather_cache(
+            self.k_quant_cache,
+            self.k_scale_cache,
+            self.k_mn_cache,
+            self.v_quant_cache,
+            self.v_scale_cache,
+            self.v_mn_cache,
+            block_table,
+            seq_lens_t,
+            target_dtype,
+            self.kivi_group_size,
+        )
+
+        dense_k_parts: list[torch.Tensor] = []
+        dense_v_parts: list[torch.Tensor] = []
+        kv_start = 0
+        for req_idx, seq_len in enumerate(seq_lens):
+            req_len = int(seq_len)
+            req_k = dense_k[kv_start:kv_start + req_len]
+            req_v = dense_v[kv_start:kv_start + req_len]
+            kv_start += req_len
+
+            req_key = req_keys[req_idx]
+            residual_key = self._get_kivi_residual_tail(
+                req_key,
+                is_key=True,
+                target_dtype=target_dtype,
+                target_device=req_k.device,
+            )
+            if residual_key is not None and residual_key.shape[0] > 0 and req_len > 0:
+                tail_len = min(req_len, int(residual_key.shape[0]))
+                req_k = req_k.clone()
+                req_k[-tail_len:] = residual_key[-tail_len:]
+
+            residual_value = self._get_kivi_residual_tail(
+                req_key,
+                is_key=False,
+                target_dtype=target_dtype,
+                target_device=req_v.device,
+            )
+            if residual_value is not None and residual_value.shape[0] > 0 and req_len > 0:
+                tail_len = min(req_len, int(residual_value.shape[0]))
+                req_v = req_v.clone()
+                req_v[-tail_len:] = residual_value[-tail_len:]
+
+            dense_k_parts.append(req_k)
+            dense_v_parts.append(req_v)
+
+        if not dense_k_parts:
+            empty = dense_k.new_empty((0, self.num_kv_heads, self.head_size))
+            return empty, empty
+
+        return (
+            torch.cat(dense_k_parts, dim=0).contiguous(),
+            torch.cat(dense_v_parts, dim=0).contiguous(),
+        )
+
+    def _is_kivi_chunked_prefill_all_new(
+        self,
+        attn_metadata: AscendMetadata,
+    ) -> bool:
+        actual_seq_qlen = attn_metadata.actual_seq_lengths_q
+        num_decodes = attn_metadata.num_decodes
+
+        for req_idx in range(num_decodes, len(attn_metadata.seq_lens_list)):
+            q_start = actual_seq_qlen[req_idx - 1] if req_idx > 0 else 0
+            qlen_i = actual_seq_qlen[req_idx] - q_start
+            if attn_metadata.seq_lens_list[req_idx] > qlen_i:
+                return False
+        return True
+
+    def _forward_kivi_paged_decode_attention(
+        self,
+        query: torch.Tensor,
+        block_table: torch.Tensor,
+        seq_lens: list[int],
+        req_ids: list[str] | None,
+        output: torch.Tensor,
+    ) -> torch.Tensor:
+        batch_size = len(seq_lens)
+
+        dense_key, dense_value = self._gather_dequant_kivi_paged_cache(
+            block_table,
+            seq_lens,
+            query.dtype,
+            req_ids,
+        )
+        actual_seq_lengths_q = list(range(1, batch_size + 1))
+        actual_seq_lengths_kv = torch.tensor(
+            seq_lens,
+            dtype=torch.int32,
+            device="cpu",
+        ).cumsum(dim=0).tolist()
+
+        attn_output, _ = torch_npu.npu_fused_infer_attention_score(
+            query=query[:batch_size],
+            key=dense_key,
+            value=dense_value,
+            block_table=None,
+            input_layout="TND",
+            sparse_mode=0,
+            actual_seq_lengths=actual_seq_lengths_q,
+            actual_seq_lengths_kv=actual_seq_lengths_kv,
+            num_key_value_heads=self.num_kv_heads,
+            num_heads=self.num_heads,
+            scale=self.scale,
+        )
+        output[:batch_size] = attn_output.view(
+            batch_size, self.num_heads, self.head_size
+        )
         return output
 
+
+    def _forward_kivi_prefill_fia(
+        self,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        attn_metadata: AscendMetadata,
+        output: torch.Tensor,
+    ) -> torch.Tensor:
+        num_tokens = int(attn_metadata.actual_seq_lengths_q[-1])
+
+        query = query[:num_tokens]
+        key = key[:num_tokens]
+        value = value[:num_tokens]
+        sparse_mode = 3 if attn_metadata.causal else 0
+
+        attn_output, _ = torch_npu.npu_fused_infer_attention_score(
+            query=query,
+            key=key,
+            value=value,
+            atten_mask=attn_metadata.attn_mask if attn_metadata.causal else None,
+            block_table=None,
+            input_layout="TND",
+            block_size=128,
+            actual_seq_lengths=attn_metadata.actual_seq_lengths_q,
+            actual_seq_lengths_kv=attn_metadata.actual_seq_lengths_q,
+            num_key_value_heads=self.num_kv_heads,
+            num_heads=self.num_heads,
+            scale=self.scale,
+            sparse_mode=sparse_mode,
+        )
+        output[:num_tokens] = attn_output.view(
+            num_tokens, self.num_heads, self.head_size
+        )
+        return output
+
+    def _forward_kivi_chunked_prefill(
+        self,
+        query: torch.Tensor,
+        key: torch.Tensor | None,
+        value: torch.Tensor | None,
+        attn_metadata: AscendMetadata,
+        output: torch.Tensor,
+    ) -> torch.Tensor:
+        num_decode = attn_metadata.num_decode_tokens
+        num_decodes = attn_metadata.num_decodes
+        actual_seq_qlen = attn_metadata.actual_seq_lengths_q
+        num_tokens = int(actual_seq_qlen[-1])
+        block_size = self.k_quant_cache.shape[-1] * 8
+
+        if num_decode > 0:
+            self._forward_kivi_paged_decode_attention(
+                query[:num_decode],
+                attn_metadata.block_tables[:num_decodes],
+                attn_metadata.seq_lens_list[:num_decodes],
+                None if attn_metadata.req_ids is None else attn_metadata.req_ids[:num_decodes],
+                output,
+            )
+
+        if attn_metadata.num_prefills <= 0:
+            return output
+
+        prefill_q = query[num_decode:num_tokens]
+        prefill_seq_qlen = [
+            actual_seq_qlen[i] - num_decode
+            for i in range(num_decodes, len(actual_seq_qlen))
+        ]
+
+        if key is None or value is None:
+            raise RuntimeError(
+                "KIVI ChunkedPrefill requires dense key/value for all-new prefill prompts."
+            )
+
+        if not self._is_kivi_chunked_prefill_all_new(attn_metadata):
+            raise RuntimeError(
+                "KIVI ChunkedPrefill prefill-with-history is disabled. "
+                "Only all-new prompt prefills are supported."
+            )
+
+        prefill_k = key[num_decode:num_tokens]
+        prefill_v = value[num_decode:num_tokens]
+        prefill_seq_kvlen = prefill_seq_qlen
+
+        sparse_mode = 3 if attn_metadata.causal else 0
+        attn_out, _ = torch_npu.npu_fused_infer_attention_score(
+            query=prefill_q,
+            key=prefill_k,
+            value=prefill_v,
+            atten_mask=attn_metadata.attn_mask if attn_metadata.causal else None,
+            block_table=None,
+            input_layout="TND",
+            sparse_mode=sparse_mode,
+            block_size=block_size,
+            actual_seq_lengths=prefill_seq_qlen,
+            actual_seq_lengths_kv=prefill_seq_kvlen,
+            num_key_value_heads=self.num_kv_heads,
+            num_heads=self.num_heads,
+            scale=self.scale,
+        )
+        n_prefill = num_tokens - num_decode
+        output[num_decode:num_tokens] = attn_out.view(
+            n_prefill, self.num_heads, self.head_size
+        )[:n_prefill]
+        return output
+    
+    def _forward_kivi_dense_attention(
+        self,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        seq_lens: list[int],
+        actual_seq_qlen,
+        causal: bool,
+        output: torch.Tensor,
+    ) -> torch.Tensor:
+        self._kivi_dense_attn_count += 1
+        prev_q_end = 0
+        kv_start = 0
+        outputs = []
+
+        if isinstance(actual_seq_qlen, torch.Tensor):
+            actual_seq_qlen = actual_seq_qlen.tolist()
+
+        for req_idx, kv_len in enumerate(seq_lens):
+            q_end = int(actual_seq_qlen[req_idx])
+            q_seq = query[prev_q_end:q_end]
+            k_seq = key[kv_start:kv_start + int(kv_len)]
+            v_seq = value[kv_start:kv_start + int(kv_len)]
+
+            q_len = q_seq.shape[0]
+            if q_len > 0:
+                k_seq = self._repeat_kv(k_seq)
+                v_seq = self._repeat_kv(v_seq)
+
+                q_states = q_seq.transpose(0, 1)
+                attn = torch.matmul(q_states, k_seq.permute(1, 2, 0)) * self.scale
+
+                if causal:
+                    attn = attn + self._build_kivi_causal_mask(
+                        q_len=q_len,
+                        kv_seq_len=int(kv_len),
+                        dtype=attn.dtype,
+                        device=attn.device,
+                    )
+
+                attn = torch.softmax(attn, dim=-1, dtype=torch.float32).to(query.dtype)
+                out = torch.matmul(attn, v_seq.transpose(0, 1))
+                outputs.append(out.transpose(0, 1).contiguous())
+
+            prev_q_end = q_end
+            kv_start += int(kv_len)
+
+        if outputs:
+            attn_output = torch.cat(outputs, dim=0)
+            output[:attn_output.shape[0]] = attn_output
+
+        return output
+   
+
+    @staticmethod
+    def _cu_seqlens_to_seq_lens(cu_seqlens) -> list[int]:
+        if isinstance(cu_seqlens, torch.Tensor):
+            cu_seqlens = cu_seqlens.tolist()
+        prev = 0
+        seq_lens = []
+        for end in cu_seqlens:
+            seq_lens.append(int(end) - prev)
+            prev = int(end)
+        return seq_lens
+
+
+    # ★ INT8 独立方法 (镜像 C8)
+    # ═══════════════════════════════════════════════════════════════
+    def _forward_int8_decode(
+        self,
+        query: torch.Tensor,
+        attn_metadata: AscendMetadata,
+        output: torch.Tensor,
+    ) -> torch.Tensor:
+        """INT8 Decode: BNSD + int8 paged KV cache + antiquant."""
+
+        num_block, block_size, _, _ = self.key_cache.shape
+        key = self.key_cache.view(num_block, block_size, -1)
+        value = self.value_cache.view(num_block, block_size, -1)
+        batch_size = len(attn_metadata.seq_lens_list)
+
+        attn_output, _ = torch_npu.npu_fused_infer_attention_score(
+            query[:batch_size].unsqueeze(2),
+            key, value,
+            key_antiquant_scale=self._k_aq_scale,
+            key_antiquant_offset=self._k_aq_offset,
+            value_antiquant_scale=self._v_aq_scale,
+            value_antiquant_offset=self._v_aq_offset,
+            key_antiquant_mode=0, value_antiquant_mode=0,
+            block_table=attn_metadata.block_tables,
+            actual_seq_lengths_kv=attn_metadata.seq_lens_list,
+            num_heads=self.num_heads,
+            num_key_value_heads=self.num_kv_heads,
+            input_layout="BNSD", sparse_mode=0,
+            scale=self.scale, block_size=block_size,
+        )
+        attn_output = attn_output.squeeze(2)
+        output[:batch_size] = attn_output
+        return output
+
+    def _forward_int8_chunked_prefill(
+        self,
+        query: torch.Tensor,
+        float_key: torch.Tensor | None,
+        float_value: torch.Tensor | None,
+        attn_metadata: AscendMetadata,
+        output: torch.Tensor,
+    ) -> torch.Tensor:
+        """INT8 ChunkedPrefill: decode→BNSD+int8, prefill→TND+fp16."""
+      
+        num_decode = attn_metadata.num_decode_tokens
+        num_decodes = attn_metadata.num_decodes
+        actual_seq_qlen = attn_metadata.actual_seq_lengths_q
+        num_tokens = int(actual_seq_qlen[-1])
+
+        # ── ① Decode: BNSD + int8 cache ──
+        if num_decode > 0:
+            num_block, block_size, _, _ = self.key_cache.shape
+            kv_k = self.key_cache.view(num_block, block_size, -1)
+            kv_v = self.value_cache.view(num_block, block_size, -1)
+
+            attn_out, _ = torch_npu.npu_fused_infer_attention_score(
+                query[:num_decode].unsqueeze(2), kv_k, kv_v,
+                key_antiquant_scale=self._k_aq_scale,
+                key_antiquant_offset=self._k_aq_offset,
+                value_antiquant_scale=self._v_aq_scale,
+                value_antiquant_offset=self._v_aq_offset,
+                key_antiquant_mode=0, value_antiquant_mode=0,
+                block_table=attn_metadata.block_tables[:num_decodes],
+                actual_seq_lengths_kv=attn_metadata.seq_lens_list[:num_decodes],
+                num_heads=self.num_heads,
+                num_key_value_heads=self.num_kv_heads,
+                input_layout="BNSD", sparse_mode=0,
+                scale=self.scale, block_size=block_size,
+            )
+            output[:num_decode] = attn_out.squeeze(2)
+
+        # ── ② Prefill: TND + fp16 (fresh K/V 或 dequant from int8 cache) ──
+        if attn_metadata.num_prefills > 0:
+            prefill_q = query[num_decode:num_tokens]
+
+            prefill_seq_qlen = [
+                actual_seq_qlen[i] - num_decode
+                for i in range(num_decodes, len(actual_seq_qlen))
+            ]
+
+            # 判断是否所有 prefill 请求都是全新（无历史 KV cache）
+            all_new_prefill = True
+            for i in range(num_decodes, len(attn_metadata.seq_lens_list)):
+                q_start = actual_seq_qlen[i - 1] if i > 0 else 0
+                qlen_i = actual_seq_qlen[i] - q_start
+                if attn_metadata.seq_lens_list[i] > qlen_i:
+                    all_new_prefill = False
+                    break
+
+            if all_new_prefill and float_key is not None and float_value is not None:
+                # 全新 prefill: 直接用 fp16 fresh K/V
+             
+                prefill_k = float_key[num_decode:num_tokens]
+                prefill_v = float_value[num_decode:num_tokens]
+                prefill_seq_kvlen = prefill_seq_qlen
+            else:
+                # 承接已有 cache: gather paged int8 KV → dequant → dense fp16
+             
+                num_block, blk_size, _, _ = self.key_cache.shape
+                paged_k = self.key_cache.view(num_block, blk_size, -1)
+                paged_v = self.value_cache.view(num_block, blk_size, -1)
+                prefill_bt = attn_metadata.block_tables[num_decodes:]
+                prefill_sl = attn_metadata.seq_lens_list[num_decodes:]
+                prefill_k, prefill_v = self._dequant_paged_kv_to_dense(
+                    paged_k, paged_v, prefill_bt, prefill_sl, query.dtype
+                )
+                prefill_seq_kvlen = torch.tensor(prefill_sl, dtype=torch.int32).cumsum(dim=0)
+
+            cache_block_size = self.key_cache.shape[1]
+            attn_out, _ = torch_npu.npu_fused_infer_attention_score(
+                query=prefill_q, key=prefill_k, value=prefill_v,
+                atten_mask=attn_metadata.attn_mask,
+                block_table=None,
+                input_layout="TND", sparse_mode=3,
+                block_size=cache_block_size,
+                actual_seq_lengths=prefill_seq_qlen,
+                actual_seq_lengths_kv=prefill_seq_kvlen,
+                num_key_value_heads=self.num_kv_heads,
+                num_heads=self.num_heads, scale=self.scale,
+            )
+            n_prefill = num_tokens - num_decode
+            attn_out = attn_out.view(n_prefill, self.num_heads, self.head_size)
+            output[num_decode:num_tokens] = attn_out[:n_prefill]
+
+        return output
+
+    def _forward_int8_prefill(
+        self,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        attn_metadata: AscendMetadata,
+        output: torch.Tensor,
+    ) -> torch.Tensor:
+        """INT8 Prefill: TND + fp16 (fresh K/V or dequant if from int8 cache)."""
+      
+        key, value, block_size, block_table, actual_seq_lengths_kv = \
+            self._get_fia_params(key, value, attn_metadata)
+
+        actual_seq_qlen = attn_metadata.actual_seq_lengths_q
+        num_tokens = int(actual_seq_qlen[-1])
+        query = query[:num_tokens]
+
+        if (
+            attn_metadata.attn_state == AscendAttentionState.PrefillNoCache
+            and self.attn_type != AttentionType.ENCODER_DECODER
+        ):
+           
+            key = key[:num_tokens]
+            value = value[:num_tokens]
+
+        # PrefillCacheHit: key 从 cache 读是 int8 → 手动 dequant
+        if key.dtype == torch.int8:
+            if block_table is not None:
+                seq_lens = (
+                    actual_seq_lengths_kv
+                    if isinstance(actual_seq_lengths_kv, list)
+                    else actual_seq_lengths_kv.tolist()
+                )
+                key, value = self._dequant_paged_kv_to_dense(
+                    key, value, block_table, seq_lens, query.dtype
+                )
+                block_table = None
+                block_size = self.key_cache.shape[1]
+                actual_seq_lengths_kv = torch.tensor(
+                    seq_lens, dtype=torch.int32
+                ).cumsum(dim=0)
+            else:
+                key = (key.to(query.dtype) - self._k_offset) * (
+                    1.0 / self._k_inv_scale
+                )
+                value = (value.to(query.dtype) - self._v_offset) * (
+                    1.0 / self._v_inv_scale
+                )
+
+        attn_output, _ = torch_npu.npu_fused_infer_attention_score(
+            query=query, key=key, value=value,
+            atten_mask=attn_metadata.attn_mask,
+            block_table=block_table,
+            input_layout="TND", sparse_mode=3,
+            block_size=block_size,
+            actual_seq_lengths=actual_seq_qlen,
+            actual_seq_lengths_kv=actual_seq_lengths_kv,
+            num_key_value_heads=self.num_kv_heads,
+            num_heads=self.num_heads, scale=self.scale,
+        )
+        attn_output = attn_output.view(num_tokens, self.num_heads, self.head_size)
+        output[:num_tokens] = attn_output
+        return output
+
+    def _dequant_paged_kv_to_dense(
+        self, key, value, block_table, seq_lens, target_dtype
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Gather paged int8 KV blocks and dequantize to dense fp16."""
+        batch_size = block_table.shape[0]
+        block_size = key.shape[1]
+        H = key.shape[2]
+        max_blocks_per_seq = block_table.shape[1]
+        max_tokens_padded = max_blocks_per_seq * block_size
+
+        flat_ids = block_table.reshape(-1)
+        gathered_k = key[flat_ids].view(batch_size, max_tokens_padded, H)
+        gathered_v = value[flat_ids].view(batch_size, max_tokens_padded, H)
+
+        seq_lens_t = torch.tensor(seq_lens, dtype=torch.long, device=key.device)
+        positions = torch.arange(max_tokens_padded, dtype=torch.long, device=key.device)
+        valid_mask = (positions.unsqueeze(0) < seq_lens_t.unsqueeze(1)).view(-1)
+
+        dense_k = gathered_k.view(-1, H)[valid_mask]
+        dense_v = gathered_v.view(-1, H)[valid_mask]
+        dense_k = dense_k.view(-1, self.num_kv_heads, self.head_size)
+        dense_v = dense_v.view(-1, self.num_kv_heads, self.head_size)
+        dense_k = (dense_k.to(target_dtype) - self._k_offset) * (
+            1.0 / self._k_inv_scale
+        )
+        dense_v = (dense_v.to(target_dtype) - self._v_offset) * (
+            1.0 / self._v_inv_scale
+        )
+        return dense_k, dense_v
+    
+    def _calc_int8_scales(self, key, value):
+        k_max = key.abs().amax(dim=0, keepdim=True).clamp(min=1e-12)
+        v_max = value.abs().amax(dim=0, keepdim=True).clamp(min=1e-12)
+        self._k_inv_scale = 127.0 / k_max
+        self._k_offset = torch.zeros_like(self._k_inv_scale)
+        self._v_inv_scale = 127.0 / v_max
+        self._v_offset = torch.zeros_like(self._v_inv_scale)
+        bnsd = (1, self.num_kv_heads, 1, self.head_size)
+        self._k_aq_scale = (1.0 / self._k_inv_scale).view(bnsd).contiguous()
+        self._k_aq_offset = self._k_offset.view(bnsd).contiguous()
+        self._v_aq_scale = (1.0 / self._v_inv_scale).view(bnsd).contiguous()
+        self._v_aq_offset = self._v_offset.view(bnsd).contiguous()
+        self._int8_ready = True
+    
+    @staticmethod
+    def _quantize_kv_to_int8(x, inv_scale, offset):
+            """ Quantize K/V from float to INT8 using static per-channel  scales."""
+            return torch.clamp(torch.round(x * inv_scale + offset), -128, 127).to(torch.int8)
 
 class AscendC8AttentionBackendImpl(AscendAttentionBackendImpl):
     """Attention backend implementation for INT8 KV cache (C8/QuaRot) models.
