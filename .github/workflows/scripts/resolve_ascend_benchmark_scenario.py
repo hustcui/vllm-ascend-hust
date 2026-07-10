@@ -142,7 +142,13 @@ def _selection_scenarios(selection: ScenarioSelection) -> tuple[str, ...]:
     return selection.scenarios or (selection.scenario,)
 
 
-def _validate_selection(selection: ScenarioSelection) -> ScenarioSelection:
+def _validate_selection(
+    selection: ScenarioSelection,
+    *,
+    require_sharegpt_inputs: bool = True,
+) -> ScenarioSelection:
+    if not require_sharegpt_inputs:
+        return selection
     if "sharegpt-online" not in _selection_scenarios(selection):
         return selection
     missing = []
@@ -169,6 +175,7 @@ def select_scenario(
     benchmark_repo: str = "",
     hardware_chip_model: str = "910B2",
 ) -> ScenarioSelection:
+    hardware_chip_model = hardware_chip_model or "910B2"
     scenario_list = parse_scenarios(configured_scenarios)
     if len(scenario_list) > 1 and same_spec_spec_file:
         raise ValueError(
@@ -195,7 +202,8 @@ def select_scenario(
                 constraints_file=default_constraints_file,
                 same_spec_spec_file=same_spec_spec_file,
                 same_spec_constraints_file=same_spec_constraints_file,
-            )
+            ),
+            require_sharegpt_inputs=False,
         )
 
     if event_name == "workflow_dispatch":
@@ -336,7 +344,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--hardware-chip-model",
-        default=os.environ.get("HARDWARE_CHIP_MODEL", "910B2"),
+        default=os.environ.get("HARDWARE_CHIP_MODEL") or "910B2",
     )
     parser.add_argument("--github-env", default=os.environ.get("GITHUB_ENV", ""))
     parser.add_argument("--github-output", default=os.environ.get("GITHUB_OUTPUT", ""))

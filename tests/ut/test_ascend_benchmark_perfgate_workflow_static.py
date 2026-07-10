@@ -116,6 +116,27 @@ def test_ascend_benchmark_workflow_wires_two_stage_perfgate() -> None:
     assert "VLLM_ASCEND_HUST_STAGE2_DEV_HUB_QUICKSTART_CONDA || '0'" in workflow
 
 
+def test_schedule_runs_registered_multi_scenario_benchmark_publish() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+
+    assert 'cron: "0 19 * * *"' in workflow
+    assert "github.event_name == 'schedule'" in workflow
+    assert "VLLM_ASCEND_HUST_SCHEDULE_BENCHMARK_SCENARIOS" in workflow
+    assert "VLLM_ASCEND_HUST_SCHEDULE_PUBLISH_BENCHMARK != '0'" in workflow
+    for scenario in (
+        "random-online",
+        "sharegpt-online",
+        "prefix-repetition-online",
+        "random-latency",
+        "sharegpt-throughput",
+        "sonnet-throughput",
+        "instructcoder-online",
+        "agent-research-online",
+        "visionarena-online",
+    ):
+        assert scenario in workflow
+
+
 def test_benchmark_runner_resolves_same_spec_without_random_online_default() -> None:
     runner_script = (SCRIPT_DIR / "run_ascend_benchmark_ci.sh").read_text(encoding="utf-8")
 
