@@ -110,7 +110,8 @@ The default workdir is `/workspace`, vLLM and vLLM Ascend code are placed in `/v
 
 ## Usage
 
-You can use ModelScope mirror to speed up download:
+You can use ModelScope mirror to speed up download if `modelscope` is installed.
+If it is not installed, the examples will fall back to Hugging Face Hub:
 
 <!-- tests/e2e/doctests/001-quickstart-test.sh should be considered updating as well -->
 
@@ -154,7 +155,7 @@ Then run:
 python example.py
 ```
 
-If you encounter a connection error with Hugging Face (e.g., `We couldn't connect to 'https://huggingface.co' to load the files, and couldn't find them in the cached files.`), run the following commands to use ModelScope as an alternative:
+If you encounter a connection error with Hugging Face (e.g., `We couldn't connect to 'https://huggingface.co' to load the files, and couldn't find them in the cached files.`), install ModelScope and run the following commands to use it as an alternative:
 
 ```bash
 export VLLM_USE_MODELSCOPE=True
