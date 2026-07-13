@@ -345,6 +345,8 @@ If you encounter a connection error with Hugging Face (e.g., `We couldn't connec
 
 ```bash
 export VLLM_USE_MODELSCOPE=True
+export MODELSCOPE_CACHE=/workspace/.cache/modelscope
+export MODELSCOPE_CREDENTIALS_PATH=/workspace/.cache/modelscope/credentials
 pip install modelscope
 python example.py
 ```

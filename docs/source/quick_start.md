@@ -111,12 +111,16 @@ The default workdir is `/workspace`, vLLM and vLLM Ascend code are placed in `/v
 ## Usage
 
 You can use ModelScope mirror to speed up download if `modelscope` is installed.
-If it is not installed, the examples will fall back to Hugging Face Hub:
+If it is not installed, the examples will fall back to Hugging Face Hub.
+For read-only home directories, set the ModelScope cache and credential paths
+to a writable location:
 
 <!-- tests/e2e/doctests/001-quickstart-test.sh should be considered updating as well -->
 
 ```bash
 export VLLM_USE_MODELSCOPE=True
+export MODELSCOPE_CACHE=/workspace/.cache/modelscope
+export MODELSCOPE_CREDENTIALS_PATH=/workspace/.cache/modelscope/credentials
 ```
 
 There are two ways to start vLLM on Ascend NPU:
