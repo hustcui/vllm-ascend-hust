@@ -20,6 +20,7 @@ from pathlib import Path
 
 from vllm import envs
 from vllm.logger import logger
+from vllm.transformers_utils.modelscope_utils import configure_modelscope_runtime
 
 from vllm_ascend.utils import (
     ASCEND_QUANTIZATION_METHOD,
@@ -58,6 +59,7 @@ def get_model_file(
     # Remote repo: try to download from HF Hub or ModelScope
     try:
         if envs.VLLM_USE_MODELSCOPE:
+            configure_modelscope_runtime()
             from modelscope.hub.file_download import model_file_download  # type: ignore[import-untyped]
 
             downloaded_path = model_file_download(
