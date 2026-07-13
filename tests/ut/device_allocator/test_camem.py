@@ -15,19 +15,41 @@
 
 import importlib
 import sys
+import types
 from unittest.mock import MagicMock, patch
 
 import pytest
 import torch
 
 from tests.ut.base import PytestBase
-from vllm_ascend.device_allocator.camem import (
-    AllocationData,
-    CaMemAllocator,
-    create_and_map,
-    get_pluggable_allocator,
-    unmap_and_release,
-)
+
+
+def load_camem_module(acl_module=None):
+    fake_c = types.ModuleType("vllm_ascend.vllm_ascend_C")
+    fake_c.__spec__ = importlib.util.spec_from_loader("vllm_ascend.vllm_ascend_C", loader=None)
+    fake_c.init_module = MagicMock()  # type: ignore[attr-defined]
+    fake_c.python_create_and_map = MagicMock()  # type: ignore[attr-defined]
+    fake_c.python_unmap_and_release = MagicMock()  # type: ignore[attr-defined]
+
+    fake_acl = acl_module or types.ModuleType("acl")
+    fake_acl.__spec__ = importlib.util.spec_from_loader("acl", loader=None)
+    fake_rt = getattr(fake_acl, "rt", None)
+    if fake_rt is None:
+        fake_rt = types.ModuleType("acl.rt")
+        fake_rt.__spec__ = importlib.util.spec_from_loader("acl.rt", loader=None)
+        fake_rt.memcpy = MagicMock()  # type: ignore[attr-defined]
+        fake_acl.rt = fake_rt  # type: ignore[attr-defined]
+
+    with patch.dict(
+        sys.modules,
+        {
+            "vllm_ascend.vllm_ascend_C": fake_c,
+            "acl": fake_acl,
+            "acl.rt": fake_rt,
+        },
+        clear=False,
+    ):
+        return importlib.reload(importlib.import_module("vllm_ascend.device_allocator.camem"))
 
 
 def dummy_malloc(args):
@@ -39,16 +61,15 @@ def dummy_free(ptr):
 
 
 class TestCaMem(PytestBase):
-    def test_camem_imports_without_acl_runtime(self):
-        with patch.dict(sys.modules, {}, clear=False):
-            sys.modules.pop("acl", None)
-            sys.modules.pop("acl.rt", None)
+    def test_camem_loads_memcpy_from_top_level_acl_module(self):
+        fake_acl = types.ModuleType("acl")
+        fake_rt = types.ModuleType("acl.rt")
+        fake_rt.memcpy = object()
+        fake_acl.rt = fake_rt  # type: ignore[attr-defined]
 
-            module = importlib.reload(importlib.import_module(
-                "vllm_ascend.device_allocator.camem"
-            ))
+        module = load_camem_module(fake_acl)
 
-        assert module.memcpy is None
+        assert module.memcpy is fake_rt.memcpy
 
     @pytest.mark.parametrize(
         "handle",
@@ -59,8 +80,9 @@ class TestCaMem(PytestBase):
         ],
     )
     def test_create_and_map_calls_python_create_and_map(self, handle):
+        camem = load_camem_module()
         with patch("vllm_ascend.device_allocator.camem.python_create_and_map") as mock_create:
-            create_and_map(handle)
+            camem.create_and_map(handle)
             mock_create.assert_called_once_with(*handle)
 
     @pytest.mark.parametrize(
@@ -71,13 +93,15 @@ class TestCaMem(PytestBase):
         ],
     )
     def test_unmap_and_release_calls_python_unmap_and_release(self, handle):
+        camem = load_camem_module()
         with patch("vllm_ascend.device_allocator.camem.python_unmap_and_release") as mock_release:
-            unmap_and_release(handle)
+            camem.unmap_and_release(handle)
             mock_release.assert_called_once_with(*handle)
 
     @patch("vllm_ascend.device_allocator.camem.init_module")
     @patch("vllm_ascend.device_allocator.camem.torch.npu.memory.NPUPluggableAllocator")
     def test_get_pluggable_allocator(self, mock_allocator_class, mock_init_module):
+        camem = load_camem_module()
         mock_allocator_instance = MagicMock()
         mock_allocator_class.return_value = mock_allocator_instance
 
@@ -87,17 +111,19 @@ class TestCaMem(PytestBase):
 
         mock_init_module.side_effect = side_effect_malloc_and_free
 
-        allocator = get_pluggable_allocator(dummy_malloc, dummy_free)
+        allocator = camem.get_pluggable_allocator(dummy_malloc, dummy_free)
         mock_init_module.assert_called_once_with(dummy_malloc, dummy_free)
         assert allocator == mock_allocator_instance
 
     def test_singleton_behavior(self):
-        instance1 = CaMemAllocator.get_instance()
-        instance2 = CaMemAllocator.get_instance()
+        camem = load_camem_module()
+        instance1 = camem.CaMemAllocator.get_instance()
+        instance2 = camem.CaMemAllocator.get_instance()
         assert instance1 is instance2
 
     def test_python_malloc_and_free_callback(self):
-        allocator = CaMemAllocator.get_instance()
+        camem = load_camem_module()
+        allocator = camem.CaMemAllocator.get_instance()
 
         # mock allocation_handle
         handle = (1, 100, 1234, 0)
@@ -121,13 +147,14 @@ class TestCaMem(PytestBase):
     @patch("vllm_ascend.device_allocator.camem.unmap_and_release")
     @patch("vllm_ascend.device_allocator.camem.memcpy")
     def test_sleep_offload_and_discard(self, mock_memcpy, mock_unmap):
-        allocator = CaMemAllocator.get_instance()
+        camem = load_camem_module()
+        allocator = camem.CaMemAllocator.get_instance()
 
         # prepare allocation， one tag match，one not match
         handle1 = (1, 10, 1000, 0)
-        data1 = AllocationData(handle1, "tag1")
+        data1 = camem.AllocationData(handle1, "tag1")
         handle2 = (2, 20, 2000, 0)
-        data2 = AllocationData(handle2, "tag2")
+        data2 = camem.AllocationData(handle2, "tag2")
         allocator.pointer_to_data = {
             1000: data1,
             2000: data2,
@@ -156,11 +183,12 @@ class TestCaMem(PytestBase):
     @patch("vllm_ascend.device_allocator.camem.create_and_map")
     @patch("vllm_ascend.device_allocator.camem.memcpy")
     def test_wake_up_loads_and_clears_cpu_backup(self, mock_memcpy, mock_create_and_map):
-        allocator = CaMemAllocator.get_instance()
+        camem = load_camem_module()
+        allocator = camem.CaMemAllocator.get_instance()
 
         handle = (1, 10, 1000, 0)
         tensor = torch.zeros(5, dtype=torch.uint8)
-        data = AllocationData(handle, "tag1", cpu_backup_tensor=tensor)
+        data = camem.AllocationData(handle, "tag1", cpu_backup_tensor=tensor)
         allocator.pointer_to_data = {1000: data}
 
         allocator.wake_up(tags=["tag1"])
@@ -170,7 +198,8 @@ class TestCaMem(PytestBase):
         assert mock_memcpy.called
 
     def test_use_memory_pool_context_manager(self):
-        allocator = CaMemAllocator.get_instance()
+        camem = load_camem_module()
+        allocator = camem.CaMemAllocator.get_instance()
         old_tag = allocator.current_tag
 
         # mock use_memory_pool_with_allocator
@@ -185,11 +214,12 @@ class TestCaMem(PytestBase):
             assert allocator.current_tag == old_tag
 
     def test_get_current_usage(self):
-        allocator = CaMemAllocator.get_instance()
+        camem = load_camem_module()
+        allocator = camem.CaMemAllocator.get_instance()
 
         allocator.pointer_to_data = {
-            1: AllocationData((0, 100, 1, 0), "tag"),
-            2: AllocationData((0, 200, 2, 0), "tag"),
+            1: camem.AllocationData((0, 100, 1, 0), "tag"),
+            2: camem.AllocationData((0, 200, 2, 0), "tag"),
         }
 
         usage = allocator.get_current_usage()

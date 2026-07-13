@@ -27,14 +27,25 @@ import torch
 from vllm.logger import logger
 
 try:
-    from acl.rt import memcpy  # type: ignore # noqa: F401
+    import acl  # type: ignore
 except ImportError as exc:
     logger.warning(
-        "Failed to import acl.rt; sleep mode will be disabled until the ACL "
+        "Failed to import acl; sleep mode will be disabled until the ACL "
         "runtime is available: %s",
         exc,
     )
+    acl = None
     memcpy = None
+else:
+    try:
+        memcpy = acl.rt.memcpy  # type: ignore[attr-defined]
+    except AttributeError as exc:
+        logger.warning(
+            "Failed to access acl.rt.memcpy; sleep mode will be disabled "
+            "until the ACL runtime is available: %s",
+            exc,
+        )
+        memcpy = None
 
 
 def find_loaded_library(lib_name) -> str | None:
@@ -84,8 +95,8 @@ except ImportError as e:
 def _require_acl_memcpy():
     if memcpy is None:
         raise RuntimeError(
-            "CaMem sleep mode requires the ACL runtime, but acl.rt could not be "
-            "imported."
+            "CaMem sleep mode requires the ACL runtime, but acl.rt.memcpy "
+            "could not be resolved."
         )
     return memcpy
 
