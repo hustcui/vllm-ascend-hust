@@ -16,11 +16,33 @@
 #
 
 import json
+import os
+import tempfile
 from pathlib import Path
 
 from vllm import envs
 from vllm.logger import logger
-from vllm.transformers_utils.modelscope_utils import configure_modelscope_runtime
+
+try:
+    from vllm.transformers_utils.modelscope_utils import configure_modelscope_runtime
+except ModuleNotFoundError:
+    def configure_modelscope_runtime() -> None:
+        proxy_hosts = "modelscope.cn,.modelscope.cn,www.modelscope.cn"
+        for key in ("NO_PROXY", "no_proxy"):
+            current = os.environ.get(key)
+            if not current:
+                os.environ[key] = proxy_hosts
+                continue
+            if proxy_hosts in current:
+                continue
+            os.environ[key] = f"{current},{proxy_hosts}"
+
+        cache_root = Path(tempfile.gettempdir()) / "modelscope"
+        os.environ.setdefault("MODELSCOPE_CACHE", str(cache_root))
+        os.environ.setdefault(
+            "MODELSCOPE_CREDENTIALS_PATH",
+            str(cache_root / "credentials"),
+        )
 
 from vllm_ascend.utils import (
     ASCEND_QUANTIZATION_METHOD,

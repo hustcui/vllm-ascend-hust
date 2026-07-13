@@ -24,8 +24,17 @@ from contextlib import contextmanager
 from typing import Any
 
 import torch
-from acl.rt import memcpy  # type: ignore # noqa: F401
 from vllm.logger import logger
+
+try:
+    from acl.rt import memcpy  # type: ignore # noqa: F401
+except ImportError as exc:
+    logger.warning(
+        "Failed to import acl.rt; sleep mode will be disabled until the ACL "
+        "runtime is available: %s",
+        exc,
+    )
+    memcpy = None
 
 
 def find_loaded_library(lib_name) -> str | None:
@@ -70,6 +79,15 @@ except ImportError as e:
     python_unmap_and_release = None
     lib_name = None
     libcudart = None
+
+
+def _require_acl_memcpy():
+    if memcpy is None:
+        raise RuntimeError(
+            "CaMem sleep mode requires the ACL runtime, but acl.rt could not be "
+            "imported."
+        )
+    return memcpy
 
 # py_device, py_alignedSize, py_d_mem, py_p_memHandle
 HandleType = tuple[int, int, int, int]
@@ -212,7 +230,7 @@ class CaMemAllocator:
                 cpu_ptr = cpu_backup_tensor.data_ptr()
                 ACL_MEMCPY_DEVICE_TO_HOST = 2
                 dest_max = cpu_ptr + size_in_bytes * 2
-                memcpy(cpu_ptr, dest_max, ptr, size_in_bytes, ACL_MEMCPY_DEVICE_TO_HOST)
+                _require_acl_memcpy()(cpu_ptr, dest_max, ptr, size_in_bytes, ACL_MEMCPY_DEVICE_TO_HOST)
                 data.cpu_backup_tensor = cpu_backup_tensor
             unmap_and_release(handle)
 
@@ -245,7 +263,7 @@ class CaMemAllocator:
                         cpu_ptr = cpu_backup_tensor.data_ptr()
                         ACL_MEMCPY_HOST_TO_DEVICE = 1
                         dest_max = ptr + size_in_bytes * 2
-                        memcpy(ptr, dest_max, cpu_ptr, size_in_bytes, ACL_MEMCPY_HOST_TO_DEVICE)
+                        _require_acl_memcpy()(ptr, dest_max, cpu_ptr, size_in_bytes, ACL_MEMCPY_HOST_TO_DEVICE)
                         data.cpu_backup_tensor = None
 
     @contextmanager

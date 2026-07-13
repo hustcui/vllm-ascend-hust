@@ -13,6 +13,8 @@
 # This file is a part of the vllm-ascend project.
 #
 
+import importlib
+import sys
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -37,6 +39,17 @@ def dummy_free(ptr):
 
 
 class TestCaMem(PytestBase):
+    def test_camem_imports_without_acl_runtime(self):
+        with patch.dict(sys.modules, {}, clear=False):
+            sys.modules.pop("acl", None)
+            sys.modules.pop("acl.rt", None)
+
+            module = importlib.reload(importlib.import_module(
+                "vllm_ascend.device_allocator.camem"
+            ))
+
+        assert module.memcpy is None
+
     @pytest.mark.parametrize(
         "handle",
         [
