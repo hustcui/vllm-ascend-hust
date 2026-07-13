@@ -24,31 +24,29 @@ import torch
 from tests.ut.base import PytestBase
 
 
-def load_camem_module(acl_module=None):
+_MISSING = object()
+
+
+def load_camem_module(acl_module=_MISSING):
     fake_c = types.ModuleType("vllm_ascend.vllm_ascend_C")
     fake_c.__spec__ = importlib.util.spec_from_loader("vllm_ascend.vllm_ascend_C", loader=None)
     fake_c.init_module = MagicMock()  # type: ignore[attr-defined]
     fake_c.python_create_and_map = MagicMock()  # type: ignore[attr-defined]
     fake_c.python_unmap_and_release = MagicMock()  # type: ignore[attr-defined]
 
-    fake_acl = acl_module or types.ModuleType("acl")
-    fake_acl.__spec__ = importlib.util.spec_from_loader("acl", loader=None)
-    fake_rt = getattr(fake_acl, "rt", None)
-    if fake_rt is None:
+    module_entries = {"vllm_ascend.vllm_ascend_C": fake_c}
+    if acl_module is _MISSING:
+        fake_acl = types.ModuleType("acl")
+        fake_acl.__spec__ = importlib.util.spec_from_loader("acl", loader=None)
         fake_rt = types.ModuleType("acl.rt")
         fake_rt.__spec__ = importlib.util.spec_from_loader("acl.rt", loader=None)
         fake_rt.memcpy = MagicMock()  # type: ignore[attr-defined]
         fake_acl.rt = fake_rt  # type: ignore[attr-defined]
+        module_entries.update({"acl": fake_acl, "acl.rt": fake_rt})
+    elif acl_module is not None:
+        module_entries.update({"acl": acl_module, "acl.rt": acl_module.rt})
 
-    with patch.dict(
-        sys.modules,
-        {
-            "vllm_ascend.vllm_ascend_C": fake_c,
-            "acl": fake_acl,
-            "acl.rt": fake_rt,
-        },
-        clear=False,
-    ):
+    with patch.dict(sys.modules, module_entries, clear=False):
         return importlib.reload(importlib.import_module("vllm_ascend.device_allocator.camem"))
 
 
@@ -70,6 +68,29 @@ class TestCaMem(PytestBase):
         module = load_camem_module(fake_acl)
 
         assert module.memcpy is fake_rt.memcpy
+
+    def test_camem_discovers_acl_site_packages_when_sys_path_is_missing(self, tmp_path, monkeypatch):
+        site_packages = tmp_path / "Ascend" / "cann" / "python" / "site-packages"
+        site_packages.mkdir(parents=True)
+        (site_packages / "acl.py").write_text(
+            "class rt:\n"
+            "    memcpy = object()\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("ASCEND_HOME_PATH", str(tmp_path / "Ascend" / "cann"))
+        monkeypatch.setattr(
+            sys,
+            "path",
+            [path for path in sys.path if "Ascend" not in path and "cann" not in path.lower()],
+            raising=False,
+        )
+
+        with patch.dict(sys.modules, {}, clear=False):
+            sys.modules.pop("acl", None)
+            sys.modules.pop("acl.rt", None)
+            module = load_camem_module(None)
+
+        assert module.memcpy is not None
 
     @pytest.mark.parametrize(
         "handle",

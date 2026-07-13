@@ -19,22 +19,67 @@
 import dataclasses
 import gc
 import os
+import sys
 from collections.abc import Callable
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Any
 
 import torch
 from vllm.logger import logger
 
-try:
-    import acl  # type: ignore
-except ImportError as exc:
-    logger.warning(
-        "Failed to import acl; sleep mode will be disabled until the ACL "
-        "runtime is available: %s",
-        exc,
-    )
-    acl = None
+
+def _candidate_acl_site_packages() -> list[Path]:
+    ascend_roots = [
+        os.environ.get("ASCEND_HOME_PATH"),
+        os.environ.get("ASCEND_TOOLKIT_HOME"),
+        os.environ.get("ASCEND_TOOLKIT_LATEST_HOME"),
+        "/usr/local/Ascend/ascend-toolkit/latest",
+        "/usr/local/Ascend/ascend-toolkit",
+        "/usr/local/Ascend/cann",
+        "/usr/local/Ascend/cann-8.5.1",
+    ]
+    return [
+        Path(root) / "python/site-packages"
+        for root in ascend_roots
+        if root
+    ]
+
+
+def _ensure_acl_site_packages_on_path() -> Path | None:
+    for site_packages in _candidate_acl_site_packages():
+        if site_packages.is_dir():
+            site_packages_str = str(site_packages)
+            if site_packages_str not in sys.path:
+                sys.path.insert(0, site_packages_str)
+            return site_packages
+    return None
+
+
+def _import_acl_runtime():
+    try:
+        import acl  # type: ignore
+        return acl
+    except ImportError as exc:
+        site_packages = _ensure_acl_site_packages_on_path()
+        if site_packages is not None:
+            try:
+                import acl  # type: ignore
+                logger.info("Loaded acl after adding %s to sys.path", site_packages)
+                return acl
+            except ImportError as retry_exc:
+                exc = retry_exc
+
+        logger.warning(
+            "Failed to import acl; sleep mode will be disabled until the ACL "
+            "runtime is available: %s",
+            exc,
+        )
+        return None
+
+
+acl = _import_acl_runtime()
+if acl is None:
     memcpy = None
 else:
     try:
