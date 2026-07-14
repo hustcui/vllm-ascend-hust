@@ -14,6 +14,7 @@
 #
 
 import importlib
+import builtins
 import sys
 import types
 from unittest.mock import MagicMock, patch
@@ -91,6 +92,19 @@ class TestCaMem(PytestBase):
             module = load_camem_module(None)
 
         assert module.memcpy is not None
+
+    def test_camem_disables_sleep_mode_for_broken_acl_install(self):
+        original_import = builtins.__import__
+
+        def broken_acl_import(name, globals=None, locals=None, fromlist=(), level=0):
+            if name == "acl":
+                raise RuntimeError("broken acl")
+            return original_import(name, globals, locals, fromlist, level)
+
+        with patch("builtins.__import__", side_effect=broken_acl_import):
+            module = load_camem_module(None)
+
+        assert module.memcpy is None
 
     @pytest.mark.parametrize(
         "handle",

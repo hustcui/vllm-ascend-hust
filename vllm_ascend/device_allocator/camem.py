@@ -61,7 +61,7 @@ def _import_acl_runtime():
         if memcpy is not None:
             return acl, memcpy
         last_exc = AttributeError("acl.rt.memcpy is not available")
-    except ImportError as exc:
+    except Exception as exc:
         last_exc = exc
 
     for site_packages in _candidate_acl_site_packages():
@@ -83,7 +83,7 @@ def _import_acl_runtime():
             logger.info("Loaded acl after adding %s to sys.path", site_packages)
             success = True
             return acl, memcpy
-        except (ImportError, AttributeError) as retry_exc:
+        except Exception as retry_exc:
             last_exc = retry_exc
         finally:
             if inserted and not success:

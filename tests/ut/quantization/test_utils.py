@@ -122,6 +122,20 @@ class TestDetectQuantizationMethod(TestBase):
 
         self.assertEqual(str(result), dummy_path)
 
+    def test_modelscope_runtime_exception_falls_back_to_huggingface(self):
+        dummy_path = "/tmp/hf-model-file"
+
+        with patch(
+            "vllm_ascend.quantization.utils.should_use_modelscope",
+            return_value=True,
+        ), patch(
+            "vllm_ascend.quantization.utils.configure_modelscope_runtime",
+            side_effect=RuntimeError("broken modelscope"),
+        ), patch("huggingface_hub.hf_hub_download", return_value=dummy_path):
+            result = get_model_file("org/model", "config.json")
+
+        self.assertEqual(str(result), dummy_path)
+
 
 class TestMaybeAutoDetectQuantization(TestBase):
     def _make_vllm_config(self, model_path="/fake/model", quantization=None, revision=None):
