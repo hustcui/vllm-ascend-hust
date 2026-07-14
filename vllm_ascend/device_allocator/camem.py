@@ -46,51 +46,63 @@ def _candidate_acl_site_packages() -> list[Path]:
     ]
 
 
-def _ensure_acl_site_packages_on_path() -> Path | None:
-    for site_packages in _candidate_acl_site_packages():
-        if site_packages.is_dir():
-            site_packages_str = str(site_packages)
-            if site_packages_str not in sys.path:
-                sys.path.insert(0, site_packages_str)
-            return site_packages
-    return None
-
-
-def _import_acl_runtime():
+def _acl_memcpy_from_module(module) -> Any | None:
     try:
-        import acl  # type: ignore
-        return acl
-    except ImportError as exc:
-        site_packages = _ensure_acl_site_packages_on_path()
-        if site_packages is not None:
-            try:
-                import acl  # type: ignore
-                logger.info("Loaded acl after adding %s to sys.path", site_packages)
-                return acl
-            except ImportError as retry_exc:
-                exc = retry_exc
-
-        logger.warning(
-            "Failed to import acl; sleep mode will be disabled until the ACL "
-            "runtime is available: %s",
-            exc,
-        )
+        return module.rt.memcpy  # type: ignore[attr-defined]
+    except AttributeError:
         return None
 
 
-acl = _import_acl_runtime()
+def _import_acl_runtime():
+    last_exc: Exception | None = None
+    try:
+        import acl  # type: ignore
+        memcpy = _acl_memcpy_from_module(acl)
+        if memcpy is not None:
+            return acl, memcpy
+        last_exc = AttributeError("acl.rt.memcpy is not available")
+    except ImportError as exc:
+        last_exc = exc
+
+    for site_packages in _candidate_acl_site_packages():
+        if not site_packages.is_dir():
+            continue
+        site_packages_str = str(site_packages)
+        inserted = site_packages_str not in sys.path
+        if inserted:
+            sys.path.insert(0, site_packages_str)
+
+        sys.modules.pop("acl", None)
+        sys.modules.pop("acl.rt", None)
+        success = False
+        try:
+            import acl  # type: ignore
+            memcpy = _acl_memcpy_from_module(acl)
+            if memcpy is None:
+                raise AttributeError("acl.rt.memcpy is not available")
+            logger.info("Loaded acl after adding %s to sys.path", site_packages)
+            success = True
+            return acl, memcpy
+        except (ImportError, AttributeError) as retry_exc:
+            last_exc = retry_exc
+        finally:
+            if inserted and not success:
+                try:
+                    sys.path.remove(site_packages_str)
+                except ValueError:
+                    pass
+
+    logger.warning(
+        "Failed to import acl; sleep mode will be disabled until the ACL "
+        "runtime is available: %s",
+        last_exc,
+    )
+    return None, None
+
+
+acl, memcpy = _import_acl_runtime()
 if acl is None:
     memcpy = None
-else:
-    try:
-        memcpy = acl.rt.memcpy  # type: ignore[attr-defined]
-    except AttributeError as exc:
-        logger.warning(
-            "Failed to access acl.rt.memcpy; sleep mode will be disabled "
-            "until the ACL runtime is available: %s",
-            exc,
-        )
-        memcpy = None
 
 
 def find_loaded_library(lib_name) -> str | None:

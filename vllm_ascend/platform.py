@@ -189,7 +189,10 @@ class NPUPlatform(Platform):
     ]
 
     def is_sleep_mode_available(self) -> bool:
-        return True
+        # Sleep mode is only usable when camem resolved an ACL memcpy entrypoint.
+        from vllm_ascend.device_allocator import camem
+
+        return camem.camem_available and camem.memcpy is not None
 
     def is_cumem_allocator_available(self) -> bool:
         # vLLM main gates sleep mode on the platform reporting a

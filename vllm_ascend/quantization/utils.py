@@ -16,33 +16,21 @@
 #
 
 import json
-import os
-import tempfile
 from pathlib import Path
 
-from vllm import envs
 from vllm.logger import logger
 
 try:
-    from vllm.transformers_utils.modelscope_utils import configure_modelscope_runtime
+    from vllm.transformers_utils.modelscope_utils import (
+        configure_modelscope_runtime,
+        should_use_modelscope,
+    )
 except ModuleNotFoundError:
     def configure_modelscope_runtime() -> None:
-        proxy_hosts = "modelscope.cn,.modelscope.cn,www.modelscope.cn"
-        for key in ("NO_PROXY", "no_proxy"):
-            current = os.environ.get(key)
-            if not current:
-                os.environ[key] = proxy_hosts
-                continue
-            if proxy_hosts in current:
-                continue
-            os.environ[key] = f"{current},{proxy_hosts}"
+        return None
 
-        cache_root = Path(tempfile.gettempdir()) / "modelscope"
-        os.environ.setdefault("MODELSCOPE_CACHE", str(cache_root))
-        os.environ.setdefault(
-            "MODELSCOPE_CREDENTIALS_PATH",
-            str(cache_root / "credentials"),
-        )
+    def should_use_modelscope() -> bool:
+        return False
 
 from vllm_ascend.utils import (
     ASCEND_QUANTIZATION_METHOD,
@@ -80,7 +68,7 @@ def get_model_file(
 
     # Remote repo: try to download from HF Hub or ModelScope
     try:
-        if envs.VLLM_USE_MODELSCOPE:
+        if should_use_modelscope():
             configure_modelscope_runtime()
             from modelscope.hub.file_download import model_file_download  # type: ignore[import-untyped]
 
@@ -100,7 +88,24 @@ def get_model_file(
             )
             return Path(downloaded_path)
     except Exception as e:
-        logger.warning("Could not download %s from %s: %s", filename, model, e)
+        logger.warning(
+            "Could not download %s from %s via ModelScope; falling back to "
+            "Hugging Face Hub: %s",
+            filename,
+            model,
+            e,
+        )
+        try:
+            from huggingface_hub import hf_hub_download
+
+            downloaded_path = hf_hub_download(
+                repo_id=str(model),
+                filename=filename,
+                revision=revision,
+            )
+            return Path(downloaded_path)
+        except Exception as hf_exc:
+            logger.warning("Could not download %s from %s: %s", filename, model, hf_exc)
         return None
 
 

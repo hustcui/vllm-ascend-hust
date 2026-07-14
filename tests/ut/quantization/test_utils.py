@@ -1,6 +1,8 @@
 import json
 import os
+import sys
 import tempfile
+import types
 from unittest.mock import MagicMock, patch
 
 from vllm.config import KVTransferConfig
@@ -12,6 +14,7 @@ from vllm_ascend.quantization.modelslim_config import MODELSLIM_CONFIG_FILENAME,
 from vllm_ascend.quantization.utils import (
     detect_quantization_method,
     enable_fa_quant,
+    get_model_file,
     maybe_auto_detect_quantization,
 )
 from vllm_ascend.utils import ASCEND_QUANTIZATION_METHOD, COMPRESSED_TENSORS_METHOD
@@ -86,6 +89,38 @@ class TestDetectQuantizationMethod(TestBase):
 
             result = detect_quantization_method(tmpdir)
             self.assertEqual(result, ASCEND_QUANTIZATION_METHOD)
+
+    def test_modelscope_failure_falls_back_to_huggingface(self):
+        dummy_path = "/tmp/hf-model-file"
+
+        fake_modelscope = types.ModuleType("modelscope")
+        fake_hub = types.ModuleType("modelscope.hub")
+        fake_download = types.ModuleType("modelscope.hub.file_download")
+
+        def failing_model_file_download(*args, **kwargs):
+            raise RuntimeError("boom")
+
+        fake_download.model_file_download = failing_model_file_download  # type: ignore[attr-defined]
+        fake_modelscope.__path__ = []  # type: ignore[attr-defined]
+        fake_modelscope.hub = fake_hub  # type: ignore[attr-defined]
+        fake_hub.__path__ = []  # type: ignore[attr-defined]
+        fake_hub.file_download = fake_download  # type: ignore[attr-defined]
+
+        with patch(
+            "vllm_ascend.quantization.utils.should_use_modelscope",
+            return_value=True,
+        ), patch.dict(
+            sys.modules,
+            {
+                "modelscope": fake_modelscope,
+                "modelscope.hub": fake_hub,
+                "modelscope.hub.file_download": fake_download,
+            },
+            clear=False,
+        ), patch("huggingface_hub.hf_hub_download", return_value=dummy_path):
+            result = get_model_file("org/model", "config.json")
+
+        self.assertEqual(str(result), dummy_path)
 
 
 class TestMaybeAutoDetectQuantization(TestBase):
