@@ -734,6 +734,18 @@ jobs:
           chmod 700 "$HOME"
           bash .github/workflows/scripts/install_ascend_benchmark_with_dev_hub.sh
           source scripts/hust_ascend_manager_helper.sh
+          CONDA_BIN="${CONDA_EXE:-}"
+          if [[ -z "$CONDA_BIN" || ! -x "$CONDA_BIN" ]]; then
+            if command -v conda >/dev/null 2>&1; then
+              CONDA_BIN="$(command -v conda)"
+            else
+              CONDA_BIN="$HOME/miniconda3/bin/conda"
+            fi
+          fi
+          if [[ ! -x "$CONDA_BIN" ]]; then
+            echo "conda executable not found after quickstart bootstrap: $CONDA_BIN" >&2
+            exit 1
+          fi
           PYTHON_BIN="$(hust_resolve_python_bin)"
           export VLLM_HUST_PYTHON_BIN="$PYTHON_BIN"
           echo "VLLM_HUST_PYTHON_BIN=$VLLM_HUST_PYTHON_BIN" >> "$GITHUB_ENV"
@@ -741,53 +753,86 @@ jobs:
 
           export PYTHONPATH="$VLLM_HUST_REPO:$VLLM_HUST_BENCHMARK_REPO/src${PYTHONPATH:+:$PYTHONPATH}"
           echo "PYTHONPATH=$PYTHONPATH" >> "$GITHUB_ENV"
-          torch_constraints="$RUNNER_TEMP/ascend-torch-constraints.txt"
-          cat > "$torch_constraints" <<'EOF'
-          torch==2.10.0
-          torch-npu==2.10.0
-          torchvision==0.25.0
-          torchaudio==2.10.0
-          EOF
-          hust_run_pip install -c "$torch_constraints" \
-            "torch==2.10.0" \
-            "torch-npu==2.10.0" \
-            "torchvision==0.25.0" \
-            "torchaudio==2.10.0" \
-            "setuptools>=77,<81"
-          hust_run_pip install "numpy<2.0.0" scipy attrs decorator psutil
-          hust_run_pip install -c "$torch_constraints" -r "$VLLM_HUST_REPO/requirements/common.txt"
+          run_in_quickstart_env() {
+            local inline_cmd="$1"
+            env \
+              HOME="$HOME" \
+              XDG_CACHE_HOME="$XDG_CACHE_HOME" \
+              XDG_CONFIG_HOME="$XDG_CONFIG_HOME" \
+              VLLM_HUST_REPO="$VLLM_HUST_REPO" \
+              VLLM_HUST_BENCHMARK_REPO="$VLLM_HUST_BENCHMARK_REPO" \
+              VLLM_HUST_PYTHON_BIN="$VLLM_HUST_PYTHON_BIN" \
+              HUST_ASCEND_MANAGER_REPO="${GITHUB_WORKSPACE}/ascend-runtime-manager" \
+              ASCEND_HOME_PATH="${ASCEND_HOME_PATH:-}" \
+              ASCEND_OPP_PATH="${ASCEND_OPP_PATH:-}" \
+              ASCEND_AICPU_PATH="${ASCEND_AICPU_PATH:-}" \
+              ASCEND_RT_VISIBLE_DEVICES="${ASCEND_RT_VISIBLE_DEVICES:-}" \
+              ASCEND_VISIBLE_DEVICES="${ASCEND_VISIBLE_DEVICES:-}" \
+              ASCEND_TOOLKIT_HOME="${ASCEND_TOOLKIT_HOME:-}" \
+              ASCEND_TOOLKIT_LATEST_HOME="${ASCEND_TOOLKIT_LATEST_HOME:-}" \
+              ATB_HOME_PATH="${ATB_HOME_PATH:-}" \
+              HUST_ASCEND_RUNTIME_VERSION="${HUST_ASCEND_RUNTIME_VERSION:-}" \
+              HUST_ASCEND_HAS_STREAM_ATTR="${HUST_ASCEND_HAS_STREAM_ATTR:-}" \
+              HUST_ATB_SET_ENV="${HUST_ATB_SET_ENV:-}" \
+              HUST_REQUIRE_CANN_TBE=0 \
+              "$CONDA_BIN" run -n "vllm-hust-dev" bash -lc "cd \"$GITHUB_WORKSPACE\" && source scripts/use_single_ascend_env.sh && export PYTHONPATH=\"$VLLM_HUST_REPO:$VLLM_HUST_BENCHMARK_REPO/src\${PYTHONPATH:+:\$PYTHONPATH}\" && ${inline_cmd}"
+          }
           PYTHON_BIN="$(hust_resolve_python_bin)"
           export VLLM_HUST_PYTHON_BIN="$PYTHON_BIN"
           echo "VLLM_HUST_PYTHON_BIN=$VLLM_HUST_PYTHON_BIN" >> "$GITHUB_ENV"
           echo "PYTHON_BIN=$PYTHON_BIN" >> "$GITHUB_ENV"
-          "$PYTHON_BIN" - <<'PY'
+          run_in_quickstart_env "python - <<'PY'
           import decorator
           import scipy
           import scipy.sparse
 
           print(f"decorator={decorator.__version__}")
           print(f"scipy={scipy.__version__}")
-          PY
-          "$PYTHON_BIN" - <<'PY'
+          PY"
+          run_in_quickstart_env "python - <<'PY'
+          import ctypes.util
+          import os
+          import sys
+
+          print(f\"sys.executable={sys.executable}\")
+          print(f\"CONDA_PREFIX={os.environ.get('CONDA_PREFIX', '')}\")
+          print(f\"PATH={os.environ.get('PATH', '')}\")
+          print(f\"LD_LIBRARY_PATH={os.environ.get('LD_LIBRARY_PATH', '')}\")
+          print(f\"PYTHONPATH={os.environ.get('PYTHONPATH', '')}\")
+          print(f\"find_library('stdc++')={ctypes.util.find_library('stdc++')}\")
+          PY"
+          run_in_quickstart_env "python - <<'PY'
           import torch
           import torch_npu
 
           print(f"torch={torch.__version__}")
           print(f"torch_npu={torch_npu.__version__}")
-          PY
-          hust_run_pip install -e "${VLLM_HUST_BENCHMARK_REPO}[publish]" jsonschema
-          hust_run_pip install "huggingface_hub>=0.20"
+          PY"
+          run_in_quickstart_env "python -m pip install -e \"$VLLM_HUST_BENCHMARK_REPO[publish]\" jsonschema"
+          run_in_quickstart_env "python -m pip install \"huggingface_hub>=0.20\""
 
       - name: Verify installation
         env:
           VLLM_HUST_REPO: ${{ github.workspace }}/vllm-hust
           VLLM_HUST_BENCHMARK_REPO: ${{ github.workspace }}/vllm-hust-benchmark
         run: |
-          source scripts/use_single_ascend_env.sh
-          export PYTHONPATH="$VLLM_HUST_REPO:$VLLM_HUST_BENCHMARK_REPO/src${PYTHONPATH:+:$PYTHONPATH}"
-          PYTHON_BIN="$(hust_resolve_python_bin)"
-          "$PYTHON_BIN" --version
-          "$PYTHON_BIN" - <<'PY'
+          set -euo pipefail
+          CONDA_BIN="${CONDA_EXE:-}"
+          if [[ -z "$CONDA_BIN" || ! -x "$CONDA_BIN" ]]; then
+            if command -v conda >/dev/null 2>&1; then
+              CONDA_BIN="$(command -v conda)"
+            else
+              CONDA_BIN="$HOME/miniconda3/bin/conda"
+            fi
+          fi
+          if [[ ! -x "$CONDA_BIN" ]]; then
+            echo "conda executable not found for Verify installation: $CONDA_BIN" >&2
+            exit 1
+          fi
+          env \
+            VLLM_HUST_REPO="$VLLM_HUST_REPO" \
+            VLLM_HUST_BENCHMARK_REPO="$VLLM_HUST_BENCHMARK_REPO" \
+            "$CONDA_BIN" run -n "vllm-hust-dev" bash -lc "cd \"$GITHUB_WORKSPACE\" && source scripts/use_single_ascend_env.sh && export PYTHONPATH=\"$VLLM_HUST_REPO:$VLLM_HUST_BENCHMARK_REPO/src\${PYTHONPATH:+:\$PYTHONPATH}\" && python --version && python - <<'PY'
           import numpy
           import torch
           import torch_npu
@@ -800,7 +845,7 @@ jobs:
           print(f'torch_npu version: {torch_npu.__version__}')
           print(f'vLLM version: {vllm.__version__}')
           print(f'vLLM Ascend Hust version: {plugin_version}')
-          PY
+          PY"
 
       - name: Performance gate - fetch Stage 1 baseline
         if: ${{ (github.event_name == 'pull_request' || github.event_name == 'issue_comment') && steps.resolve-scenario.outputs.BENCH_SCENARIO_COUNT == '1' }}

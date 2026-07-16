@@ -273,13 +273,12 @@ def test_benchmark_prepare_preserves_torch_npu_stack() -> None:
 
     assert "install_ascend_benchmark_with_dev_hub.sh" in prepare_step
     assert "hust_ascend_manager_run setup --non-interactive" not in prepare_step
-    assert "ascend-torch-constraints.txt" in prepare_step
-    assert "torch==2.10.0" in prepare_step
-    assert "torch-npu==2.10.0" in prepare_step
-    assert "torchvision==0.25.0" in prepare_step
-    assert "torchaudio==2.10.0" in prepare_step
-    assert 'hust_run_pip install -c "$torch_constraints"' in prepare_step
-    assert 'hust_run_pip install -c "$torch_constraints" -r "$VLLM_HUST_REPO/requirements/common.txt"' in prepare_step
+    assert 'run_in_quickstart_env()' in prepare_step
+    assert 'conda run -n "vllm-hust-dev" bash -lc' in prepare_step
+    assert "find_library('stdc++')" in prepare_step
+    assert 'python -m pip install -c "$torch_constraints"' not in prepare_step
+    assert 'python -m pip install "numpy<2.0.0" scipy attrs decorator psutil' not in prepare_step
+    assert 'python -m pip install -c "$torch_constraints" -r "$VLLM_HUST_REPO/requirements/common.txt"' not in prepare_step
     assert "VLLM_HUST_PYTHON_BIN" in prepare_step
 
 
