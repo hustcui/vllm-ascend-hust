@@ -63,6 +63,58 @@ import tbe  # noqa: F401
 PY
 }
 
+append_unique_path_var() {
+  local var_name="$1"
+  local candidate="$2"
+  local current_value
+
+  if [[ -z "${candidate}" || ! -d "${candidate}" ]]; then
+    return 1
+  fi
+
+  current_value="${!var_name:-}"
+  case ":${current_value}:" in
+    *:"${candidate}":*)
+      return 0
+      ;;
+  esac
+
+  if [[ -n "${current_value}" ]]; then
+    printf -v "${var_name}" '%s:%s' "${candidate}" "${current_value}"
+  else
+    printf -v "${var_name}" '%s' "${candidate}"
+  fi
+  export "${var_name}"
+}
+
+enrich_cann_python_env() {
+  local candidate
+  local -a python_candidates=(
+    "${ASCEND_HOME_PATH:-}/python/site-packages"
+    "${ASCEND_TOOLKIT_HOME:-}/python/site-packages"
+    "${ASCEND_TOOLKIT_LATEST_HOME:-}/python/site-packages"
+    "${ASCEND_OPP_PATH:-}/built-in/op_impl/ai_core/tbe"
+    "${ASCEND_OPP_PATH:-}/built-in/op_impl/ai_core/tbe/op_tiling"
+    "/usr/local/Ascend/ascend-toolkit/latest/python/site-packages"
+    "/usr/local/Ascend/ascend-toolkit/latest/python/site-packages/te"
+    "/usr/local/Ascend/ascend-toolkit/python/site-packages"
+  )
+  local -a library_candidates=(
+    "${ASCEND_HOME_PATH:-}/python/site-packages"
+    "${ASCEND_TOOLKIT_HOME:-}/python/site-packages"
+    "${ASCEND_TOOLKIT_LATEST_HOME:-}/python/site-packages"
+    "/usr/local/Ascend/ascend-toolkit/latest/python/site-packages"
+  )
+
+  for candidate in "${python_candidates[@]}"; do
+    append_unique_path_var PYTHONPATH "${candidate}" || true
+  done
+
+  for candidate in "${library_candidates[@]}"; do
+    append_unique_path_var LD_LIBRARY_PATH "${candidate}" || true
+  done
+}
+
 source_cann_set_env_if_present() {
   local set_env_file="$1"
   local source_status
@@ -92,13 +144,17 @@ ensure_cann_tbe_env() {
     "/usr/local/Ascend/ascend-toolkit/set_env.sh"
   )
 
+  enrich_cann_python_env
   if [[ -n "${ASCEND_HOME_PATH:-}" && -n "${ASCEND_OPP_PATH:-}" ]] && python_can_import_tbe; then
     return 0
   fi
 
   for candidate in "${candidates[@]}"; do
-    if source_cann_set_env_if_present "${candidate}" && [[ -n "${ASCEND_HOME_PATH:-}" && -n "${ASCEND_OPP_PATH:-}" ]] && python_can_import_tbe; then
-      return 0
+    if source_cann_set_env_if_present "${candidate}"; then
+      enrich_cann_python_env
+      if [[ -n "${ASCEND_HOME_PATH:-}" && -n "${ASCEND_OPP_PATH:-}" ]] && python_can_import_tbe; then
+        return 0
+      fi
     fi
   done
 
@@ -106,6 +162,7 @@ ensure_cann_tbe_env() {
   echo "[ERROR] ASCEND_HOME_PATH=${ASCEND_HOME_PATH:-<unset>}" >&2
   echo "[ERROR] ASCEND_OPP_PATH=${ASCEND_OPP_PATH:-<unset>}" >&2
   echo "[ERROR] PYTHON_BIN=$(cann_tbe_python_bin 2>/dev/null || printf '<unresolved>')" >&2
+  echo "[ERROR] PYTHONPATH=${PYTHONPATH:-<unset>}" >&2
   echo "[ERROR] Source the correct CANN set_env.sh or install the CANN TBE component before running Ascend benchmarks." >&2
   return 1
 }
