@@ -89,6 +89,8 @@ append_unique_path_var() {
 
 enrich_cann_python_env() {
   local candidate
+  local python_bin
+  local python_prefix
   local -a python_candidates=(
     "${ASCEND_HOME_PATH:-}/python/site-packages"
     "${ASCEND_TOOLKIT_HOME:-}/python/site-packages"
@@ -113,6 +115,12 @@ enrich_cann_python_env() {
   for candidate in "${library_candidates[@]}"; do
     append_unique_path_var LD_LIBRARY_PATH "${candidate}" || true
   done
+
+  python_bin="$(cann_tbe_python_bin 2>/dev/null || true)"
+  if [[ -n "${python_bin}" ]]; then
+    python_prefix="$(cd "$(dirname "${python_bin}")/.." && pwd -P)"
+    append_unique_path_var LD_LIBRARY_PATH "${python_prefix}/lib" || true
+  fi
 }
 
 source_cann_set_env_if_present() {

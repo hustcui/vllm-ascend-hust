@@ -753,6 +753,7 @@ jobs:
 
           export PYTHONPATH="$VLLM_HUST_REPO:$VLLM_HUST_BENCHMARK_REPO/src${PYTHONPATH:+:$PYTHONPATH}"
           echo "PYTHONPATH=$PYTHONPATH" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
           run_in_quickstart_env() {
             local inline_script
             inline_script="$(mktemp "${RUNNER_TEMP:-/tmp}/benchmark-quickstart-env.XXXXXX.sh")"

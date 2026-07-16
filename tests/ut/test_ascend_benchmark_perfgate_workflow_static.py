@@ -279,6 +279,7 @@ def test_benchmark_prepare_preserves_torch_npu_stack() -> None:
     assert '"$CONDA_BIN" run -n "vllm-hust-dev" bash "$inline_script"' in prepare_step
     assert "run_in_quickstart_env <<'BASH'" in prepare_step
     assert "find_library('stdc++')" in prepare_step
+    assert 'echo "LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"' in prepare_step
     assert 'python -m pip install -c "$torch_constraints"' not in prepare_step
     assert 'python -m pip install "numpy<2.0.0" scipy attrs decorator psutil' not in prepare_step
     assert 'python -m pip install -c "$torch_constraints" -r "$VLLM_HUST_REPO/requirements/common.txt"' not in prepare_step

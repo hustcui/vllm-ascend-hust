@@ -29,6 +29,8 @@ def test_use_single_ascend_env_falls_back_to_cann_set_env_for_tbe() -> None:
     assert "${ASCEND_HOME_PATH:-}/python/site-packages" in script
     assert "${ASCEND_OPP_PATH:-}/built-in/op_impl/ai_core/tbe" in script
     assert "/usr/local/Ascend/ascend-toolkit/latest/python/site-packages" in script
+    assert 'python_prefix="$(cd "$(dirname "${python_bin}")/.." && pwd -P)"' in script
+    assert 'append_unique_path_var LD_LIBRARY_PATH "${python_prefix}/lib"' in script
     assert 'source "${set_env_file}" || source_status=$?' in script
     assert "ensure_cann_tbe_env || return 1" in script
     assert 'append_unique_path_var PYTHONPATH "${candidate}"' in script
