@@ -755,6 +755,17 @@ jobs:
           echo "PYTHONPATH=$PYTHONPATH" >> "$GITHUB_ENV"
           run_in_quickstart_env() {
             local inline_cmd="$1"
+            local inline_script
+            inline_script="$(mktemp "${RUNNER_TEMP:-/tmp}/benchmark-quickstart-env.XXXXXX.sh")"
+            {
+              echo '#!/usr/bin/env bash'
+              echo 'set -euo pipefail'
+              printf 'cd %q\n' "$GITHUB_WORKSPACE"
+              echo 'source scripts/use_single_ascend_env.sh'
+              printf 'export PYTHONPATH=%q\n' "$VLLM_HUST_REPO:$VLLM_HUST_BENCHMARK_REPO/src${PYTHONPATH:+:$PYTHONPATH}"
+              printf '%s\n' "$inline_cmd"
+            } > "$inline_script"
+            chmod +x "$inline_script"
             env \
               HOME="$HOME" \
               XDG_CACHE_HOME="$XDG_CACHE_HOME" \
@@ -775,7 +786,8 @@ jobs:
               HUST_ASCEND_HAS_STREAM_ATTR="${HUST_ASCEND_HAS_STREAM_ATTR:-}" \
               HUST_ATB_SET_ENV="${HUST_ATB_SET_ENV:-}" \
               HUST_REQUIRE_CANN_TBE=0 \
-              "$CONDA_BIN" run -n "vllm-hust-dev" bash -lc "cd \"$GITHUB_WORKSPACE\" && source scripts/use_single_ascend_env.sh && export PYTHONPATH=\"$VLLM_HUST_REPO:$VLLM_HUST_BENCHMARK_REPO/src\${PYTHONPATH:+:\$PYTHONPATH}\" && ${inline_cmd}"
+              "$CONDA_BIN" run -n "vllm-hust-dev" bash "$inline_script"
+            rm -f "$inline_script"
           }
           PYTHON_BIN="$(hust_resolve_python_bin)"
           export VLLM_HUST_PYTHON_BIN="$PYTHON_BIN"
@@ -832,7 +844,7 @@ jobs:
           env \
             VLLM_HUST_REPO="$VLLM_HUST_REPO" \
             VLLM_HUST_BENCHMARK_REPO="$VLLM_HUST_BENCHMARK_REPO" \
-            "$CONDA_BIN" run -n "vllm-hust-dev" bash -lc "cd \"$GITHUB_WORKSPACE\" && source scripts/use_single_ascend_env.sh && export PYTHONPATH=\"$VLLM_HUST_REPO:$VLLM_HUST_BENCHMARK_REPO/src\${PYTHONPATH:+:\$PYTHONPATH}\" && python --version && python - <<'PY'
+            "$CONDA_BIN" run -n "vllm-hust-dev" bash -lc 'cd "$GITHUB_WORKSPACE" && source scripts/use_single_ascend_env.sh && export PYTHONPATH="$VLLM_HUST_REPO:$VLLM_HUST_BENCHMARK_REPO/src${PYTHONPATH:+:$PYTHONPATH}" && python --version && python - <<'"'"'PY'"'"'
           import numpy
           import torch
           import torch_npu
@@ -845,7 +857,7 @@ jobs:
           print(f'torch_npu version: {torch_npu.__version__}')
           print(f'vLLM version: {vllm.__version__}')
           print(f'vLLM Ascend Hust version: {plugin_version}')
-          PY"
+          PY'
 
       - name: Performance gate - fetch Stage 1 baseline
         if: ${{ (github.event_name == 'pull_request' || github.event_name == 'issue_comment') && steps.resolve-scenario.outputs.BENCH_SCENARIO_COUNT == '1' }}
