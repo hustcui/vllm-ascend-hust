@@ -292,6 +292,7 @@ jobs:
       BENCHMARK_CHECKOUT_USE_SSH_443: ${{ secrets.VLLM_ASCEND_HUST_BENCHMARK_SSH_KEY != '' && '1' || '0' }}
       DEFAULT_SYSTEM_ASCEND_BENCHMARK_ROOT_HELPER: /usr/local/bin/run_ascend_benchmark_root_helper.sh
       COMPILE_CUSTOM_KERNELS: ${{ vars.VLLM_ASCEND_HUST_COMPILE_CUSTOM_KERNELS || 'auto' }}
+      HUST_REQUIRE_CANN_TBE: "0"
       ASCEND_BENCHMARK_ENFORCE_EAGER: ${{ vars.VLLM_ASCEND_HUST_BENCHMARK_ENFORCE_EAGER || '0' }}
       HF_HUB_DISABLE_TELEMETRY: "1"
       HF_ENDPOINT: ${{ vars.HF_ENDPOINT || 'https://hf-mirror.com' }}

@@ -134,6 +134,7 @@ source_cann_set_env_if_present() {
 
 ensure_cann_tbe_env() {
   local candidate
+  local require_cann_tbe="${HUST_REQUIRE_CANN_TBE:-1}"
   local candidates=(
     "${ASCEND_HOME_PATH:-}/set_env.sh"
     "${ASCEND_TOOLKIT_HOME:-}/set_env.sh"
@@ -146,6 +147,7 @@ ensure_cann_tbe_env() {
 
   enrich_cann_python_env
   if [[ -n "${ASCEND_HOME_PATH:-}" && -n "${ASCEND_OPP_PATH:-}" ]] && python_can_import_tbe; then
+    export HUST_ASCEND_TBE_AVAILABLE=1
     return 0
   fi
 
@@ -153,10 +155,21 @@ ensure_cann_tbe_env() {
     if source_cann_set_env_if_present "${candidate}"; then
       enrich_cann_python_env
       if [[ -n "${ASCEND_HOME_PATH:-}" && -n "${ASCEND_OPP_PATH:-}" ]] && python_can_import_tbe; then
+        export HUST_ASCEND_TBE_AVAILABLE=1
         return 0
       fi
     fi
   done
+
+  export HUST_ASCEND_TBE_AVAILABLE=0
+  if [[ "${require_cann_tbe}" != "1" ]]; then
+    echo "[WARN] CANN TBE Python module is unavailable to the current Python, but HUST_REQUIRE_CANN_TBE=${require_cann_tbe}; continuing without strict TBE enforcement." >&2
+    echo "[WARN] ASCEND_HOME_PATH=${ASCEND_HOME_PATH:-<unset>}" >&2
+    echo "[WARN] ASCEND_OPP_PATH=${ASCEND_OPP_PATH:-<unset>}" >&2
+    echo "[WARN] PYTHON_BIN=$(cann_tbe_python_bin 2>/dev/null || printf '<unresolved>')" >&2
+    echo "[WARN] PYTHONPATH=${PYTHONPATH:-<unset>}" >&2
+    return 0
+  fi
 
   echo "[ERROR] CANN TBE Python module is unavailable to the benchmark Python." >&2
   echo "[ERROR] ASCEND_HOME_PATH=${ASCEND_HOME_PATH:-<unset>}" >&2
