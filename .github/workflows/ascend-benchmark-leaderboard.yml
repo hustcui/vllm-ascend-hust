@@ -754,7 +754,6 @@ jobs:
           export PYTHONPATH="$VLLM_HUST_REPO:$VLLM_HUST_BENCHMARK_REPO/src${PYTHONPATH:+:$PYTHONPATH}"
           echo "PYTHONPATH=$PYTHONPATH" >> "$GITHUB_ENV"
           run_in_quickstart_env() {
-            local inline_cmd="$1"
             local inline_script
             inline_script="$(mktemp "${RUNNER_TEMP:-/tmp}/benchmark-quickstart-env.XXXXXX.sh")"
             {
@@ -763,7 +762,7 @@ jobs:
               printf 'cd %q\n' "$GITHUB_WORKSPACE"
               echo 'source scripts/use_single_ascend_env.sh'
               printf 'export PYTHONPATH=%q\n' "$VLLM_HUST_REPO:$VLLM_HUST_BENCHMARK_REPO/src${PYTHONPATH:+:$PYTHONPATH}"
-              printf '%s\n' "$inline_cmd"
+              cat
             } > "$inline_script"
             chmod +x "$inline_script"
             env \
@@ -793,35 +792,45 @@ jobs:
           export VLLM_HUST_PYTHON_BIN="$PYTHON_BIN"
           echo "VLLM_HUST_PYTHON_BIN=$VLLM_HUST_PYTHON_BIN" >> "$GITHUB_ENV"
           echo "PYTHON_BIN=$PYTHON_BIN" >> "$GITHUB_ENV"
-          run_in_quickstart_env "python - <<'PY'
+          run_in_quickstart_env <<'BASH'
+          python - <<'PY'
           import decorator
           import scipy
           import scipy.sparse
 
           print(f"decorator={decorator.__version__}")
           print(f"scipy={scipy.__version__}")
-          PY"
-          run_in_quickstart_env "python - <<'PY'
+          PY
+          BASH
+          run_in_quickstart_env <<'BASH'
+          python - <<'PY'
           import ctypes.util
           import os
           import sys
 
-          print(f\"sys.executable={sys.executable}\")
-          print(f\"CONDA_PREFIX={os.environ.get('CONDA_PREFIX', '')}\")
-          print(f\"PATH={os.environ.get('PATH', '')}\")
-          print(f\"LD_LIBRARY_PATH={os.environ.get('LD_LIBRARY_PATH', '')}\")
-          print(f\"PYTHONPATH={os.environ.get('PYTHONPATH', '')}\")
-          print(f\"find_library('stdc++')={ctypes.util.find_library('stdc++')}\")
-          PY"
-          run_in_quickstart_env "python - <<'PY'
+          print(f"sys.executable={sys.executable}")
+          print(f"CONDA_PREFIX={os.environ.get('CONDA_PREFIX', '')}")
+          print(f"PATH={os.environ.get('PATH', '')}")
+          print(f"LD_LIBRARY_PATH={os.environ.get('LD_LIBRARY_PATH', '')}")
+          print(f"PYTHONPATH={os.environ.get('PYTHONPATH', '')}")
+          print(f"find_library('stdc++')={ctypes.util.find_library('stdc++')}")
+          PY
+          BASH
+          run_in_quickstart_env <<'BASH'
+          python - <<'PY'
           import torch
           import torch_npu
 
           print(f"torch={torch.__version__}")
           print(f"torch_npu={torch_npu.__version__}")
-          PY"
-          run_in_quickstart_env "python -m pip install -e \"$VLLM_HUST_BENCHMARK_REPO[publish]\" jsonschema"
-          run_in_quickstart_env "python -m pip install \"huggingface_hub>=0.20\""
+          PY
+          BASH
+          run_in_quickstart_env <<BASH
+          python -m pip install -e "$VLLM_HUST_BENCHMARK_REPO[publish]" jsonschema
+          BASH
+          run_in_quickstart_env <<'BASH'
+          python -m pip install "huggingface_hub>=0.20"
+          BASH
 
       - name: Verify installation
         env:

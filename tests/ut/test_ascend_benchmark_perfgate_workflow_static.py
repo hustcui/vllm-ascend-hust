@@ -275,8 +275,9 @@ def test_benchmark_prepare_preserves_torch_npu_stack() -> None:
     assert "hust_ascend_manager_run setup --non-interactive" not in prepare_step
     assert 'run_in_quickstart_env()' in prepare_step
     assert 'mktemp "${RUNNER_TEMP:-/tmp}/benchmark-quickstart-env.' in prepare_step
-    assert 'printf \'%s\\n\' "$inline_cmd"' in prepare_step
+    assert 'cat' in prepare_step
     assert '"$CONDA_BIN" run -n "vllm-hust-dev" bash "$inline_script"' in prepare_step
+    assert "run_in_quickstart_env <<'BASH'" in prepare_step
     assert "find_library('stdc++')" in prepare_step
     assert 'python -m pip install -c "$torch_constraints"' not in prepare_step
     assert 'python -m pip install "numpy<2.0.0" scipy attrs decorator psutil' not in prepare_step
