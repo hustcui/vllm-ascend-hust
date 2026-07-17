@@ -160,7 +160,10 @@ else
 fi
 
 if [[ "$ASCEND_BENCHMARK_USE_SUDO" == "auto" ]]; then
-  if command -v sudo >/dev/null 2>&1 && [[ -x "$ASCEND_BENCHMARK_ROOT_HELPER" ]]; then
+  if [[ "$(id -u)" == "0" ]]; then
+    ASCEND_BENCHMARK_USE_SUDO=0
+    echo "Ascend benchmark sudo mode: disabled via auto detection; current user is root"
+  elif command -v sudo >/dev/null 2>&1 && [[ -x "$ASCEND_BENCHMARK_ROOT_HELPER" ]]; then
     ASCEND_BENCHMARK_USE_SUDO=1
     echo "Ascend benchmark sudo mode: enabled via auto detection ($ASCEND_BENCHMARK_ROOT_HELPER)"
   else
@@ -317,13 +320,9 @@ SUDO_PRESERVE_ENV_VARS=(
   GITHUB_EVENT_NAME
   HCCL_CONNECT_TIMEOUT
   HCCL_EXEC_TIMEOUT
-  HF_ENDPOINT
   HF_HOME
-  HF_HUB_DISABLE_TELEMETRY
-  HF_HUB_DISABLE_XET
   HOME
   HOST
-  HUGGINGFACE_HUB_CACHE
   LD_LIBRARY_PATH
   MAX_MODEL_LEN
   MAX_NUM_SEQS
@@ -347,7 +346,6 @@ SUDO_PRESERVE_ENV_VARS=(
   SAME_SPEC_SPEC_FILE
   SERVER_LOG
   TMPDIR
-  TRANSFORMERS_CACHE
   VLLM_ASCEND_TORCH_PREFLIGHT
   VLLM_ASCEND_TORCH_PREFLIGHT_DEVICE
   VLLM_ASCEND_HUST_REPO

@@ -219,17 +219,11 @@ def test_pull_request_defaults_match_perfgate_spec_size() -> None:
 
 def test_benchmark_disables_huggingface_xet_download_path() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
-    runner_script = (SCRIPT_DIR / "run_ascend_benchmark_ci.sh").read_text(encoding="utf-8")
-    sudo_preserve_block = runner_script[runner_script.index("SUDO_PRESERVE_ENV_VARS=(") :]
 
     assert 'HF_HUB_DISABLE_XET: "1"' in workflow
     assert "HF_ENDPOINT:" in workflow
     assert "HUGGINGFACE_HUB_CACHE:" in workflow
     assert "TRANSFORMERS_CACHE:" in workflow
-    assert "HF_HUB_DISABLE_XET" in sudo_preserve_block
-    assert "HF_ENDPOINT" in sudo_preserve_block
-    assert "HUGGINGFACE_HUB_CACHE" in sudo_preserve_block
-    assert "TRANSFORMERS_CACHE" in sudo_preserve_block
 
 
 def test_local_ascend_manager_fallback_bootstraps_pip() -> None:
@@ -322,6 +316,8 @@ def test_benchmark_runner_auto_disables_sudo_when_unavailable() -> None:
     runner_script = (SCRIPT_DIR / "run_ascend_benchmark_ci.sh").read_text(encoding="utf-8")
 
     assert 'if [[ "$ASCEND_BENCHMARK_USE_SUDO" == "auto" ]]; then' in runner_script
+    assert 'if [[ "$(id -u)" == "0" ]]; then' in runner_script
+    assert "current user is root" in runner_script
     assert "command -v sudo" in runner_script
     assert "Ascend benchmark sudo mode: disabled via auto detection" in runner_script
     assert "command not found" in runner_script[runner_script.index("runtime_ready_log_indicates_sudo_auth_failure") :]
