@@ -341,10 +341,12 @@ Then run:
 python example.py
 ```
 
-If you encounter a connection error with Hugging Face (e.g., `We couldn't connect to 'https://huggingface.co' to load the files, and couldn't find them in the cached files.`), run the following commands to use ModelScope as an alternative:
+If you encounter a connection error with Hugging Face (e.g., `We couldn't connect to 'https://huggingface.co' to load the files, and couldn't find them in the cached files.`), install ModelScope and run the following commands to use it as an alternative:
 
 ```bash
 export VLLM_USE_MODELSCOPE=True
+export MODELSCOPE_CACHE=/workspace/.cache/modelscope
+export MODELSCOPE_CREDENTIALS_PATH=/workspace/.cache/modelscope/credentials
 pip install modelscope
 python example.py
 ```

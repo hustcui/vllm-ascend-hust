@@ -13,7 +13,12 @@ def test_use_single_ascend_env_falls_back_to_cann_set_env_for_tbe() -> None:
     assert "ensure_cann_tbe_env()" in script
     assert "python_can_import_tbe()" in script
     assert "cann_tbe_python_bin()" in script
+    assert "append_unique_path_var()" in script
+    assert "enrich_cann_python_env()" in script
     assert "import tbe" in script
+    assert 'local require_cann_tbe="${HUST_REQUIRE_CANN_TBE:-1}"' in script
+    assert "export HUST_ASCEND_TBE_AVAILABLE=1" in script
+    assert "export HUST_ASCEND_TBE_AVAILABLE=0" in script
     assert "${PYTHON_BIN:-}" in script
     assert "${ASCEND_HOME_PATH:-}/set_env.sh" in script
     assert "${ASCEND_TOOLKIT_HOME:-}/set_env.sh" in script
@@ -21,6 +26,16 @@ def test_use_single_ascend_env_falls_back_to_cann_set_env_for_tbe() -> None:
     assert "${CONDA_PREFIX:-}/Ascend/cann/set_env.sh" in script
     assert "/usr/local/Ascend/ascend-toolkit/latest/set_env.sh" in script
     assert "/usr/local/Ascend/ascend-toolkit/set_env.sh" in script
+    assert "${ASCEND_HOME_PATH:-}/python/site-packages" in script
+    assert "${ASCEND_OPP_PATH:-}/built-in/op_impl/ai_core/tbe" in script
+    assert "/usr/local/Ascend/ascend-toolkit/latest/python/site-packages" in script
+    assert 'python_prefix="$(cd "$(dirname "${python_bin}")/.." && pwd -P)"' in script
+    assert 'append_unique_path_var LD_LIBRARY_PATH "${python_prefix}/lib"' in script
     assert 'source "${set_env_file}" || source_status=$?' in script
     assert "ensure_cann_tbe_env || return 1" in script
+    assert 'append_unique_path_var PYTHONPATH "${candidate}"' in script
+    assert 'append_unique_path_var LD_LIBRARY_PATH "${candidate}"' in script
+    assert 'if [[ "${require_cann_tbe}" != "1" ]]; then' in script
+    assert 'continuing without strict TBE enforcement' in script
+    assert 'echo "[ERROR] PYTHONPATH=${PYTHONPATH:-<unset>}" >&2' in script
     assert "Source the correct CANN set_env.sh" in script

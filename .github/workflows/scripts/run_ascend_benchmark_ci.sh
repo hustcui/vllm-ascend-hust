@@ -160,7 +160,10 @@ else
 fi
 
 if [[ "$ASCEND_BENCHMARK_USE_SUDO" == "auto" ]]; then
-  if command -v sudo >/dev/null 2>&1 && [[ -x "$ASCEND_BENCHMARK_ROOT_HELPER" ]]; then
+  if [[ "$(id -u)" == "0" ]]; then
+    ASCEND_BENCHMARK_USE_SUDO=0
+    echo "Ascend benchmark sudo mode: disabled via auto detection; current user is root"
+  elif command -v sudo >/dev/null 2>&1 && [[ -x "$ASCEND_BENCHMARK_ROOT_HELPER" ]]; then
     ASCEND_BENCHMARK_USE_SUDO=1
     echo "Ascend benchmark sudo mode: enabled via auto detection ($ASCEND_BENCHMARK_ROOT_HELPER)"
   else

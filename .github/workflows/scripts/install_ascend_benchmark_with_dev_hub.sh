@@ -34,6 +34,10 @@ resolve_compile_custom_kernels() {
   local cann_major
 
   if [[ "$requested" == "auto" ]]; then
+    if [[ "${HUST_ASCEND_TBE_AVAILABLE:-1}" != "1" ]]; then
+      printf '0\n'
+      return 0
+    fi
     cann_major="$(detect_cann_major_version || true)"
     if [[ "$cann_major" == "9" ]]; then
       printf 'dev-hub-default\n'
@@ -86,6 +90,7 @@ if [[ ! -f "$WORKSPACE_ROOT/ascend-runtime-manager/pyproject.toml" ]]; then
 fi
 
 if [[ -f "$VLLM_ASCEND_HUST_REPO/scripts/use_single_ascend_env.sh" ]]; then
+  export HUST_REQUIRE_CANN_TBE="${HUST_REQUIRE_CANN_TBE:-0}"
   # shellcheck source=/dev/null
   source "$VLLM_ASCEND_HUST_REPO/scripts/use_single_ascend_env.sh"
 fi
@@ -123,7 +128,9 @@ case "$resolved_compile_custom_kernels" in
     export COMPILE_CUSTOM_KERNELS=0
     export HUST_DEV_HUB_ASCEND_COMPILE_CUSTOM_KERNELS=0
     quickstart_args+=(--ascend-lightweight)
-    if [[ "$requested_compile_custom_kernels" == "auto" ]]; then
+    if [[ "$requested_compile_custom_kernels" == "auto" && "${HUST_ASCEND_TBE_AVAILABLE:-1}" != "1" ]]; then
+      echo "COMPILE_CUSTOM_KERNELS=auto resolved to lightweight mode because TBE is unavailable on this runner"
+    elif [[ "$requested_compile_custom_kernels" == "auto" ]]; then
       echo "COMPILE_CUSTOM_KERNELS=auto resolved to lightweight mode for CANN 8.x or unknown runtime"
     else
       echo "Using configured COMPILE_CUSTOM_KERNELS=0"

@@ -217,6 +217,15 @@ def test_pull_request_defaults_match_perfgate_spec_size() -> None:
     ) in workflow
 
 
+def test_benchmark_disables_huggingface_xet_download_path() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+
+    assert 'HF_HUB_DISABLE_XET: "1"' in workflow
+    assert "HF_ENDPOINT:" in workflow
+    assert "HUGGINGFACE_HUB_CACHE:" in workflow
+    assert "TRANSFORMERS_CACHE:" in workflow
+
+
 def test_local_ascend_manager_fallback_bootstraps_pip() -> None:
     helper = MANAGER_HELPER.read_text(encoding="utf-8")
     workflow = WORKFLOW.read_text(encoding="utf-8")
@@ -273,20 +282,42 @@ def test_benchmark_prepare_preserves_torch_npu_stack() -> None:
 
     assert "install_ascend_benchmark_with_dev_hub.sh" in prepare_step
     assert "hust_ascend_manager_run setup --non-interactive" not in prepare_step
-    assert "ascend-torch-constraints.txt" in prepare_step
-    assert "torch==2.10.0" in prepare_step
-    assert "torch-npu==2.10.0" in prepare_step
-    assert "torchvision==0.25.0" in prepare_step
-    assert "torchaudio==2.10.0" in prepare_step
-    assert 'hust_run_pip install -c "$torch_constraints"' in prepare_step
-    assert 'hust_run_pip install -c "$torch_constraints" -r "$VLLM_HUST_REPO/requirements/common.txt"' in prepare_step
+    assert 'run_in_quickstart_env()' in prepare_step
+    assert 'mktemp "${RUNNER_TEMP:-/tmp}/benchmark-quickstart-env.' in prepare_step
+    assert 'cat' in prepare_step
+    assert '"$CONDA_BIN" run -n "vllm-hust-dev" bash "$inline_script"' in prepare_step
+    assert "run_in_quickstart_env <<'BASH'" in prepare_step
+    assert "find_library('stdc++')" in prepare_step
+    assert 'echo "LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"' in prepare_step
+    assert 'python -m pip install -c "$torch_constraints"' not in prepare_step
+    assert 'python -m pip install "numpy<2.0.0" scipy attrs decorator psutil' not in prepare_step
+    assert 'python -m pip install -c "$torch_constraints" -r "$VLLM_HUST_REPO/requirements/common.txt"' not in prepare_step
     assert "VLLM_HUST_PYTHON_BIN" in prepare_step
+
+
+def test_benchmark_verify_uses_resolved_python_not_conda_lookup() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    verify_step = workflow[workflow.index("Verify installation") :]
+    verify_step = verify_step[: verify_step.index("- name: Performance gate - fetch Stage 1 baseline")]
+
+    assert "source scripts/hust_ascend_manager_helper.sh" in verify_step
+    assert 'PYTHON_BIN="${VLLM_HUST_PYTHON_BIN:-}"' in verify_step
+    assert 'PYTHON_BIN="$(hust_resolve_python_bin)"' in verify_step
+    assert 'export VLLM_HUST_PYTHON_BIN="$PYTHON_BIN"' in verify_step
+    assert 'source scripts/use_single_ascend_env.sh' in verify_step
+    assert '"$PYTHON_BIN" --version' in verify_step
+    assert '"$PYTHON_BIN" - <<' in verify_step
+    assert "conda executable not found for Verify installation" not in verify_step
+    assert 'CONDA_BIN="${CONDA_EXE:-}"' not in verify_step
+    assert 'conda run -n "vllm-hust-dev"' not in verify_step
 
 
 def test_benchmark_runner_auto_disables_sudo_when_unavailable() -> None:
     runner_script = (SCRIPT_DIR / "run_ascend_benchmark_ci.sh").read_text(encoding="utf-8")
 
     assert 'if [[ "$ASCEND_BENCHMARK_USE_SUDO" == "auto" ]]; then' in runner_script
+    assert 'if [[ "$(id -u)" == "0" ]]; then' in runner_script
+    assert "current user is root" in runner_script
     assert "command -v sudo" in runner_script
     assert "Ascend benchmark sudo mode: disabled via auto detection" in runner_script
     assert "command not found" in runner_script[runner_script.index("runtime_ready_log_indicates_sudo_auth_failure") :]
