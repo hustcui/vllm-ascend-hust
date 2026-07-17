@@ -8,6 +8,7 @@ VLLM_HUST_BENCHMARK_REPO=${VLLM_HUST_BENCHMARK_REPO:-$WORKSPACE_ROOT/vllm-hust-b
 VLLM_HUST_CONDA_ENV=${VLLM_HUST_CONDA_ENV:-vllm-hust-dev}
 PYTHON_VERSION=${PYTHON_VERSION:-3.11}
 ASCEND_BENCHMARK_STACK_MARKER_VERSION=${ASCEND_BENCHMARK_STACK_MARKER_VERSION:-2026-07-17-install-only-v1}
+ASCEND_BENCHMARK_TRITON_ASCEND_INDEX_URL=${ASCEND_BENCHMARK_TRITON_ASCEND_INDEX_URL:-https://mirrors.huaweicloud.com/ascend/repos/pypi}
 CURRENT_USER_NAME="$(id -un 2>/dev/null || printf '%s' "${USER:-runner}")"
 CURRENT_USER_HOME="$(getent passwd "$CURRENT_USER_NAME" 2>/dev/null | cut -d: -f6 || true)"
 CONDA_BIN=""
@@ -182,22 +183,18 @@ ensure_python_requirements() {
   run_env_pip install "${missing_specs[@]}"
 }
 
-require_python_requirements_installed() {
-  local description="$1"
-  shift
-  local requirement_specs=("$@")
+ensure_triton_ascend() {
+  local triton_ascend_spec="triton-ascend==3.2.1"
   local missing_specs=()
 
-  mapfile -t missing_specs < <(collect_unsatisfied_requirements "${requirement_specs[@]}" || true)
+  mapfile -t missing_specs < <(collect_unsatisfied_requirements "$triton_ascend_spec" || true)
   if (( ${#missing_specs[@]} == 0 )); then
-    log "Reusing installed $description"
+    log "Reusing installed $triton_ascend_spec"
     return 0
   fi
 
-  echo "Required $description is missing or incompatible in $VLLM_HUST_CONDA_ENV:" >&2
-  printf '  - %s\n' "${missing_specs[@]}" >&2
-  echo "Preinstall these packages on the self-hosted runner; benchmark prepare does not fetch them from pip indexes." >&2
-  return 1
+  log "Installing $triton_ascend_spec from Ascend PyPI mirror: $ASCEND_BENCHMARK_TRITON_ASCEND_INDEX_URL"
+  run_env_pip install --no-deps --index-url "$ASCEND_BENCHMARK_TRITON_ASCEND_INDEX_URL" "$triton_ascend_spec"
 }
 
 read_requirement_specs_from_file() {
@@ -404,7 +401,7 @@ install_benchmark_baseline_stack() {
 
   log "Installing benchmark baseline runtime stack into $VLLM_HUST_CONDA_ENV"
   ensure_python_requirements "pinned torch stack" "${core_stack_specs[@]}"
-  require_python_requirements_installed "preinstalled Ascend runtime packages" "triton-ascend==3.2.1"
+  ensure_triton_ascend
   mapfile -t vllm_hust_runtime_specs < <(read_requirement_specs_from_file "$vllm_hust_requirements_file")
   ensure_python_requirements "vllm-hust runtime requirements" "${vllm_hust_runtime_specs[@]}"
   ensure_python_requirements "Ascend benchmark extra runtime deps" "${extra_runtime_specs[@]}"

@@ -407,8 +407,11 @@ def test_dev_hub_install_wrapper_centralizes_custom_kernel_policy() -> None:
     assert 'run_env_pip install -r "$VLLM_HUST_REPO/requirements/common.txt"' not in install_script
     assert "read_requirement_specs_from_file()" in install_script
     assert 'ensure_python_requirements "vllm-hust runtime requirements"' in install_script
-    assert 'require_python_requirements_installed "preinstalled Ascend runtime packages" "triton-ascend==3.2.1"' in install_script
-    assert "Preinstall these packages on the self-hosted runner" in install_script
+    assert "ASCEND_BENCHMARK_TRITON_ASCEND_INDEX_URL" in install_script
+    assert "https://mirrors.huaweicloud.com/ascend/repos/pypi" in install_script
+    assert "ensure_triton_ascend()" in install_script
+    assert 'run_env_pip install --no-deps --index-url "$ASCEND_BENCHMARK_TRITON_ASCEND_INDEX_URL" "$triton_ascend_spec"' in install_script
+    assert "Preinstall these packages on the self-hosted runner" not in install_script
     assert "ascend_custom_kernel_build_prereqs_present()" in install_script
     assert 'if [[ "$cann_major" == "9" ]] && ascend_custom_kernel_build_prereqs_present; then' in install_script
     assert 'install -e "$repo_path" --no-build-isolation --no-deps' in install_script
