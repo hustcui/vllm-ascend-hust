@@ -3,21 +3,206 @@ set -euo pipefail
 
 WORKSPACE_ROOT=${WORKSPACE_ROOT:-${GITHUB_WORKSPACE:-$PWD}}
 VLLM_ASCEND_HUST_REPO=${VLLM_ASCEND_HUST_REPO:-$WORKSPACE_ROOT}
-VLLM_HUST_DEV_HUB_REPO=${VLLM_HUST_DEV_HUB_REPO:-$WORKSPACE_ROOT/vllm-hust-dev-hub}
+VLLM_HUST_REPO=${VLLM_HUST_REPO:-$WORKSPACE_ROOT/vllm-hust}
+VLLM_HUST_BENCHMARK_REPO=${VLLM_HUST_BENCHMARK_REPO:-$WORKSPACE_ROOT/vllm-hust-benchmark}
 VLLM_HUST_CONDA_ENV=${VLLM_HUST_CONDA_ENV:-vllm-hust-dev}
 PYTHON_VERSION=${PYTHON_VERSION:-3.11}
-DEV_HUB_QUICKSTART_CONDA=${DEV_HUB_QUICKSTART_CONDA:-1}
+ASCEND_BENCHMARK_STACK_MARKER_VERSION=${ASCEND_BENCHMARK_STACK_MARKER_VERSION:-2026-07-17-install-only-v1}
+CURRENT_USER_NAME="$(id -un 2>/dev/null || printf '%s' "${USER:-runner}")"
+CURRENT_USER_HOME="$(getent passwd "$CURRENT_USER_NAME" 2>/dev/null | cut -d: -f6 || true)"
+CONDA_BIN=""
+
+log() {
+  printf '[prepare-bootstrap] %s\n' "$*"
+}
+
+write_github_env() {
+  local name="$1"
+  local value="$2"
+
+  if [[ -n "${GITHUB_ENV:-}" ]]; then
+    printf '%s=%s\n' "$name" "$value" >> "$GITHUB_ENV"
+  fi
+}
+
+ensure_home_dirs() {
+  if [[ -z "${HOME:-}" || ! -d "${HOME:-/nonexistent}" || ! -w "${HOME:-/nonexistent}" ]]; then
+    if [[ -n "${CI_HOME:-}" ]]; then
+      export HOME="$CI_HOME"
+    elif [[ -n "$CURRENT_USER_HOME" ]]; then
+      export HOME="$CURRENT_USER_HOME"
+    else
+      export HOME="${RUNNER_TEMP:-/tmp}/${CURRENT_USER_NAME:-runner}-home"
+    fi
+  fi
+
+  export XDG_CACHE_HOME="${XDG_CACHE_HOME:-$HOME/.cache}"
+  export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
+  export PIP_CACHE_DIR="${PIP_CACHE_DIR:-$XDG_CACHE_HOME/pip}"
+
+  mkdir -p "$HOME" "$XDG_CACHE_HOME" "$XDG_CONFIG_HOME" "$PIP_CACHE_DIR"
+  chmod 700 "$HOME"
+}
+
+resolve_conda_bin() {
+  local candidate
+
+  for candidate in \
+    "${CONDA_EXE:-}" \
+    "$(command -v conda 2>/dev/null || true)" \
+    "${CI_HOME:-}/miniconda3/bin/conda" \
+    "${HOME:-}/miniconda3/bin/conda" \
+    "${CURRENT_USER_HOME:-}/miniconda3/bin/conda" \
+    "/opt/conda/bin/conda" \
+    "/usr/local/miniconda3/bin/conda" \
+    "/usr/local/anaconda3/bin/conda"; do
+    if [[ -n "$candidate" && -x "$candidate" ]]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+
+  echo "conda executable not found for benchmark bootstrap" >&2
+  return 1
+}
+
+resolve_conda_env_prefix() {
+  local candidate_prefix
+  local resolved_prefix
+
+  if [[ -n "${VLLM_HUST_CONDA_PREFIX:-}" && -x "${VLLM_HUST_CONDA_PREFIX}/bin/python" ]]; then
+    printf '%s\n' "${VLLM_HUST_CONDA_PREFIX}"
+    return 0
+  fi
+
+  resolved_prefix="$("$CONDA_BIN" env list 2>/dev/null | awk -v env_name="$VLLM_HUST_CONDA_ENV" '$1 == env_name {print $NF; exit}')"
+  if [[ -n "$resolved_prefix" && -x "$resolved_prefix/bin/python" ]]; then
+    printf '%s\n' "$resolved_prefix"
+    return 0
+  fi
+
+  for candidate_prefix in \
+    "${CI_HOME:-}/miniconda3/envs/${VLLM_HUST_CONDA_ENV}" \
+    "${HOME:-}/miniconda3/envs/${VLLM_HUST_CONDA_ENV}" \
+    "${CURRENT_USER_HOME:-}/miniconda3/envs/${VLLM_HUST_CONDA_ENV}" \
+    "/opt/conda/envs/${VLLM_HUST_CONDA_ENV}" \
+    "/usr/local/miniconda3/envs/${VLLM_HUST_CONDA_ENV}" \
+    "/usr/local/anaconda3/envs/${VLLM_HUST_CONDA_ENV}"; do
+    if [[ -n "$candidate_prefix" && -x "$candidate_prefix/bin/python" ]]; then
+      printf '%s\n' "$candidate_prefix"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+ensure_conda_env() {
+  local env_prefix
+
+  CONDA_BIN="$(resolve_conda_bin)"
+  env_prefix="$(resolve_conda_env_prefix || true)"
+
+  if [[ -z "$env_prefix" ]]; then
+    log "Creating benchmark conda env: $VLLM_HUST_CONDA_ENV (python=$PYTHON_VERSION)"
+    "$CONDA_BIN" create -y -n "$VLLM_HUST_CONDA_ENV" "python=$PYTHON_VERSION" pip
+    env_prefix="$(resolve_conda_env_prefix)"
+  else
+    log "Reusing benchmark conda env: $VLLM_HUST_CONDA_ENV ($env_prefix)"
+  fi
+
+  export CONDA_EXE="$CONDA_BIN"
+  export VLLM_HUST_CONDA_PREFIX="$env_prefix"
+  export VLLM_HUST_PYTHON_BIN="$env_prefix/bin/python"
+  write_github_env "VLLM_HUST_CONDA_PREFIX" "$VLLM_HUST_CONDA_PREFIX"
+  write_github_env "VLLM_HUST_PYTHON_BIN" "$VLLM_HUST_PYTHON_BIN"
+}
+
+run_env_cmd() {
+  env \
+    HOME="$HOME" \
+    XDG_CACHE_HOME="$XDG_CACHE_HOME" \
+    XDG_CONFIG_HOME="$XDG_CONFIG_HOME" \
+    PIP_CACHE_DIR="$PIP_CACHE_DIR" \
+    "$@"
+}
+
+run_env_pip() {
+  run_env_cmd "$VLLM_HUST_PYTHON_BIN" -m pip "$@"
+}
+
+collect_unsatisfied_requirements() {
+  run_env_cmd "$VLLM_HUST_PYTHON_BIN" - "$@" <<'PY'
+import importlib.metadata as metadata
+import sys
+
+from packaging.requirements import Requirement
+from packaging.utils import canonicalize_name
+
+installed = {}
+for dist in metadata.distributions():
+    name = dist.metadata.get("Name")
+    if not name:
+        continue
+    installed[canonicalize_name(name)] = dist.version
+
+unsatisfied = []
+for raw in sys.argv[1:]:
+    requirement = Requirement(raw)
+    version = installed.get(canonicalize_name(requirement.name))
+    if version is None:
+        unsatisfied.append(raw)
+        continue
+    if requirement.specifier and version not in requirement.specifier:
+        unsatisfied.append(raw)
+
+if unsatisfied:
+    print("\n".join(unsatisfied))
+PY
+}
+
+ensure_python_requirements() {
+  local description="$1"
+  shift
+  local requirement_specs=("$@")
+  local missing_specs=()
+
+  mapfile -t missing_specs < <(collect_unsatisfied_requirements "${requirement_specs[@]}" || true)
+  if (( ${#missing_specs[@]} == 0 )); then
+    log "Reusing installed $description"
+    return 0
+  fi
+
+  log "Installing missing $description"
+  run_env_pip install "${missing_specs[@]}"
+}
+
+ensure_bootstrap_python_tools() {
+  log "Ensuring bootstrap packaging tools are available in $VLLM_HUST_CONDA_ENV"
+  run_env_pip install --upgrade pip "packaging>=24.2" "setuptools>=77,<81" wheel
+}
+
+ensure_conda_runtime_libs() {
+  if [[ -f "$VLLM_HUST_CONDA_PREFIX/lib/libstdc++.so.6" && -f "$VLLM_HUST_CONDA_PREFIX/lib/libgcc_s.so.1" ]]; then
+    log "Reusing conda runtime libs from $VLLM_HUST_CONDA_PREFIX/lib"
+    return 0
+  fi
+
+  log "Installing conda runtime libs into $VLLM_HUST_CONDA_ENV"
+  "$CONDA_BIN" install -y -n "$VLLM_HUST_CONDA_ENV" libgcc-ng libstdcxx-ng
+}
 
 detect_cann_major_version() {
   local candidate
   local version
+
   for candidate in \
     "${ASCEND_HOME_PATH:-}/version.info" \
     "${ASCEND_HOME_PATH:-}/runtime/version.info" \
     "/usr/local/Ascend/ascend-toolkit/latest/version.info" \
     "/usr/local/Ascend/ascend-toolkit/latest/runtime/version.info" \
-    "${CONDA_PREFIX:-}/Ascend/cann/version.info" \
-    "${CONDA_PREFIX:-}/Ascend/cann/runtime/version.info"; do
+    "${VLLM_HUST_CONDA_PREFIX:-}/Ascend/cann/version.info" \
+    "${VLLM_HUST_CONDA_PREFIX:-}/Ascend/cann/runtime/version.info"; do
     if [[ -f "$candidate" ]]; then
       version="$(grep -oE '[0-9]+[.][0-9]+([.][0-9]+)?' "$candidate" | head -n 1 || true)"
       if [[ -n "$version" ]]; then
@@ -26,6 +211,7 @@ detect_cann_major_version() {
       fi
     fi
   done
+
   return 1
 }
 
@@ -38,9 +224,10 @@ resolve_compile_custom_kernels() {
       printf '0\n'
       return 0
     fi
+
     cann_major="$(detect_cann_major_version || true)"
     if [[ "$cann_major" == "9" ]]; then
-      printf 'dev-hub-default\n'
+      printf '1\n'
     else
       printf '0\n'
     fi
@@ -55,32 +242,133 @@ resolve_compile_custom_kernels() {
   printf '%s\n' "$requested"
 }
 
-ensure_ascend_repo_workspace_entry() {
-  local workspace_entry="$WORKSPACE_ROOT/vllm-ascend-hust"
-  local entry_real
-  local repo_real
+ensure_ascend_catlass_submodule_ready() {
+  local submodule_relative_path="csrc/third_party/catlass"
+  local submodule_path="$VLLM_ASCEND_HUST_REPO/$submodule_relative_path"
 
-  repo_real="$(cd "$VLLM_ASCEND_HUST_REPO" && pwd -P)"
-
-  if [[ -L "$workspace_entry" ]]; then
-    ln -sfn "$VLLM_ASCEND_HUST_REPO" "$workspace_entry"
+  if [[ -e "$submodule_path/CMakeLists.txt" || -e "$submodule_path/README.md" ]]; then
     return 0
   fi
 
-  if [[ -e "$workspace_entry" ]]; then
-    entry_real="$(cd "$workspace_entry" && pwd -P)"
-    if [[ "$entry_real" != "$repo_real" ]]; then
-      echo "Workspace entry $workspace_entry points to $entry_real, expected $repo_real" >&2
-      return 2
-    fi
+  if [[ ! -d "$VLLM_ASCEND_HUST_REPO/.git" && ! -f "$VLLM_ASCEND_HUST_REPO/.git" ]]; then
+    log "Skipping $submodule_relative_path initialization because $VLLM_ASCEND_HUST_REPO has no git metadata"
     return 0
   fi
 
-  ln -s "$VLLM_ASCEND_HUST_REPO" "$workspace_entry"
+  log "Initializing Ascend submodule: $submodule_relative_path"
+  git -C "$VLLM_ASCEND_HUST_REPO" submodule update --init --recursive "$submodule_relative_path"
 }
 
-if [[ ! -f "$VLLM_HUST_DEV_HUB_REPO/scripts/quickstart.sh" ]]; then
-  echo "dev-hub quickstart not found: $VLLM_HUST_DEV_HUB_REPO/scripts/quickstart.sh" >&2
+patch_triton_ascend_for_cann9() {
+  local python_dir
+  local triton_backends
+  local npu_utils
+  local cann_major
+
+  cann_major="$(detect_cann_major_version || true)"
+  if [[ "$cann_major" != "9" ]]; then
+    return 0
+  fi
+
+  python_dir="$(find "$VLLM_HUST_CONDA_PREFIX/lib" -maxdepth 1 -type d -name 'python*' | sort | head -n 1 || true)"
+  if [[ -z "$python_dir" ]]; then
+    return 0
+  fi
+
+  triton_backends="$python_dir/site-packages/triton/backends/ascend"
+  npu_utils="$triton_backends/npu_utils.cpp"
+  if [[ ! -f "$npu_utils" ]]; then
+    return 0
+  fi
+
+  if grep -q 'RT_LIMIT_TYPE_SIMT_WARP_STACK_SIZE' "$npu_utils" 2>/dev/null; then
+    log "Patching triton-ascend npu_utils.cpp for CANN 9 compatibility"
+    sed -i '/RT_LIMIT_TYPE_SIMT_WARP_STACK_SIZE/d' "$npu_utils"
+    find "$triton_backends" -path '*npu_utils*.so' -delete 2>/dev/null || true
+  fi
+}
+
+install_benchmark_baseline_stack() {
+  local marker_file="$VLLM_HUST_CONDA_PREFIX/.ascend-benchmark-install-only-stack"
+  local validation_specs=(
+    "torch==2.10.0"
+    "torch-npu==2.10.0"
+    "torchvision==0.25.0"
+    "torchaudio==2.10.0"
+    "triton-ascend==3.2.1"
+    "huggingface_hub>=0.20"
+    "jsonschema>=4"
+  )
+  local core_stack_specs=(
+    "numpy<2.0.0"
+    "torch==2.10.0"
+    "torch-npu==2.10.0"
+    "torchvision==0.25.0"
+    "torchaudio==2.10.0"
+    "triton-ascend==3.2.1"
+  )
+  local extra_runtime_specs=(
+    "attrs"
+    "cmake>=3.26"
+    "decorator"
+    "googleapis-common-protos"
+    "msgpack"
+    "numba"
+    "packaging>=24.2"
+    "pandas"
+    "pandas-stubs"
+    "pybind11"
+    "quart"
+    "scipy"
+    "setuptools-scm>=8"
+    "setuptools-rust>=1.9.0"
+    "xgrammar>=0.1.30"
+    "compressed_tensors>=0.11.0"
+    "arctic-inference==0.1.1"
+    "transformers==5.5.4"
+    "jsonschema>=4"
+    "huggingface_hub>=0.20"
+  )
+  local validation_missing=()
+
+  if [[ -f "$marker_file" ]] && grep -qx "$ASCEND_BENCHMARK_STACK_MARKER_VERSION" "$marker_file"; then
+    mapfile -t validation_missing < <(collect_unsatisfied_requirements "${validation_specs[@]}" || true)
+    if (( ${#validation_missing[@]} == 0 )); then
+      log "Reusing benchmark baseline stack marker: $marker_file"
+      return 0
+    fi
+    log "Benchmark baseline stack marker is stale; reinstalling missing runtime pieces"
+  fi
+
+  log "Installing benchmark baseline runtime stack into $VLLM_HUST_CONDA_ENV"
+  ensure_python_requirements "pinned torch stack" "${core_stack_specs[@]}"
+  log "Installing vllm-hust runtime requirements from $VLLM_HUST_REPO/requirements/common.txt"
+  run_env_pip install -r "$VLLM_HUST_REPO/requirements/common.txt"
+  ensure_python_requirements "Ascend benchmark extra runtime deps" "${extra_runtime_specs[@]}"
+  printf '%s\n' "$ASCEND_BENCHMARK_STACK_MARKER_VERSION" > "$marker_file"
+}
+
+install_editable_repo_no_deps() {
+  local repo_path="$1"
+  shift
+
+  log "Installing editable package from: $repo_path"
+  run_env_cmd env "$@" \
+    "$VLLM_HUST_PYTHON_BIN" -m pip install -e "$repo_path" --no-build-isolation --no-deps
+}
+
+if [[ ! -f "$VLLM_HUST_REPO/pyproject.toml" ]]; then
+  echo "vllm-hust checkout not found: $VLLM_HUST_REPO" >&2
+  exit 2
+fi
+
+if [[ ! -f "$VLLM_HUST_BENCHMARK_REPO/pyproject.toml" ]]; then
+  echo "vllm-hust-benchmark checkout not found: $VLLM_HUST_BENCHMARK_REPO" >&2
+  exit 2
+fi
+
+if [[ ! -f "$VLLM_ASCEND_HUST_REPO/pyproject.toml" ]]; then
+  echo "vllm-ascend-hust checkout not found: $VLLM_ASCEND_HUST_REPO" >&2
   exit 2
 fi
 
@@ -89,63 +377,36 @@ if [[ ! -f "$WORKSPACE_ROOT/ascend-runtime-manager/pyproject.toml" ]]; then
   exit 2
 fi
 
+ensure_home_dirs
+ensure_conda_env
+ensure_conda_runtime_libs
+ensure_bootstrap_python_tools
+
 if [[ -f "$VLLM_ASCEND_HUST_REPO/scripts/use_single_ascend_env.sh" ]]; then
   export HUST_REQUIRE_CANN_TBE="${HUST_REQUIRE_CANN_TBE:-0}"
   # shellcheck source=/dev/null
   source "$VLLM_ASCEND_HUST_REPO/scripts/use_single_ascend_env.sh"
 fi
 
-export HUST_DEV_HUB_SKIP_ASCEND_SYSTEM_APPLY=1
-
-ensure_ascend_repo_workspace_entry
-
-echo "Using dev-hub quickstart: $VLLM_HUST_DEV_HUB_REPO/scripts/quickstart.sh"
-
-quickstart_args=(
-  --install
-  --install-mode refresh
-  --install-scope full
-  --env-name "$VLLM_HUST_CONDA_ENV"
-  -y
-)
-
-if [[ "$DEV_HUB_QUICKSTART_CONDA" == "1" ]]; then
-  quickstart_args=(
-    --conda
-    "${quickstart_args[@]}"
-    --python "$PYTHON_VERSION"
-  )
-fi
-
-requested_compile_custom_kernels="${COMPILE_CUSTOM_KERNELS:-auto}"
 resolved_compile_custom_kernels="$(resolve_compile_custom_kernels)"
-case "$resolved_compile_custom_kernels" in
-  dev-hub-default)
-    unset HUST_DEV_HUB_ASCEND_COMPILE_CUSTOM_KERNELS
-    echo "COMPILE_CUSTOM_KERNELS=auto resolved to dev-hub default policy for CANN 9"
-    ;;
-  0)
-    export COMPILE_CUSTOM_KERNELS=0
-    export HUST_DEV_HUB_ASCEND_COMPILE_CUSTOM_KERNELS=0
-    quickstart_args+=(--ascend-lightweight)
-    if [[ "$requested_compile_custom_kernels" == "auto" && "${HUST_ASCEND_TBE_AVAILABLE:-1}" != "1" ]]; then
-      echo "COMPILE_CUSTOM_KERNELS=auto resolved to lightweight mode because TBE is unavailable on this runner"
-    elif [[ "$requested_compile_custom_kernels" == "auto" ]]; then
-      echo "COMPILE_CUSTOM_KERNELS=auto resolved to lightweight mode for CANN 8.x or unknown runtime"
-    else
-      echo "Using configured COMPILE_CUSTOM_KERNELS=0"
-    fi
-    ;;
-  *)
-    export COMPILE_CUSTOM_KERNELS="$resolved_compile_custom_kernels"
-    export HUST_DEV_HUB_ASCEND_COMPILE_CUSTOM_KERNELS="$resolved_compile_custom_kernels"
-    quickstart_args+=(--ascend-custom-kernels "$resolved_compile_custom_kernels")
-    echo "Using configured COMPILE_CUSTOM_KERNELS=$resolved_compile_custom_kernels"
-    ;;
-esac
-
-bash "$VLLM_HUST_DEV_HUB_REPO/scripts/quickstart.sh" "${quickstart_args[@]}"
-
-if [[ -n "${GITHUB_ENV:-}" ]]; then
-  echo "COMPILE_CUSTOM_KERNELS=${COMPILE_CUSTOM_KERNELS:-auto}" >> "$GITHUB_ENV"
+export COMPILE_CUSTOM_KERNELS="$resolved_compile_custom_kernels"
+if [[ "$resolved_compile_custom_kernels" == "0" ]]; then
+  log "Using install-only repo bootstrap (no quickstart; editable --no-deps installs)"
+  log "COMPILE_CUSTOM_KERNELS=auto resolved to lightweight mode"
+else
+  ensure_ascend_catlass_submodule_ready
+  log "Using install-only repo bootstrap (no quickstart; editable --no-deps installs)"
+  log "Using configured COMPILE_CUSTOM_KERNELS=$resolved_compile_custom_kernels"
 fi
+
+install_benchmark_baseline_stack
+patch_triton_ascend_for_cann9
+
+install_editable_repo_no_deps "$VLLM_HUST_REPO" \
+  VLLM_TARGET_DEVICE=empty \
+  VLLM_USE_PRECOMPILED=0 \
+  TORCH_DEVICE_BACKEND_AUTOLOAD=0
+install_editable_repo_no_deps "$VLLM_HUST_BENCHMARK_REPO"
+bash "$VLLM_ASCEND_HUST_REPO/scripts/install_local_ascend_plugin.sh" "$VLLM_ASCEND_HUST_REPO"
+
+write_github_env "COMPILE_CUSTOM_KERNELS" "${COMPILE_CUSTOM_KERNELS:-auto}"

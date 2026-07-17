@@ -91,8 +91,7 @@ if [[ "$rebase_rc" -ne 0 ]]; then
   exit 0
 fi
 
-DEV_HUB_QUICKSTART_CONDA="${PERFGATE_STAGE2_DEV_HUB_QUICKSTART_CONDA:-0}" \
-  bash .github/workflows/scripts/install_ascend_benchmark_with_dev_hub.sh
+bash .github/workflows/scripts/install_ascend_benchmark_with_dev_hub.sh
 
 run_stage2_benchmark() {
   local max_attempts=${NODE_ENV_RETRY_MAX_ATTEMPTS:-3}
