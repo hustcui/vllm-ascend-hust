@@ -65,7 +65,7 @@ def test_ascend_benchmark_workflow_wires_two_stage_perfgate() -> None:
     assert "perfgate-ascend-qwen25-3b-910b3.json" not in workflow
     assert "VLLM_HUST_BENCHMARK_REF" in workflow
     assert "ref: ${{ env.VLLM_HUST_BENCHMARK_REF }}" in workflow
-    assert 'hust_run_pip install -e "${VLLM_HUST_BENCHMARK_REPO}[publish]"' in workflow
+    assert 'hust_run_pip install -e "${VLLM_HUST_BENCHMARK_REPO}[publish]"' not in workflow
     assert "Detect PR fork point" in workflow
     assert "Performance gate - fetch Stage 1 baseline" in workflow
     assert "Performance gate - Stage 1 comparison" in workflow
@@ -100,8 +100,8 @@ def test_ascend_benchmark_workflow_wires_two_stage_perfgate() -> None:
     assert "timeout-minutes: 60" in workflow
     assert "VLLM_ASCEND_HUST_PUBLISH_BENCHMARK_ON_PR" not in workflow
     assert "github.event_name == 'pull_request' || github.event_name == 'issue_comment'" in workflow
-    assert "Checkout dev-hub repo" in workflow
-    assert "VLLM_HUST_DEV_HUB_REF" in workflow
+    assert "Checkout dev-hub repo" not in workflow
+    assert "VLLM_HUST_DEV_HUB_REF" not in workflow
     assert "HUST_ASCEND_MANAGER_REF" in workflow
     assert "ref: ${{ env.HUST_ASCEND_MANAGER_REF }}" in workflow
     assert "install_ascend_benchmark_with_dev_hub.sh" in workflow
@@ -113,7 +113,7 @@ def test_ascend_benchmark_workflow_wires_two_stage_perfgate() -> None:
     assert "VLLM_ASCEND_HUST_SAME_SPEC_READY_TIMEOUT_SECONDS || '1800'" in workflow
     assert "VLLM_ASCEND_HUST_SAME_SPEC_CLIENT_READY_TIMEOUT_SECONDS || '300'" in workflow
     assert "vars.VLLM_ASCEND_HUST_COMPILE_CUSTOM_KERNELS || 'auto'" in workflow
-    assert "VLLM_ASCEND_HUST_STAGE2_DEV_HUB_QUICKSTART_CONDA || '0'" in workflow
+    assert "VLLM_ASCEND_HUST_STAGE2_DEV_HUB_QUICKSTART_CONDA" not in workflow
 
 
 def test_schedule_runs_registered_multi_scenario_benchmark_publish() -> None:
@@ -282,14 +282,16 @@ def test_benchmark_prepare_preserves_torch_npu_stack() -> None:
 
     assert "install_ascend_benchmark_with_dev_hub.sh" in prepare_step
     assert "hust_ascend_manager_run setup --non-interactive" not in prepare_step
-    assert 'run_in_quickstart_env()' in prepare_step
-    assert 'mktemp "${RUNNER_TEMP:-/tmp}/benchmark-quickstart-env.' in prepare_step
-    assert 'cat' in prepare_step
-    assert '"$CONDA_BIN" run -n "vllm-hust-dev" bash "$inline_script"' in prepare_step
-    assert "run_in_quickstart_env <<'BASH'" in prepare_step
+    assert 'run_in_quickstart_env()' not in prepare_step
+    assert 'mktemp "${RUNNER_TEMP:-/tmp}/benchmark-quickstart-env.' not in prepare_step
+    assert '"$CONDA_BIN" run -n "vllm-hust-dev" bash "$inline_script"' not in prepare_step
     assert "find_library('stdc++')" in prepare_step
+    assert 'PYTHON_BIN="${VLLM_HUST_PYTHON_BIN:-}"' in prepare_step
+    assert 'echo "PYTHON_BIN=$PYTHON_BIN" >> "$GITHUB_ENV"' in prepare_step
+    assert '"$PYTHON_BIN" - <<' in prepare_step
     assert 'echo "LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"' in prepare_step
-    assert 'python -m pip install -c "$torch_constraints"' not in prepare_step
+    assert 'python -m pip install -e "$VLLM_HUST_BENCHMARK_REPO[publish]" jsonschema' not in prepare_step
+    assert 'python -m pip install "huggingface_hub>=0.20"' not in prepare_step
     assert 'python -m pip install "numpy<2.0.0" scipy attrs decorator psutil' not in prepare_step
     assert 'python -m pip install -c "$torch_constraints" -r "$VLLM_HUST_REPO/requirements/common.txt"' not in prepare_step
     assert "VLLM_HUST_PYTHON_BIN" in prepare_step
@@ -385,26 +387,41 @@ def test_stage2_trial_does_not_publish_benchmark_results() -> None:
     assert "SYNC_GITHUB_SNAPSHOTS=0" in stage2_script
     assert "BENCHMARK_RESULTS_ROOT" in stage2_script
     assert "install_ascend_benchmark_with_dev_hub.sh" in stage2_script
-    assert 'DEV_HUB_QUICKSTART_CONDA="${PERFGATE_STAGE2_DEV_HUB_QUICKSTART_CONDA:-0}"' in stage2_script
+    assert "PERFGATE_STAGE2_DEV_HUB_QUICKSTART_CONDA" not in stage2_script
     assert "install_local_ascend_plugin.sh" not in stage2_script
 
 
 def test_dev_hub_install_wrapper_centralizes_custom_kernel_policy() -> None:
     install_script = INSTALL_DEV_HUB_SCRIPT.read_text(encoding="utf-8")
 
-    assert "VLLM_HUST_DEV_HUB_REPO=" in install_script
+    assert "VLLM_HUST_REPO=" in install_script
+    assert "VLLM_HUST_BENCHMARK_REPO=" in install_script
+    assert "VLLM_HUST_DEV_HUB_REPO=" not in install_script
     assert "ascend-runtime-manager checkout not found" in install_script
     assert "detect_cann_major_version()" in install_script
     assert 'if [[ "$requested" == "auto" ]]; then' in install_script
-    assert 'if [[ "$cann_major" == "9" ]]; then' in install_script
-    assert "dev-hub-default" in install_script
-    assert "COMPILE_CUSTOM_KERNELS=auto resolved to dev-hub default policy for CANN 9" in install_script
-    assert "--ascend-lightweight" in install_script
-    assert "--ascend-custom-kernels" in install_script
-    assert "HUST_DEV_HUB_ASCEND_COMPILE_CUSTOM_KERNELS" in install_script
-    assert "HUST_DEV_HUB_SKIP_ASCEND_SYSTEM_APPLY=1" in install_script
-    assert 'bash "$VLLM_HUST_DEV_HUB_REPO/scripts/quickstart.sh"' in install_script
-    assert "COMPILE_CUSTOM_KERNELS=${COMPILE_CUSTOM_KERNELS:-auto}" in install_script
+    assert 'if [[ "$cann_major" == "9" ]] && ascend_custom_kernel_build_prereqs_present; then' in install_script
+    assert "Using install-only repo bootstrap (no quickstart; editable --no-deps installs)" in install_script
+    assert "COMPILE_CUSTOM_KERNELS=auto resolved to lightweight mode" in install_script
+    assert "requirements/common.txt" in install_script
+    assert 'run_env_pip install -r "$VLLM_HUST_REPO/requirements/common.txt"' not in install_script
+    assert "read_requirement_specs_from_file()" in install_script
+    assert 'ensure_python_requirements "vllm-hust runtime requirements"' in install_script
+    assert "ASCEND_BENCHMARK_TRITON_ASCEND_INDEX_URL" in install_script
+    assert "https://mirrors.huaweicloud.com/ascend/repos/pypi" in install_script
+    assert "ensure_triton_ascend()" in install_script
+    assert 'run_env_pip install --no-deps --index-url "$ASCEND_BENCHMARK_TRITON_ASCEND_INDEX_URL" "$triton_ascend_spec"' in install_script
+    assert "Preinstall these packages on the self-hosted runner" not in install_script
+    assert "ascend_custom_kernel_build_prereqs_present()" in install_script
+    assert 'if [[ "$cann_major" == "9" ]] && ascend_custom_kernel_build_prereqs_present; then' in install_script
+    assert 'install -e "$repo_path" --no-build-isolation --no-deps' in install_script
+    assert 'bash "$VLLM_ASCEND_HUST_REPO/scripts/install_local_ascend_plugin.sh"' in install_script
+    assert "ASCEND_BENCHMARK_STACK_MARKER_VERSION" in install_script
+    assert "sha256sum" in install_script
+    assert '"huggingface_hub>=0.20"' in install_script
+    assert '"jsonschema>=4"' in install_script
+    assert "HUST_DEV_HUB_SKIP_ASCEND_SYSTEM_APPLY=1" not in install_script
+    assert 'bash "$VLLM_HUST_DEV_HUB_REPO/scripts/quickstart.sh"' not in install_script
 
 
 def test_benchmark_workflow_masks_cross_service_credentials() -> None:

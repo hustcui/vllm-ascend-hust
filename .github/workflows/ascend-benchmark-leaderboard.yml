@@ -309,7 +309,6 @@ jobs:
       VLLM_HUST_CONDA_ENV: vllm-hust-dev
       VLLM_HUST_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.vllm_hust_ref || vars.VLLM_ASCEND_HUST_VLLM_HUST_REF || 'main' }}
       VLLM_HUST_BENCHMARK_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.benchmark_ref || vars.VLLM_ASCEND_HUST_BENCHMARK_REF || 'main' }}
-      VLLM_HUST_DEV_HUB_REF: ${{ vars.VLLM_ASCEND_HUST_DEV_HUB_REF || 'main' }}
       HUST_ASCEND_MANAGER_REF: ${{ vars.VLLM_ASCEND_HUST_MANAGER_REF || 'main' }}
       MODEL_NAME: ${{ (github.event_name == 'pull_request' || github.event_name == 'issue_comment') && (github.event_name == 'issue_comment' && needs.issue-comment-command.outputs.model_name || 'Qwen/Qwen2.5-3B-Instruct') || (github.event_name == 'workflow_dispatch' && inputs.model_name || 'Qwen/Qwen2.5-14B-Instruct') }}
       SOC_VERSION: ascend910b2
@@ -344,7 +343,6 @@ jobs:
       PERFGATE_MODE: ${{ vars.VLLM_ASCEND_HUST_PERFGATE_MODE || 'report' }}
       PERFGATE_SPEC_FILE: ${{ vars.VLLM_ASCEND_HUST_PERFGATE_SPEC_FILE || '' }}
       PERFGATE_BASELINE_BRANCH: ${{ vars.VLLM_ASCEND_HUST_PERFGATE_BASELINE_BRANCH || 'benchmark-baselines' }}
-      PERFGATE_STAGE2_DEV_HUB_QUICKSTART_CONDA: ${{ vars.VLLM_ASCEND_HUST_STAGE2_DEV_HUB_QUICKSTART_CONDA || '0' }}
       MAIN_SAME_SPEC_SPEC_FILE: ${{ vars.VLLM_ASCEND_HUST_MAIN_SAME_SPEC_SPEC_FILE || 'docs/official-baselines/official-ascend-jan-2026-v0180-random-online-qwen25-14b-910b2.json' }}
       SAME_SPEC_SPEC_FILE: ${{ vars.VLLM_ASCEND_HUST_SAME_SPEC_SPEC_FILE || '' }}
       SAME_SPEC_CONSTRAINTS_FILE: ${{ vars.VLLM_ASCEND_HUST_SAME_SPEC_CONSTRAINTS_FILE || '' }}
@@ -600,16 +598,6 @@ jobs:
           ssh-strict: ${{ env.BENCHMARK_CHECKOUT_USE_SSH_443 != '1' }}
           persist-credentials: false
 
-      - name: Checkout dev-hub repo
-        uses: actions/checkout@v6.0.1
-        with:
-          repository: vLLM-HUST/vllm-hust-dev-hub
-          ref: ${{ env.VLLM_HUST_DEV_HUB_REF }}
-          path: vllm-hust-dev-hub
-          ssh-key: ${{ secrets.VLLM_ASCEND_HUST_BENCHMARK_SSH_KEY }}
-          ssh-strict: ${{ env.BENCHMARK_CHECKOUT_USE_SSH_443 != '1' }}
-          persist-credentials: false
-
       - name: Checkout website repo
         uses: actions/checkout@v7
         with:
@@ -725,7 +713,6 @@ jobs:
         env:
           VLLM_HUST_REPO: ${{ github.workspace }}/vllm-hust
           VLLM_HUST_BENCHMARK_REPO: ${{ github.workspace }}/vllm-hust-benchmark
-          VLLM_HUST_DEV_HUB_REPO: ${{ github.workspace }}/vllm-hust-dev-hub
           HOME: ${{ env.CI_HOME }}
           XDG_CACHE_HOME: ${{ env.CI_HOME }}/.cache
           XDG_CONFIG_HOME: ${{ env.CI_HOME }}/.config
@@ -735,19 +722,14 @@ jobs:
           chmod 700 "$HOME"
           bash .github/workflows/scripts/install_ascend_benchmark_with_dev_hub.sh
           source scripts/hust_ascend_manager_helper.sh
-          CONDA_BIN="${CONDA_EXE:-}"
-          if [[ -z "$CONDA_BIN" || ! -x "$CONDA_BIN" ]]; then
-            if command -v conda >/dev/null 2>&1; then
-              CONDA_BIN="$(command -v conda)"
-            else
-              CONDA_BIN="$HOME/miniconda3/bin/conda"
-            fi
+          PYTHON_BIN="${VLLM_HUST_PYTHON_BIN:-}"
+          if [[ -z "$PYTHON_BIN" || ! -x "$PYTHON_BIN" ]]; then
+            PYTHON_BIN="$(hust_resolve_python_bin)"
           fi
-          if [[ ! -x "$CONDA_BIN" ]]; then
-            echo "conda executable not found after quickstart bootstrap: $CONDA_BIN" >&2
+          if [[ ! -x "$PYTHON_BIN" ]]; then
+            echo "Python executable not found after install-only bootstrap: $PYTHON_BIN" >&2
             exit 1
           fi
-          PYTHON_BIN="$(hust_resolve_python_bin)"
           export VLLM_HUST_PYTHON_BIN="$PYTHON_BIN"
           echo "VLLM_HUST_PYTHON_BIN=$VLLM_HUST_PYTHON_BIN" >> "$GITHUB_ENV"
           source scripts/use_single_ascend_env.sh
@@ -755,47 +737,8 @@ jobs:
           export PYTHONPATH="$VLLM_HUST_REPO:$VLLM_HUST_BENCHMARK_REPO/src${PYTHONPATH:+:$PYTHONPATH}"
           echo "PYTHONPATH=$PYTHONPATH" >> "$GITHUB_ENV"
           echo "LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
-          run_in_quickstart_env() {
-            local inline_script
-            inline_script="$(mktemp "${RUNNER_TEMP:-/tmp}/benchmark-quickstart-env.XXXXXX.sh")"
-            {
-              echo '#!/usr/bin/env bash'
-              echo 'set -euo pipefail'
-              printf 'cd %q\n' "$GITHUB_WORKSPACE"
-              echo 'source scripts/use_single_ascend_env.sh'
-              printf 'export PYTHONPATH=%q\n' "$VLLM_HUST_REPO:$VLLM_HUST_BENCHMARK_REPO/src${PYTHONPATH:+:$PYTHONPATH}"
-              cat
-            } > "$inline_script"
-            chmod +x "$inline_script"
-            env \
-              HOME="$HOME" \
-              XDG_CACHE_HOME="$XDG_CACHE_HOME" \
-              XDG_CONFIG_HOME="$XDG_CONFIG_HOME" \
-              VLLM_HUST_REPO="$VLLM_HUST_REPO" \
-              VLLM_HUST_BENCHMARK_REPO="$VLLM_HUST_BENCHMARK_REPO" \
-              VLLM_HUST_PYTHON_BIN="$VLLM_HUST_PYTHON_BIN" \
-              HUST_ASCEND_MANAGER_REPO="${GITHUB_WORKSPACE}/ascend-runtime-manager" \
-              ASCEND_HOME_PATH="${ASCEND_HOME_PATH:-}" \
-              ASCEND_OPP_PATH="${ASCEND_OPP_PATH:-}" \
-              ASCEND_AICPU_PATH="${ASCEND_AICPU_PATH:-}" \
-              ASCEND_RT_VISIBLE_DEVICES="${ASCEND_RT_VISIBLE_DEVICES:-}" \
-              ASCEND_VISIBLE_DEVICES="${ASCEND_VISIBLE_DEVICES:-}" \
-              ASCEND_TOOLKIT_HOME="${ASCEND_TOOLKIT_HOME:-}" \
-              ASCEND_TOOLKIT_LATEST_HOME="${ASCEND_TOOLKIT_LATEST_HOME:-}" \
-              ATB_HOME_PATH="${ATB_HOME_PATH:-}" \
-              HUST_ASCEND_RUNTIME_VERSION="${HUST_ASCEND_RUNTIME_VERSION:-}" \
-              HUST_ASCEND_HAS_STREAM_ATTR="${HUST_ASCEND_HAS_STREAM_ATTR:-}" \
-              HUST_ATB_SET_ENV="${HUST_ATB_SET_ENV:-}" \
-              HUST_REQUIRE_CANN_TBE=0 \
-              "$CONDA_BIN" run -n "vllm-hust-dev" bash "$inline_script"
-            rm -f "$inline_script"
-          }
-          PYTHON_BIN="$(hust_resolve_python_bin)"
-          export VLLM_HUST_PYTHON_BIN="$PYTHON_BIN"
-          echo "VLLM_HUST_PYTHON_BIN=$VLLM_HUST_PYTHON_BIN" >> "$GITHUB_ENV"
           echo "PYTHON_BIN=$PYTHON_BIN" >> "$GITHUB_ENV"
-          run_in_quickstart_env <<'BASH'
-          python - <<'PY'
+          "$PYTHON_BIN" - <<'PY'
           import decorator
           import scipy
           import scipy.sparse
@@ -803,9 +746,7 @@ jobs:
           print(f"decorator={decorator.__version__}")
           print(f"scipy={scipy.__version__}")
           PY
-          BASH
-          run_in_quickstart_env <<'BASH'
-          python - <<'PY'
+          "$PYTHON_BIN" - <<'PY'
           import ctypes.util
           import os
           import sys
@@ -817,22 +758,13 @@ jobs:
           print(f"PYTHONPATH={os.environ.get('PYTHONPATH', '')}")
           print(f"find_library('stdc++')={ctypes.util.find_library('stdc++')}")
           PY
-          BASH
-          run_in_quickstart_env <<'BASH'
-          python - <<'PY'
+          "$PYTHON_BIN" - <<'PY'
           import torch
           import torch_npu
 
           print(f"torch={torch.__version__}")
           print(f"torch_npu={torch_npu.__version__}")
           PY
-          BASH
-          run_in_quickstart_env <<BASH
-          python -m pip install -e "$VLLM_HUST_BENCHMARK_REPO[publish]" jsonschema
-          BASH
-          run_in_quickstart_env <<'BASH'
-          python -m pip install "huggingface_hub>=0.20"
-          BASH
 
       - name: Verify installation
         env:
@@ -883,7 +815,6 @@ jobs:
           VLLM_HUST_REPO: ${{ github.workspace }}/vllm-hust
           VLLM_ASCEND_HUST_REPO: ${{ github.workspace }}
           VLLM_HUST_BENCHMARK_REPO: ${{ github.workspace }}/vllm-hust-benchmark
-          VLLM_HUST_DEV_HUB_REPO: ${{ github.workspace }}/vllm-hust-dev-hub
           VLLM_HUST_WEBSITE_REPO: ${{ github.workspace }}/vllm-hust-website
           CI_STATE_ROOT: ${{ env.CI_STATE_ROOT }}
           BENCHMARK_RESULTS_ROOT: ${{ env.BENCHMARK_RESULTS_ROOT }}
