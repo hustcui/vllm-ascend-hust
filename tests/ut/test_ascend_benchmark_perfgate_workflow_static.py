@@ -217,6 +217,21 @@ def test_pull_request_defaults_match_perfgate_spec_size() -> None:
     ) in workflow
 
 
+def test_benchmark_disables_huggingface_xet_download_path() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    runner_script = (SCRIPT_DIR / "run_ascend_benchmark_ci.sh").read_text(encoding="utf-8")
+    sudo_preserve_block = runner_script[runner_script.index("SUDO_PRESERVE_ENV_VARS=(") :]
+
+    assert 'HF_HUB_DISABLE_XET: "1"' in workflow
+    assert "HF_ENDPOINT:" in workflow
+    assert "HUGGINGFACE_HUB_CACHE:" in workflow
+    assert "TRANSFORMERS_CACHE:" in workflow
+    assert "HF_HUB_DISABLE_XET" in sudo_preserve_block
+    assert "HF_ENDPOINT" in sudo_preserve_block
+    assert "HUGGINGFACE_HUB_CACHE" in sudo_preserve_block
+    assert "TRANSFORMERS_CACHE" in sudo_preserve_block
+
+
 def test_local_ascend_manager_fallback_bootstraps_pip() -> None:
     helper = MANAGER_HELPER.read_text(encoding="utf-8")
     workflow = WORKFLOW.read_text(encoding="utf-8")

@@ -295,6 +295,7 @@ jobs:
       HUST_REQUIRE_CANN_TBE: "0"
       ASCEND_BENCHMARK_ENFORCE_EAGER: ${{ vars.VLLM_ASCEND_HUST_BENCHMARK_ENFORCE_EAGER || '0' }}
       HF_HUB_DISABLE_TELEMETRY: "1"
+      HF_HUB_DISABLE_XET: "1"
       HF_ENDPOINT: ${{ vars.HF_ENDPOINT || 'https://hf-mirror.com' }}
       HF_HOME: ${{ github.workspace }}/../.hf-cache
       HUGGINGFACE_HUB_CACHE: ${{ github.workspace }}/../.hf-cache/hub
