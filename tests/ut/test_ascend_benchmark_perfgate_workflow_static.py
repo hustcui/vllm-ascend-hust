@@ -400,14 +400,21 @@ def test_dev_hub_install_wrapper_centralizes_custom_kernel_policy() -> None:
     assert "ascend-runtime-manager checkout not found" in install_script
     assert "detect_cann_major_version()" in install_script
     assert 'if [[ "$requested" == "auto" ]]; then' in install_script
-    assert 'if [[ "$cann_major" == "9" ]]; then' in install_script
+    assert 'if [[ "$cann_major" == "9" ]] && ascend_custom_kernel_build_prereqs_present; then' in install_script
     assert "Using install-only repo bootstrap (no quickstart; editable --no-deps installs)" in install_script
     assert "COMPILE_CUSTOM_KERNELS=auto resolved to lightweight mode" in install_script
     assert "requirements/common.txt" in install_script
-    assert 'run_env_pip install -r "$VLLM_HUST_REPO/requirements/common.txt"' in install_script
+    assert 'run_env_pip install -r "$VLLM_HUST_REPO/requirements/common.txt"' not in install_script
+    assert "read_requirement_specs_from_file()" in install_script
+    assert 'ensure_python_requirements "vllm-hust runtime requirements"' in install_script
+    assert 'require_python_requirements_installed "preinstalled Ascend runtime packages" "triton-ascend==3.2.1"' in install_script
+    assert "Preinstall these packages on the self-hosted runner" in install_script
+    assert "ascend_custom_kernel_build_prereqs_present()" in install_script
+    assert 'if [[ "$cann_major" == "9" ]] && ascend_custom_kernel_build_prereqs_present; then' in install_script
     assert 'install -e "$repo_path" --no-build-isolation --no-deps' in install_script
     assert 'bash "$VLLM_ASCEND_HUST_REPO/scripts/install_local_ascend_plugin.sh"' in install_script
     assert "ASCEND_BENCHMARK_STACK_MARKER_VERSION" in install_script
+    assert "sha256sum" in install_script
     assert '"huggingface_hub>=0.20"' in install_script
     assert '"jsonschema>=4"' in install_script
     assert "HUST_DEV_HUB_SKIP_ASCEND_SYSTEM_APPLY=1" not in install_script

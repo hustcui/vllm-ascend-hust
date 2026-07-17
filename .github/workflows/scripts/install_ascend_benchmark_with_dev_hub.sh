@@ -149,6 +149,11 @@ for dist in metadata.distributions():
 unsatisfied = []
 for raw in sys.argv[1:]:
     requirement = Requirement(raw)
+    if requirement.marker is not None and not requirement.marker.evaluate():
+        continue
+    if requirement.extras:
+        unsatisfied.append(raw)
+        continue
     version = installed.get(canonicalize_name(requirement.name))
     if version is None:
         unsatisfied.append(raw)
@@ -175,6 +180,41 @@ ensure_python_requirements() {
 
   log "Installing missing $description"
   run_env_pip install "${missing_specs[@]}"
+}
+
+require_python_requirements_installed() {
+  local description="$1"
+  shift
+  local requirement_specs=("$@")
+  local missing_specs=()
+
+  mapfile -t missing_specs < <(collect_unsatisfied_requirements "${requirement_specs[@]}" || true)
+  if (( ${#missing_specs[@]} == 0 )); then
+    log "Reusing installed $description"
+    return 0
+  fi
+
+  echo "Required $description is missing or incompatible in $VLLM_HUST_CONDA_ENV:" >&2
+  printf '  - %s\n' "${missing_specs[@]}" >&2
+  echo "Preinstall these packages on the self-hosted runner; benchmark prepare does not fetch them from pip indexes." >&2
+  return 1
+}
+
+read_requirement_specs_from_file() {
+  local requirements_file="$1"
+
+  awk '
+    /^[[:space:]]*#/ || /^[[:space:]]*$/ { next }
+    {
+      line = $0
+      sub(/[[:space:]]+#.*$/, "", line)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", line)
+      if (line == "" || line ~ /^-/) {
+        next
+      }
+      print line
+    }
+  ' "$requirements_file"
 }
 
 ensure_bootstrap_python_tools() {
@@ -215,6 +255,22 @@ detect_cann_major_version() {
   return 1
 }
 
+ascend_custom_kernel_build_prereqs_present() {
+  local tool
+
+  for tool in git cmake make; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+      return 1
+    fi
+  done
+
+  if ! command -v g++ >/dev/null 2>&1 && ! command -v c++ >/dev/null 2>&1; then
+    return 1
+  fi
+
+  return 0
+}
+
 resolve_compile_custom_kernels() {
   local requested="${COMPILE_CUSTOM_KERNELS:-auto}"
   local cann_major
@@ -226,7 +282,7 @@ resolve_compile_custom_kernels() {
     fi
 
     cann_major="$(detect_cann_major_version || true)"
-    if [[ "$cann_major" == "9" ]]; then
+    if [[ "$cann_major" == "9" ]] && ascend_custom_kernel_build_prereqs_present; then
       printf '1\n'
     else
       printf '0\n'
@@ -290,6 +346,9 @@ patch_triton_ascend_for_cann9() {
 
 install_benchmark_baseline_stack() {
   local marker_file="$VLLM_HUST_CONDA_PREFIX/.ascend-benchmark-install-only-stack"
+  local vllm_hust_requirements_file="$VLLM_HUST_REPO/requirements/common.txt"
+  local requirements_hash
+  local expected_marker
   local validation_specs=(
     "torch==2.10.0"
     "torch-npu==2.10.0"
@@ -305,7 +364,6 @@ install_benchmark_baseline_stack() {
     "torch-npu==2.10.0"
     "torchvision==0.25.0"
     "torchaudio==2.10.0"
-    "triton-ascend==3.2.1"
   )
   local extra_runtime_specs=(
     "attrs"
@@ -329,9 +387,13 @@ install_benchmark_baseline_stack() {
     "jsonschema>=4"
     "huggingface_hub>=0.20"
   )
+  local vllm_hust_runtime_specs=()
   local validation_missing=()
 
-  if [[ -f "$marker_file" ]] && grep -qx "$ASCEND_BENCHMARK_STACK_MARKER_VERSION" "$marker_file"; then
+  requirements_hash="$(sha256sum "$vllm_hust_requirements_file" | awk '{print $1}')"
+  expected_marker="${ASCEND_BENCHMARK_STACK_MARKER_VERSION}:${requirements_hash}"
+
+  if [[ -f "$marker_file" ]] && grep -qx "$expected_marker" "$marker_file"; then
     mapfile -t validation_missing < <(collect_unsatisfied_requirements "${validation_specs[@]}" || true)
     if (( ${#validation_missing[@]} == 0 )); then
       log "Reusing benchmark baseline stack marker: $marker_file"
@@ -342,10 +404,11 @@ install_benchmark_baseline_stack() {
 
   log "Installing benchmark baseline runtime stack into $VLLM_HUST_CONDA_ENV"
   ensure_python_requirements "pinned torch stack" "${core_stack_specs[@]}"
-  log "Installing vllm-hust runtime requirements from $VLLM_HUST_REPO/requirements/common.txt"
-  run_env_pip install -r "$VLLM_HUST_REPO/requirements/common.txt"
+  require_python_requirements_installed "preinstalled Ascend runtime packages" "triton-ascend==3.2.1"
+  mapfile -t vllm_hust_runtime_specs < <(read_requirement_specs_from_file "$vllm_hust_requirements_file")
+  ensure_python_requirements "vllm-hust runtime requirements" "${vllm_hust_runtime_specs[@]}"
   ensure_python_requirements "Ascend benchmark extra runtime deps" "${extra_runtime_specs[@]}"
-  printf '%s\n' "$ASCEND_BENCHMARK_STACK_MARKER_VERSION" > "$marker_file"
+  printf '%s\n' "$expected_marker" > "$marker_file"
 }
 
 install_editable_repo_no_deps() {
