@@ -839,22 +839,21 @@ jobs:
           VLLM_HUST_BENCHMARK_REPO: ${{ github.workspace }}/vllm-hust-benchmark
         run: |
           set -euo pipefail
-          CONDA_BIN="${CONDA_EXE:-}"
-          if [[ -z "$CONDA_BIN" || ! -x "$CONDA_BIN" ]]; then
-            if command -v conda >/dev/null 2>&1; then
-              CONDA_BIN="$(command -v conda)"
-            else
-              CONDA_BIN="$HOME/miniconda3/bin/conda"
-            fi
+          source scripts/hust_ascend_manager_helper.sh
+          PYTHON_BIN="${VLLM_HUST_PYTHON_BIN:-}"
+          if [[ -z "$PYTHON_BIN" || ! -x "$PYTHON_BIN" ]]; then
+            PYTHON_BIN="$(hust_resolve_python_bin)"
           fi
-          if [[ ! -x "$CONDA_BIN" ]]; then
-            echo "conda executable not found for Verify installation: $CONDA_BIN" >&2
+          if [[ ! -x "$PYTHON_BIN" ]]; then
+            echo "Python executable not found for Verify installation: $PYTHON_BIN" >&2
             exit 1
           fi
-          env \
-            VLLM_HUST_REPO="$VLLM_HUST_REPO" \
-            VLLM_HUST_BENCHMARK_REPO="$VLLM_HUST_BENCHMARK_REPO" \
-            "$CONDA_BIN" run -n "vllm-hust-dev" bash -lc 'cd "$GITHUB_WORKSPACE" && source scripts/use_single_ascend_env.sh && export PYTHONPATH="$VLLM_HUST_REPO:$VLLM_HUST_BENCHMARK_REPO/src${PYTHONPATH:+:$PYTHONPATH}" && python --version && python - <<'"'"'PY'"'"'
+          export VLLM_HUST_PYTHON_BIN="$PYTHON_BIN"
+          source scripts/use_single_ascend_env.sh
+          export PYTHONPATH="$VLLM_HUST_REPO:$VLLM_HUST_BENCHMARK_REPO/src${PYTHONPATH:+:$PYTHONPATH}"
+
+          "$PYTHON_BIN" --version
+          "$PYTHON_BIN" - <<'PY'
           import numpy
           import torch
           import torch_npu
@@ -867,7 +866,7 @@ jobs:
           print(f'torch_npu version: {torch_npu.__version__}')
           print(f'vLLM version: {vllm.__version__}')
           print(f'vLLM Ascend Hust version: {plugin_version}')
-          PY'
+          PY
 
       - name: Performance gate - fetch Stage 1 baseline
         if: ${{ (github.event_name == 'pull_request' || github.event_name == 'issue_comment') && steps.resolve-scenario.outputs.BENCH_SCENARIO_COUNT == '1' }}

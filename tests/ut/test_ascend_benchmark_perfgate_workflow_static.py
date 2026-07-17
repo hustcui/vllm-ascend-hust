@@ -286,6 +286,23 @@ def test_benchmark_prepare_preserves_torch_npu_stack() -> None:
     assert "VLLM_HUST_PYTHON_BIN" in prepare_step
 
 
+def test_benchmark_verify_uses_resolved_python_not_conda_lookup() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    verify_step = workflow[workflow.index("Verify installation") :]
+    verify_step = verify_step[: verify_step.index("- name: Performance gate - fetch Stage 1 baseline")]
+
+    assert "source scripts/hust_ascend_manager_helper.sh" in verify_step
+    assert 'PYTHON_BIN="${VLLM_HUST_PYTHON_BIN:-}"' in verify_step
+    assert 'PYTHON_BIN="$(hust_resolve_python_bin)"' in verify_step
+    assert 'export VLLM_HUST_PYTHON_BIN="$PYTHON_BIN"' in verify_step
+    assert 'source scripts/use_single_ascend_env.sh' in verify_step
+    assert '"$PYTHON_BIN" --version' in verify_step
+    assert '"$PYTHON_BIN" - <<' in verify_step
+    assert "conda executable not found for Verify installation" not in verify_step
+    assert 'CONDA_BIN="${CONDA_EXE:-}"' not in verify_step
+    assert 'conda run -n "vllm-hust-dev"' not in verify_step
+
+
 def test_benchmark_runner_auto_disables_sudo_when_unavailable() -> None:
     runner_script = (SCRIPT_DIR / "run_ascend_benchmark_ci.sh").read_text(encoding="utf-8")
 
