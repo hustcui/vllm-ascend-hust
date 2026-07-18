@@ -114,7 +114,10 @@ def _sync_npugraph_ex_to_additional_config(
     if vllm_config.additional_config is None:
         vllm_config.additional_config = {}
     additional = vllm_config.additional_config
-    asc_comp = additional.setdefault("ascend_compilation_config", {})
+    asc_comp = additional.get("ascend_compilation_config")
+    if not isinstance(asc_comp, dict):
+        asc_comp = {}
+        additional["ascend_compilation_config"] = asc_comp
     asc_comp["enable_npugraph_ex"] = (
         ascend_config.ascend_compilation_config.enable_npugraph_ex
     )
