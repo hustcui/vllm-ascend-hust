@@ -124,6 +124,8 @@ def test_ascend_benchmark_workflow_wires_two_stage_perfgate() -> None:
     assert 'PERFGATE_REQUIRED: "1"' in workflow
     assert "PERFGATE_BASELINE_UNAVAILABLE_REASON" in workflow
     assert "PERFGATE_STAGE2_NOT_RUN_REASON" in workflow
+    assert "always() && (github.event_name == 'pull_request' || github.event_name == 'issue_comment')" in workflow
+    assert "PERFGATE_STAGE2_REBASE_CONFLICT_FILE" in workflow
 
 
 def test_required_perfgate_scripts_fail_fast() -> None:
