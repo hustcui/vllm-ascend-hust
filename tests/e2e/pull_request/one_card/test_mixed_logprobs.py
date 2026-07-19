@@ -2,6 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import math
+import os
+
+os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
 
 import pytest
 from vllm import SamplingParams
