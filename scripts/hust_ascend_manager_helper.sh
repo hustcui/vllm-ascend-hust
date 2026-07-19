@@ -237,18 +237,24 @@ hust_apply_default_hf_mirror() {
 }
 
 hust_prioritize_conda_runtime_libs() {
-  local conda_prefix="${1:-${CONDA_PREFIX:-${VLLM_HUST_CONDA_PREFIX:-}}}"
+  local conda_prefix="${1:-}"
   local conda_lib_dir
   local conda_libstdcpp
   local entry
   local rebuilt_ld_library_path=""
   local -a ld_library_path_entries
 
+  if [[ -z "${conda_prefix}" && -n "${VLLM_HUST_CONDA_PREFIX:-}" ]]; then
+    conda_prefix="${VLLM_HUST_CONDA_PREFIX}"
+  fi
   if [[ -z "${conda_prefix}" && -n "${PYTHON_BIN:-}" ]]; then
     conda_prefix="$(cd "$(dirname "${PYTHON_BIN}")/.." && pwd -P 2>/dev/null || true)"
   fi
   if [[ -z "${conda_prefix}" && -n "${VLLM_HUST_PYTHON_BIN:-}" ]]; then
     conda_prefix="$(cd "$(dirname "${VLLM_HUST_PYTHON_BIN}")/.." && pwd -P 2>/dev/null || true)"
+  fi
+  if [[ -z "${conda_prefix}" && -n "${CONDA_PREFIX:-}" ]]; then
+    conda_prefix="${CONDA_PREFIX}"
   fi
 
   conda_lib_dir="${conda_prefix:+${conda_prefix}/lib}"

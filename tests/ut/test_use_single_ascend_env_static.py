@@ -96,3 +96,56 @@ printf 'second_preload=%s\n' "$LD_PRELOAD"
     assert values["second_path"] == expected_path
     assert values["first_preload"] == expected_preload
     assert values["second_preload"] == expected_preload
+
+
+def test_selected_runtime_wins_over_ambient_conda_prefix(tmp_path: Path) -> None:
+    ambient_prefix = tmp_path / "ambient-conda"
+    selected_prefix = tmp_path / "selected-conda"
+    python_prefix = tmp_path / "python-selected"
+    for prefix in (ambient_prefix, selected_prefix, python_prefix):
+        (prefix / "lib").mkdir(parents=True)
+        (prefix / "lib" / "libstdc++.so.6").touch()
+    (python_prefix / "bin").mkdir()
+    (python_prefix / "bin" / "python").touch()
+    helper = REPO_ROOT / "scripts/hust_ascend_manager_helper.sh"
+
+    command = f"""
+source {shlex.quote(str(helper))}
+export CONDA_PREFIX={shlex.quote(str(ambient_prefix))}
+export VLLM_HUST_CONDA_PREFIX={shlex.quote(str(selected_prefix))}
+export PYTHON_BIN={shlex.quote(str(python_prefix / "bin" / "python"))}
+unset VLLM_HUST_PYTHON_BIN
+unset LD_LIBRARY_PATH LD_PRELOAD
+hust_prioritize_conda_runtime_libs
+printf 'configured_path=%s\n' "$LD_LIBRARY_PATH"
+printf 'configured_preload=%s\n' "$LD_PRELOAD"
+unset VLLM_HUST_CONDA_PREFIX LD_LIBRARY_PATH LD_PRELOAD
+hust_prioritize_conda_runtime_libs
+printf 'python_path=%s\n' "$LD_LIBRARY_PATH"
+printf 'python_preload=%s\n' "$LD_PRELOAD"
+unset PYTHON_BIN LD_LIBRARY_PATH LD_PRELOAD
+export VLLM_HUST_PYTHON_BIN={shlex.quote(str(python_prefix / "bin" / "python"))}
+hust_prioritize_conda_runtime_libs
+printf 'configured_python_path=%s\n' "$LD_LIBRARY_PATH"
+printf 'configured_python_preload=%s\n' "$LD_PRELOAD"
+"""
+    result = subprocess.run(
+        ["bash", "-c", command],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    values = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
+
+    assert values["configured_path"] == str(selected_prefix / "lib")
+    assert values["configured_preload"] == str(
+        selected_prefix / "lib" / "libstdc++.so.6"
+    )
+    assert values["python_path"] == str(python_prefix / "lib")
+    assert values["python_preload"] == str(
+        python_prefix / "lib" / "libstdc++.so.6"
+    )
+    assert values["configured_python_path"] == str(python_prefix / "lib")
+    assert values["configured_python_preload"] == str(
+        python_prefix / "lib" / "libstdc++.so.6"
+    )
