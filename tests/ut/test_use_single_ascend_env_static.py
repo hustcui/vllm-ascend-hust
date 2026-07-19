@@ -35,7 +35,23 @@ def test_use_single_ascend_env_falls_back_to_cann_set_env_for_tbe() -> None:
     assert "ensure_cann_tbe_env || return 1" in script
     assert 'append_unique_path_var PYTHONPATH "${candidate}"' in script
     assert 'append_unique_path_var LD_LIBRARY_PATH "${candidate}"' in script
+    assert "hust_prioritize_conda_runtime_libs" in script
     assert 'if [[ "${require_cann_tbe}" != "1" ]]; then' in script
     assert 'continuing without strict TBE enforcement' in script
     assert 'echo "[ERROR] PYTHONPATH=${PYTHONPATH:-<unset>}" >&2' in script
     assert "Source the correct CANN set_env.sh" in script
+
+
+def test_conda_runtime_library_priority_removes_stale_duplicate() -> None:
+    helper = (REPO_ROOT / "scripts/hust_ascend_manager_helper.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert "hust_prioritize_conda_runtime_libs()" in helper
+    assert 'IFS=\':\' read -r -a ld_library_path_entries' in helper
+    assert '"${entry}" == "${conda_lib_dir}"' in helper
+    assert (
+        'export LD_LIBRARY_PATH="${conda_lib_dir}'
+        '${rebuilt_ld_library_path:+:${rebuilt_ld_library_path}}"'
+        in helper
+    )
