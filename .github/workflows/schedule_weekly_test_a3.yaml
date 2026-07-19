@@ -89,7 +89,7 @@ jobs:
     steps:
       - name: Parse trigger
         id: parse
-        uses: actions/github-script@v9
+        uses: actions/github-script@v9.0.0
         with:
           script: |
             const eventName = context.eventName;
