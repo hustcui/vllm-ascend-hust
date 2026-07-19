@@ -239,6 +239,7 @@ hust_apply_default_hf_mirror() {
 hust_prioritize_conda_runtime_libs() {
   local conda_prefix="${1:-${CONDA_PREFIX:-${VLLM_HUST_CONDA_PREFIX:-}}}"
   local conda_lib_dir
+  local conda_libstdcpp
   local entry
   local rebuilt_ld_library_path=""
   local -a ld_library_path_entries
@@ -264,6 +265,16 @@ hust_prioritize_conda_runtime_libs() {
   done
 
   export LD_LIBRARY_PATH="${conda_lib_dir}${rebuilt_ld_library_path:+:${rebuilt_ld_library_path}}"
+  conda_libstdcpp="${conda_lib_dir}/libstdc++.so.6"
+  if [[ -f "${conda_libstdcpp}" ]]; then
+    case ":${LD_PRELOAD:-}:" in
+      *:"${conda_libstdcpp}":*)
+        ;;
+      *)
+        export LD_PRELOAD="${conda_libstdcpp}${LD_PRELOAD:+:${LD_PRELOAD}}"
+        ;;
+    esac
+  fi
   echo "[INFO] LD_LIBRARY_PATH prioritized for conda runtime libs: ${conda_lib_dir}"
 }
 

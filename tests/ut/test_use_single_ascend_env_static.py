@@ -55,3 +55,8 @@ def test_conda_runtime_library_priority_removes_stale_duplicate() -> None:
         '${rebuilt_ld_library_path:+:${rebuilt_ld_library_path}}"'
         in helper
     )
+    assert 'conda_libstdcpp="${conda_lib_dir}/libstdc++.so.6"' in helper
+    assert (
+        'export LD_PRELOAD="${conda_libstdcpp}${LD_PRELOAD:+:${LD_PRELOAD}}"'
+        in helper
+    )
