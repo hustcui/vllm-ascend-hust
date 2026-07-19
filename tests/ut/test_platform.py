@@ -9,7 +9,11 @@ from vllm.v1.attention.selector import AttentionSelectorConfig  # type: ignore
 
 from tests.ut.base import TestBase
 from vllm_ascend.ascend_forward_context import MoECommType, override_mrv2_in_profile_run
-from vllm_ascend.platform import NPUPlatform, _sync_npugraph_ex_to_additional_config
+from vllm_ascend.platform import (
+    NPUPlatform,
+    _ensure_ascend_compilation_config_dict,
+    _sync_npugraph_ex_to_additional_config,
+)
 from vllm_ascend.utils import (
     ASCEND_QUANTIZATION_METHOD,
     COMPRESSED_TENSORS_METHOD,
@@ -107,6 +111,30 @@ class TestNPUPlatform(TestBase):
                 "enable_static_kernel": True,
             }
         }
+
+    @pytest.mark.parametrize("ascend_compilation_config", [False, [], "invalid"])
+    def test_sync_npugraph_ex_rejects_invalid_compilation_config(self, ascend_compilation_config):
+        vllm_config = self.mock_vllm_config()
+        vllm_config.additional_config = {"ascend_compilation_config": ascend_compilation_config}
+        original_additional_config = vllm_config.additional_config.copy()
+        ascend_config = self.mock_vllm_ascend_config()
+
+        with pytest.raises(
+            TypeError,
+            match="additional_config.ascend_compilation_config must be a dict or None",
+        ):
+            _sync_npugraph_ex_to_additional_config(vllm_config, ascend_config)
+
+        assert vllm_config.additional_config == original_additional_config
+
+    def test_prepare_compilation_config_before_ascend_config_init(self):
+        vllm_config = self.mock_vllm_config()
+        vllm_config.additional_config = None
+
+        asc_comp = _ensure_ascend_compilation_config_dict(vllm_config)
+
+        assert asc_comp == {}
+        assert vllm_config.additional_config == {"ascend_compilation_config": {}}
 
     def test_is_sleep_mode_available(self):
         self.assertTrue(self.platform.is_sleep_mode_available())
