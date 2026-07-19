@@ -21,9 +21,22 @@
 
 set -euo pipefail
 
+die() {
+    echo "error: $*" >&2
+    exit 1
+}
+
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-ASCEND_REPO_INPUT=${VLLM_ASCEND_REPO:-$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel)}
-ASCEND_REPO=$(cd -- "$ASCEND_REPO_INPUT" && pwd)
+if [[ -n ${VLLM_ASCEND_REPO:-} ]]; then
+    ASCEND_REPO_INPUT=$VLLM_ASCEND_REPO
+else
+    ASCEND_REPO_INPUT=$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null) || \
+        die "cannot locate the vllm-ascend checkout; set VLLM_ASCEND_REPO"
+fi
+[[ -d $ASCEND_REPO_INPUT ]] || \
+    die "VLLM_ASCEND_REPO is not a directory: $ASCEND_REPO_INPUT"
+ASCEND_REPO=$(cd -- "$ASCEND_REPO_INPUT" && pwd) || \
+    die "cannot access VLLM_ASCEND_REPO: $ASCEND_REPO_INPUT"
 
 NPU_DEVICES=${NPU_DEVICES:-0}
 IMAGE=${IMAGE:-quay.io/ascend/vllm-ascend:v0.21.0rc1-openeuler}
@@ -39,12 +52,9 @@ CACHE_MARKER=vllmAscend.sourceContainerCache
 declare -a NPU_DEVICE_IDS=()
 VLLM_SOURCE_MODE=
 VLLM_SOURCE=
+VLLM_SOURCE_REF=
 VLLM_SHA=
-
-die() {
-    echo "error: $*" >&2
-    exit 1
-}
+IMAGE_ID=
 
 parse_npu_devices() {
     local raw=$NPU_DEVICES
@@ -100,15 +110,20 @@ require_ascend_source_tree() {
 
 prepare_vllm_source() {
     if [[ -n ${VLLM_REPO:-} ]]; then
-        VLLM_SOURCE=$(cd -- "$VLLM_REPO" && pwd)
+        [[ -d $VLLM_REPO ]] || die "VLLM_REPO is not a directory: $VLLM_REPO"
+        VLLM_SOURCE=$(cd -- "$VLLM_REPO" && pwd) || \
+            die "cannot access VLLM_REPO: $VLLM_REPO"
         [[ -f "$VLLM_SOURCE/vllm/__init__.py" ]] || \
             die "VLLM_REPO is not a vLLM source tree: $VLLM_SOURCE"
         VLLM_SOURCE_MODE=local
-        VLLM_SHA=$(git -C "$VLLM_SOURCE" rev-parse HEAD 2>/dev/null || echo unknown)
+        VLLM_SOURCE_REF=local
+        VLLM_SHA=$(git -C "$VLLM_SOURCE" rev-parse HEAD 2>/dev/null) || \
+            die "VLLM_REPO is not a Git checkout: $VLLM_SOURCE"
         return
     fi
 
     VLLM_SOURCE_MODE=managed-cache
+    VLLM_SOURCE_REF=$VLLM_REF
     VLLM_SOURCE=$VLLM_CACHE_DIR
     mkdir -p -- "$(dirname -- "$VLLM_SOURCE")"
     if [[ ! -e $VLLM_SOURCE ]]; then
@@ -116,6 +131,8 @@ prepare_vllm_source() {
         git -C "$VLLM_SOURCE" config --local "$CACHE_MARKER" true
         git -C "$VLLM_SOURCE" remote add origin "$VLLM_REMOTE"
     fi
+    [[ -d $VLLM_SOURCE ]] || \
+        die "VLLM_CACHE_DIR exists but is not a directory: $VLLM_SOURCE"
     VLLM_SOURCE=$(cd -- "$VLLM_SOURCE" && pwd)
 
     [[ -d "$VLLM_SOURCE/.git" ]] || \
@@ -143,6 +160,16 @@ prepare_vllm_source() {
         checkout --quiet --detach "$VLLM_SHA"
     [[ -f "$VLLM_SOURCE/vllm/__init__.py" ]] || \
         die "fetched ref is not a vLLM source tree: $VLLM_REMOTE@$VLLM_REF"
+}
+
+resolve_image() {
+    if ! IMAGE_ID=$(docker image inspect --format '{{.Id}}' "$IMAGE" 2>/dev/null); then
+        echo "pulling $IMAGE" >&2
+        docker pull --quiet "$IMAGE" >/dev/null || die "failed to pull IMAGE=$IMAGE"
+        IMAGE_ID=$(docker image inspect --format '{{.Id}}' "$IMAGE" 2>/dev/null) || \
+            die "cannot resolve IMAGE=$IMAGE after pull"
+    fi
+    [[ $IMAGE_ID == sha256:* ]] || die "Docker returned an invalid image ID for IMAGE=$IMAGE"
 }
 
 container_exists() {
@@ -173,14 +200,20 @@ validate_existing_container() {
         die "existing container uses a different vllm-ascend source; run recreate"
     [[ $(container_label dev.vllm-hust.npu-devices) == "$(device_set)" ]] || \
         die "existing container uses a different NPU set; run recreate"
+    [[ $(container_label dev.vllm-hust.vllm-source-mode) == "$VLLM_SOURCE_MODE" ]] || \
+        die "existing container uses a different vLLM source mode; run recreate"
+    [[ $(container_label dev.vllm-hust.image-ref) == "$IMAGE" ]] || \
+        die "existing container uses a different IMAGE reference; run recreate"
+    [[ $(container_label dev.vllm-hust.image-id) == "$IMAGE_ID" ]] || \
+        die "IMAGE resolved to a different image ID; run recreate"
+    [[ $(docker container inspect --format '{{.Image}}' "$(container_name)") == "$IMAGE_ID" ]] || \
+        die "existing container image provenance is inconsistent; run recreate"
     if [[ $VLLM_SOURCE_MODE == managed-cache ]]; then
-        [[ $(container_label dev.vllm-hust.vllm-ref) == "$VLLM_REF" ]] || \
+        [[ $(container_label dev.vllm-hust.vllm-ref) == "$VLLM_SOURCE_REF" ]] || \
             die "existing container uses a different VLLM_REF; run recreate"
         [[ $(container_label dev.vllm-hust.vllm-sha) == "$VLLM_SHA" ]] || \
             die "vllm-hust:$VLLM_REF advanced; run recreate to use $VLLM_SHA"
     fi
-    [[ $(docker container inspect --format '{{.Config.Image}}' "$(container_name)") == "$IMAGE" ]] || \
-        die "existing container uses a different IMAGE; run recreate"
 }
 
 start() {
@@ -201,6 +234,11 @@ start() {
     for device_path in /dev/davinci_manager /dev/devmm_svm /dev/hisi_hdc; do
         [[ -e $device_path ]] || die "required Ascend device does not exist: $device_path"
     done
+    [[ -d /usr/local/Ascend/driver ]] || \
+        die "required Ascend driver directory does not exist: /usr/local/Ascend/driver"
+    [[ -f /etc/ascend_install.info ]] || \
+        die "required Ascend install file does not exist: /etc/ascend_install.info"
+    resolve_image
 
     if container_exists; then
         validate_existing_container
@@ -212,8 +250,10 @@ start() {
     docker run -d \
         --name "$name" \
         --label "$MANAGED_LABEL=1" \
+        --label "dev.vllm-hust.image-ref=$IMAGE" \
+        --label "dev.vllm-hust.image-id=$IMAGE_ID" \
         --label "dev.vllm-hust.vllm-repo=$VLLM_SOURCE" \
-        --label "dev.vllm-hust.vllm-ref=$VLLM_REF" \
+        --label "dev.vllm-hust.vllm-ref=$VLLM_SOURCE_REF" \
         --label "dev.vllm-hust.vllm-sha=$VLLM_SHA" \
         --label "dev.vllm-hust.vllm-source-mode=$VLLM_SOURCE_MODE" \
         --label "dev.vllm-hust.vllm-ascend-repo=$ASCEND_REPO" \
@@ -233,9 +273,10 @@ start() {
         --env "SOURCE_DEV_NPU_DEVICES=$(device_set)" \
         --workdir /workspace/vllm-ascend \
         --shm-size "$SHM_SIZE" \
-        "$IMAGE" sleep infinity >/dev/null
+        "$IMAGE_ID" sleep infinity >/dev/null
 
     echo "created $name"
+    echo "  image:       $IMAGE@$IMAGE_ID"
     echo "  vLLM:        $VLLM_SOURCE@$VLLM_SHA -> /workspace/vllm (read-only)"
     echo "  vLLM Ascend: $ASCEND_REPO -> /workspace/vllm-ascend"
     echo "  NPUs:        $(device_set)"
@@ -290,6 +331,9 @@ status() {
     docker container inspect --format '{{range .Mounts}}{{println .Source "->" .Destination}}{{end}}' \
         "$(container_name)"
     echo "npu_devices=$(container_label dev.vllm-hust.npu-devices)"
+    echo "image_ref=$(container_label dev.vllm-hust.image-ref)"
+    echo "image_id=$(container_label dev.vllm-hust.image-id)"
+    echo "vllm_source_mode=$(container_label dev.vllm-hust.vllm-source-mode)"
     echo "vllm_ref=$(container_label dev.vllm-hust.vllm-ref)"
     echo "vllm_sha=$(container_label dev.vllm-hust.vllm-sha)"
 }
@@ -327,19 +371,25 @@ Environment overrides:
 EOF
 }
 
-parse_npu_devices
+main() {
+    parse_npu_devices
 
-case ${1:-} in
-    start) start ;;
-    recreate) recreate ;;
-    verify) verify ;;
-    verify-npu) verify_npu ;;
-    status) status ;;
-    shell)
-        require_managed_container
-        exec docker exec -it "$(container_name)" bash
-        ;;
-    stop) stop ;;
-    remove) remove ;;
-    *) usage; exit 2 ;;
-esac
+    case ${1:-} in
+        start) start ;;
+        recreate) recreate ;;
+        verify) verify ;;
+        verify-npu) verify_npu ;;
+        status) status ;;
+        shell)
+            require_managed_container
+            exec docker exec -it "$(container_name)" bash
+            ;;
+        stop) stop ;;
+        remove) remove ;;
+        *) usage; exit 2 ;;
+    esac
+}
+
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
+    main "$@"
+fi

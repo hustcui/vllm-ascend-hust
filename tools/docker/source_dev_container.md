@@ -27,6 +27,11 @@ tools/docker/source_dev_container.sh verify-npu
 tools/docker/source_dev_container.sh shell
 ```
 
+The host must provide Docker, `/usr/local/Ascend/driver`,
+`/etc/ascend_install.info`, the selected `/dev/davinci<N>` nodes, and
+`/dev/davinci_manager`, `/dev/devmm_svm`, and `/dev/hisi_hdc`. The helper checks
+these prerequisites before creating a container.
+
 By default, the script fetches the latest `main` from
 `https://github.com/vLLM-HUST/vllm-hust.git` into a script-owned checkout below
 `${XDG_CACHE_HOME:-$HOME/.cache}`. The resolved commit is recorded on the
@@ -36,6 +41,12 @@ The managed checkout is read-only inside the container. The script refuses to
 update it if it is dirty, and refuses to take over an existing unmarked Git
 checkout at the configured cache path.
 
+The helper also resolves `IMAGE` to a local Docker image ID before creation,
+records both the requested reference and resolved ID as labels, and starts the
+container by ID. If the same tag later resolves to a different image, `start`
+requires `recreate`. For a repeatable toolchain across hosts, set `IMAGE` to an
+immutable registry digest instead of a mutable tag.
+
 To develop vLLM and vllm-ascend together, select an existing local checkout:
 
 ```bash
@@ -44,7 +55,9 @@ VLLM_REPO=/path/to/vllm-hust \
 ```
 
 The local checkout is also mounted read-only in the container. Host-side edits
-remain visible immediately.
+remain visible immediately. Its `vllm_ref=local` and `vllm_sha` labels describe
+the checkout when the container was created; later host-side commits and dirty
+edits are live but do not rewrite Docker labels.
 
 ## Selecting NPUs
 
