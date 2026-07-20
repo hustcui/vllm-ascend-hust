@@ -32,9 +32,7 @@ class AscendNgramProposer(NgramProposer):
         sampled_token_ids: list[list[int]],
         num_tokens_no_spec,
         token_ids_cpu,
-        slot_mappings: dict[str, torch.Tensor]
-        | list[dict[str, torch.Tensor]]
-        | None = None,
+        slot_mappings: dict[str, torch.Tensor] | list[dict[str, torch.Tensor]] | None = None,
     ) -> list[list[int]]:
         del slot_mappings
         valid_ngram_requests = []
