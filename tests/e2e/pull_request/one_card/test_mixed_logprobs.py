@@ -44,5 +44,5 @@ def test_qwen3_mixed_logprobs_widths(vllm_runner) -> None:
         positions = output.outputs[0].logprobs
         assert positions
         for position in positions:
-            assert len(position) <= num_logprobs + 1
+            assert num_logprobs <= len(position) <= num_logprobs + 1
             assert all(math.isfinite(item.logprob) for item in position.values())
