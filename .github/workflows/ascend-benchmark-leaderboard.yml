@@ -150,7 +150,7 @@ jobs:
       - name: Fetch PR metadata
         id: fetch-pr
         if: ${{ github.event.issue.pull_request }}
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             const {owner, repo} = context.repo;
@@ -184,7 +184,7 @@ jobs:
       issues: write
     steps:
       - name: Reply with Ascend command help
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             const body = [
@@ -227,7 +227,7 @@ jobs:
       issues: write
     steps:
       - name: Reply with Ascend command denial reason
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           ASCEND_COMMENT_DENY_REASON: ${{ needs.issue-comment-command.outputs.deny_reason }}
         with:
