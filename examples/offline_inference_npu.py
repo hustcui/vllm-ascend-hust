@@ -19,9 +19,17 @@
 
 # isort: skip_file
 import os
+import tempfile
+from pathlib import Path
 
 os.environ["VLLM_USE_MODELSCOPE"] = "True"
 os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
+_modelscope_cache = Path(tempfile.gettempdir()) / "modelscope"
+os.environ.setdefault("MODELSCOPE_CACHE", str(_modelscope_cache))
+os.environ.setdefault(
+    "MODELSCOPE_CREDENTIALS_PATH",
+    str(_modelscope_cache / "credentials"),
+)
 
 from vllm import LLM, SamplingParams
 

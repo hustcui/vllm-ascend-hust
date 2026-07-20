@@ -18,8 +18,19 @@
 import json
 from pathlib import Path
 
-from vllm import envs
 from vllm.logger import logger
+
+try:
+    from vllm.transformers_utils.modelscope_utils import (
+        configure_modelscope_runtime,
+        should_use_modelscope,
+    )
+except ModuleNotFoundError:
+    def configure_modelscope_runtime() -> None:
+        return None
+
+    def should_use_modelscope() -> bool:
+        return False
 
 from vllm_ascend.utils import (
     ASCEND_QUANTIZATION_METHOD,
@@ -57,7 +68,8 @@ def get_model_file(
 
     # Remote repo: try to download from HF Hub or ModelScope
     try:
-        if envs.VLLM_USE_MODELSCOPE:
+        if should_use_modelscope():
+            configure_modelscope_runtime()
             from modelscope.hub.file_download import model_file_download  # type: ignore[import-untyped]
 
             downloaded_path = model_file_download(
@@ -76,7 +88,24 @@ def get_model_file(
             )
             return Path(downloaded_path)
     except Exception as e:
-        logger.warning("Could not download %s from %s: %s", filename, model, e)
+        logger.warning(
+            "Could not download %s from %s via ModelScope; falling back to "
+            "Hugging Face Hub: %s",
+            filename,
+            model,
+            e,
+        )
+        try:
+            from huggingface_hub import hf_hub_download
+
+            downloaded_path = hf_hub_download(
+                repo_id=str(model),
+                filename=filename,
+                revision=revision,
+            )
+            return Path(downloaded_path)
+        except Exception as hf_exc:
+            logger.warning("Could not download %s from %s: %s", filename, model, hf_exc)
         return None
 
 
