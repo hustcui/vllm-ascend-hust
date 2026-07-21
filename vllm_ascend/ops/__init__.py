@@ -26,8 +26,13 @@ _device_op_initializing = _device_op_module is not None and not hasattr(_device_
 if not _device_op_initializing:
     try:
         import vllm_ascend.ops.fused_moe.fused_moe  # noqa
-    except ModuleNotFoundError as exc:
-        if exc.name != "vllm.model_executor.layers.fused_moe.runner.default_moe_runner":
+    except (ImportError, ModuleNotFoundError) as exc:
+        message = str(exc)
+        compatible_missing = (
+            getattr(exc, "name", None) == "vllm.model_executor.layers.fused_moe.runner.default_moe_runner"
+            or "UnquantizedFusedMoEMethod" in message
+        )
+        if not compatible_missing:
             raise
     import vllm_ascend.ops.layernorm  # noqa
     import vllm_ascend.ops.register_custom_ops  # noqa
