@@ -8,8 +8,8 @@ name: PR Smart UT
 on:
   pull_request:
     branches:
-      - 'main'
-      - '*-dev'
+      # - 'main'
+      # - '*-dev'
       - 'releases/v*'
     paths:
       - '.github/workflows/pr_smart_ut.yaml'
