@@ -774,8 +774,13 @@ class AscendAttentionBackendImpl(AttentionImpl):
                             "value_antiquant_scale": c8_v_aq_scale,
                             "key_antiquant_mode": 0,
                             "value_antiquant_mode": 0,
-                            "inner_precise": 1,
                         }
+                        if c8_k_aq_offset is not None:
+                            extra_args["key_antiquant_offset"] = c8_k_aq_offset
+                        if c8_v_aq_offset is not None:
+                            extra_args["value_antiquant_offset"] = c8_v_aq_offset
+                        if c8_k_aq_offset is None and c8_v_aq_offset is None:
+                            extra_args["inner_precise"] = 1
                         input_layout = "BNSD"
                         sparse_mode = 0
                     torch_npu.npu_fused_infer_attention_score.out(
@@ -842,6 +847,21 @@ class AscendAttentionBackendImpl(AttentionImpl):
         next_tokens = 0 if self.sliding_window else SWA_INT_MAX
 
         extra_args = {}
+        if layer is not None and getattr(layer, "_int8_scales_ready", False):
+            extra_args = {
+                "key_antiquant_scale": layer._int8_k_aq_scale,
+                "key_antiquant_offset": layer._int8_k_aq_offset,
+                "value_antiquant_scale": layer._int8_v_aq_scale,
+                "value_antiquant_offset": layer._int8_v_aq_offset,
+                "key_antiquant_mode": 0,
+                "value_antiquant_mode": 0,
+            }
+            input_layout = "BNSD"
+            query = query.unsqueeze(2)
+            output = output.unsqueeze(2)
+            attn_mask = None
+            sparse_mode = 0
+
         if self.enable_c8_quant and layer is not None:
             extra_args = {
                 "key_antiquant_scale": layer._c8_k_aq_scale_nz_bnsd,
@@ -944,7 +964,14 @@ class AscendAttentionBackendImpl(AttentionImpl):
             pre_tokens,
             next_tokens,
         )
-        if self.enable_c8_quant and layer is not None:
+        if layer is not None and getattr(layer, "_int8_scales_ready", False):
+            attn_params = attn_params + (
+                weak_ref_tensors(layer._int8_k_aq_scale),
+                weak_ref_tensors(layer._int8_k_aq_offset),
+                weak_ref_tensors(layer._int8_v_aq_scale),
+                weak_ref_tensors(layer._int8_v_aq_offset),
+            )  # type: ignore
+        elif self.enable_c8_quant and layer is not None:
             attn_params = attn_params + (
                 weak_ref_tensors(layer._c8_k_aq_scale_nz_bnsd),
                 None,
@@ -2062,6 +2089,12 @@ class AscendInt8AttentionBackendImpl(AscendAttentionBackendImpl):
 
         if getattr(layer, "_int8_scales_ready", False):
             if attn_metadata.attn_state == AscendAttentionState.DecodeOnly:
+                if _EXTRA_CTX.capturing:
+                    attn_output, num_tokens = self.full_graph_fia(
+                        query, key, value, attn_metadata, output, layer
+                    )
+                    output[:num_tokens] = attn_output[:num_tokens]
+                    return output
                 return self._forward_int8_decode(query, attn_metadata, output, layer)
             if attn_metadata.attn_state == AscendAttentionState.ChunkedPrefill:
                 return self._forward_int8_chunked_prefill(
