@@ -2051,7 +2051,7 @@ class AscendInt8AttentionBackendImpl(AscendAttentionBackendImpl):
             key, value = self._quantize_kv_to_runtime_int8(
                 key, value, layer, attn_metadata.num_actual_tokens
             )
-            query, key, value, output_padded = self._reshape_and_cache_int8(
+            query, key, value, output_padded = super().reshape_and_cache(
                 query, key, value, kv_cache, attn_metadata, output
             )
 
@@ -2125,38 +2125,6 @@ class AscendInt8AttentionBackendImpl(AscendAttentionBackendImpl):
             127,
         ).to(torch.int8)
         return k_int8, v_int8
-
-    def _reshape_and_cache_int8(
-        self,
-        query: torch.Tensor,
-        key: torch.Tensor,
-        value: torch.Tensor,
-        kv_cache: tuple[torch.Tensor],
-        attn_metadata: AscendMetadata,
-        output: torch.Tensor,
-    ):
-        if len(kv_cache) > 1:
-            if self.is_kv_producer:
-                attn_metadata.reshape_cache_event = torch.npu.Event()
-            if self.key_cache is None:
-                self.key_cache, self.value_cache = kv_cache[0], kv_cache[1]
-            slots = attn_metadata.slot_mapping
-            encoder_decoder = self.attn_type == AttentionType.ENCODER_DECODER
-
-            block_size = self.vllm_config.cache_config.block_size
-            k_cache_layer = self._nz_5d_view(self.key_cache, block_size)
-            v_cache_layer = self._nz_5d_view(self.value_cache, block_size)
-
-            torch_npu.npu_scatter_pa_kv_cache(
-                key=key[: attn_metadata.num_actual_tokens] if not encoder_decoder else key,
-                value=value[: attn_metadata.num_actual_tokens] if not encoder_decoder else value,
-                key_cache=k_cache_layer,
-                value_cache=v_cache_layer,
-                slot_mapping=slots[: attn_metadata.num_actual_tokens] if not encoder_decoder else slots,
-            )
-            if self.is_kv_producer:
-                attn_metadata.reshape_cache_event.record()
-        return query, key, value, output
 
     def _forward_int8_decode(
         self,
